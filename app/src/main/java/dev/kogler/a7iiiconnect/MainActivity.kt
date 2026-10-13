@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.nfc.NfcAdapter
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
@@ -104,7 +105,7 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, pad / 2)
         }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         syncPanel.addView(TextView(this).apply {
-            text = "Touch the phone to the camera's N mark, or open Send to Smartphone on the camera and tap Get photos. Photos land in the " +
+            text = "With this screen open, touch the phone to the camera's N mark. Or open Send to Smartphone on the camera and tap Get photos. Photos land in the " +
                 "\"A7III Connect\" album, newest first, and copying continues with the screen off."
             alpha = 0.7f
         })
@@ -143,7 +144,10 @@ class MainActivity : Activity() {
     /** Phone touched the camera: save its Wi-Fi details and start copying straight away. */
     private fun handleNfc(intent: Intent?) {
         if (!NfcPairing.isNfcIntent(intent)) return
-        val creds = NfcPairing.read(intent!!)
+        onCameraTouched(NfcPairing.read(intent!!))
+    }
+
+    private fun onCameraTouched(creds: NfcPairing.Credentials?) {
         if (creds == null) {
             statusText.text = "Couldn't read the camera's NFC tag. Tap Share log and send it over."
             if (!store.hasCamera) return
@@ -155,6 +159,24 @@ class MainActivity : Activity() {
             showPanels()
         }
         if (!SyncState.status.running) SyncService.start(this)
+    }
+
+    // While the app is on screen it reads the camera's tag itself. Otherwise Android follows the
+    // tag's pointer to Sony's Imaging Edge app and opens the Play Store.
+    override fun onResume() {
+        super.onResume()
+        NfcAdapter.getDefaultAdapter(this)?.enableReaderMode(
+            this,
+            { tag -> NfcPairing.read(tag).let { creds -> runOnUiThread { onCameraTouched(creds) } } },
+            NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B or NfcAdapter.FLAG_READER_NFC_F or
+                NfcAdapter.FLAG_READER_NFC_V,
+            null,
+        )
+    }
+
+    override fun onPause() {
+        NfcAdapter.getDefaultAdapter(this)?.disableReaderMode(this)
+        super.onPause()
     }
 
     override fun onStart() {

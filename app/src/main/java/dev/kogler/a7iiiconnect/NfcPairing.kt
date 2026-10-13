@@ -3,6 +3,8 @@ package dev.kogler.a7iiiconnect
 import android.content.Intent
 import android.nfc.NdefMessage
 import android.nfc.NfcAdapter
+import android.nfc.Tag
+import android.nfc.tech.Ndef
 
 /**
  * Reads the Wi-Fi details the camera hands out when the phone touches its N mark.
@@ -23,6 +25,24 @@ object NfcPairing {
         @Suppress("DEPRECATION")
         val messages = intent.getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES)
             ?.filterIsInstance<NdefMessage>().orEmpty()
+        return read(messages)
+    }
+
+    /** Reads a tag picked up while the app is open (reader mode), before Android hands it to Sony's app. */
+    fun read(tag: Tag): Credentials? {
+        val ndef = Ndef.get(tag)
+        if (ndef == null) {
+            SyncState.log("NFC tag without NDEF data, techs=${tag.techList.joinToString()}")
+            return null
+        }
+        val message = ndef.cachedNdefMessage ?: runCatching {
+            ndef.connect()
+            ndef.ndefMessage.also { ndef.close() }
+        }.getOrNull()
+        return read(listOfNotNull(message))
+    }
+
+    private fun read(messages: List<NdefMessage>): Credentials? {
         for (record in messages.flatMap { it.records.toList() }) {
             val payload = record.payload ?: continue
             SyncState.log("NFC record type=${String(record.type)} ${payload.size} bytes: " +
