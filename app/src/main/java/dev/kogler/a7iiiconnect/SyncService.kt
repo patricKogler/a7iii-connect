@@ -35,6 +35,7 @@ class SyncService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     @Volatile private var cancelled = false
+    private var searchDeadline = 0L
     @Volatile private var worker: Thread? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -58,6 +59,7 @@ class SyncService : Service() {
         if (SyncState.status.running) return START_NOT_STICKY
 
         cancelled = false
+        searchDeadline = System.currentTimeMillis() + SEARCH_TIMEOUT_MS
         startForeground(
             NOTIFICATION_ID, notification("Looking for the camera ...", 0, 0),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
@@ -95,7 +97,15 @@ class SyncService : Service() {
             }
 
             override fun onUnavailable() {
-                stopSync("Camera not found. Is Send to Smartphone open on the camera?")
+                // Android gives up after one scan window (~40 s). The camera can take a while to
+                // bring its Wi-Fi up, so keep looking until the overall deadline.
+                if (!cancelled && System.currentTimeMillis() < searchDeadline) {
+                    SyncState.log("Camera Wi-Fi not seen yet, still looking")
+                    releaseNetwork()
+                    connect()
+                } else {
+                    stopSync("Camera not found. Is Send to Smartphone open on the camera?")
+                }
             }
 
             override fun onLost(network: Network) {
@@ -290,6 +300,7 @@ class SyncService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val DONE_NOTIFICATION_ID = 2
         private const val CONNECT_TIMEOUT_MS = 120_000
+        private const val SEARCH_TIMEOUT_MS = 3 * 60_000L
         private const val ACTION_CANCEL = "cancel"
         private const val PARALLEL_DOWNLOADS = 2
 
