@@ -53,7 +53,7 @@ class SyncService : Service() {
             cancelled = true
             status("Stopping ...")
             worker?.interrupt()
-            if (worker == null) stopSync("Cancelled")
+            if (worker == null) stopSync("Cancelled", Phase.FAILED)
             return START_NOT_STICKY
         }
         if (SyncState.status.running) return START_NOT_STICKY
@@ -64,7 +64,7 @@ class SyncService : Service() {
             NOTIFICATION_ID, notification("Looking for the camera ...", 0, 0),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
         )
-        SyncState.update { SyncStatus(running = true, message = "Looking for the camera ...") }
+        SyncState.update { SyncStatus(running = true, phase = Phase.SEARCHING, message = "Looking for the camera ...") }
         acquireLocks()
         connect()
         return START_NOT_STICKY
@@ -104,7 +104,7 @@ class SyncService : Service() {
                     releaseNetwork()
                     connect()
                 } else {
-                    stopSync("Camera not found. Is Send to Smartphone open on the camera?")
+                    stopSync("Camera not found. Is Send to Smartphone open on the camera?", Phase.FAILED)
                 }
             }
 
@@ -122,7 +122,7 @@ class SyncService : Service() {
         var copied = 0
         var failed = 0
         try {
-            status("Reading the camera ...")
+            status("Reading the camera ...", Phase.READING)
             val location = runCatching { client.discover(2000) }.getOrNull()
             client.loadDescription(location ?: CameraClient.DEFAULT_DESCRIPTION_URL)
             val items = client.listAllItems()
@@ -173,11 +173,13 @@ class SyncService : Service() {
                     cancelled -> "Stopped. Copied $copied photos."
                     left == 0 -> "Copied $copied new photos"
                     else -> "Copied $copied photos, $left didn't make it. Tap Get photos to retry."
-                }
+                },
+                if (left == 0 || cancelled) Phase.DONE else Phase.FAILED,
+                copied,
             )
         } catch (e: Exception) {
             SyncState.log("Sync error: ${e.stackTraceToString().take(1500)}")
-            stopSync(if (copied > 0) "Connection dropped after $copied photos. Tap Get photos to continue." else "Couldn't read the camera: ${e.message}")
+            stopSync(if (copied > 0) "Connection dropped after $copied photos. Tap Get photos to continue." else "Couldn't read the camera: ${e.message}", Phase.FAILED, copied)
         }
     }
 
@@ -226,20 +228,20 @@ class SyncService : Service() {
         runCatching { SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).parse(it)?.time }.getOrNull()
     }
 
-    private fun status(message: String) {
-        SyncState.update { it.copy(message = message) }
+    private fun status(message: String, phase: Phase? = null) {
+        SyncState.update { it.copy(message = message, phase = phase ?: it.phase) }
         nm.notify(NOTIFICATION_ID, notification(message, 0, 0))
     }
 
     private fun progress(done: Int, total: Int, file: String) {
         val message = "Copied $done of $total"
-        SyncState.update { it.copy(message = message, done = done, total = total, currentFile = file) }
+        SyncState.update { it.copy(phase = Phase.COPYING, message = message, done = done, total = total, currentFile = file) }
         nm.notify(NOTIFICATION_ID, notification(message, done, total))
     }
 
-    private fun stopSync(message: String) {
+    private fun stopSync(message: String, phase: Phase = Phase.DONE, copied: Int = 0) {
         SyncState.log(message)
-        SyncState.update { SyncStatus(running = false, message = message) }
+        SyncState.update { SyncStatus(running = false, phase = phase, copied = copied, message = message) }
         releaseNetwork()
         releaseLocks()
         worker = null

@@ -1,134 +1,84 @@
 package dev.kogler.a7iiiconnect
 
 import android.Manifest
-import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Typeface
 import android.nfc.NfcAdapter
 import android.os.Bundle
-import android.text.InputType
-import android.view.Gravity
-import android.view.View
-import android.view.ViewGroup.LayoutParams.MATCH_PARENT
-import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import dev.kogler.a7iiiconnect.ui.App
+import dev.kogler.a7iiiconnect.ui.AppTheme
+import dev.kogler.a7iiiconnect.ui.UiActions
+import dev.kogler.a7iiiconnect.ui.UiState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
 
     private lateinit var store: Store
-    private lateinit var setupPanel: LinearLayout
-    private lateinit var syncPanel: LinearLayout
-    private lateinit var ssidInput: EditText
-    private lateinit var passInput: EditText
-    private lateinit var cameraLabel: TextView
-    private lateinit var statusText: TextView
-    private lateinit var progress: ProgressBar
-    private lateinit var syncButton: Button
-    private val listener: (SyncStatus) -> Unit = { render(it) }
+    private var status by mutableStateOf(SyncStatus())
+    private var hasCamera by mutableStateOf(false)
+    private var cameraName by mutableStateOf("")
+    private var password by mutableStateOf("")
+    private var smallCopies by mutableStateOf(false)
+    private var photos by mutableStateOf(emptyList<Photo>())
+    private var photoCount by mutableIntStateOf(0)
+    private val listener: (SyncStatus) -> Unit = { onStatus(it) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         store = Store(this)
-        val dp = resources.displayMetrics.density
-        val pad = (20 * dp).toInt()
+        refreshStore()
+        val nfcAvailable = NfcAdapter.getDefaultAdapter(this) != null
+        val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "?"
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad * 3, pad, pad)
-        }
-        root.addView(TextView(this).apply {
-            text = "A7III Connect"
-            textSize = 26f
-            typeface = Typeface.DEFAULT_BOLD
-        })
-
-        // First-time setup: the network name and password the camera shows.
-        setupPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        setupPanel.addView(TextView(this).apply {
-            text = "On the camera open MENU > Network > Send to Smartphone Func. > Send to Smartphone > " +
-                "Select on Smartphone, then copy the network name and password it shows."
-            setPadding(0, pad, 0, 0)
-        })
-        ssidInput = EditText(this).apply {
-            hint = "Network name, e.g. DIRECT-A9E1:ILCE-7M3"
-            setSingleLine()
-            setText(store.ssid)
-        }
-        passInput = EditText(this).apply {
-            hint = "Password"
-            setSingleLine()
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
-            setText(store.password)
-        }
-        setupPanel.addView(ssidInput, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        setupPanel.addView(passInput, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        setupPanel.addView(Button(this).apply {
-            text = "Save camera"
-            setOnClickListener {
-                store.ssid = ssidInput.text.toString().trim()
-                store.password = passInput.text.toString()
-                showPanels()
-            }
-        })
-        root.addView(setupPanel)
-
-        // Everyday screen: one button.
-        syncPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        cameraLabel = TextView(this).apply { setPadding(0, pad / 2, 0, pad) }
-        syncPanel.addView(cameraLabel)
-        syncButton = Button(this).apply {
-            textSize = 20f
-            minHeight = (72 * dp).toInt()
-            setOnClickListener {
-                if (SyncState.status.running) SyncService.cancel(this@MainActivity)
-                else SyncService.start(this@MainActivity)
-            }
-        }
-        syncPanel.addView(syncButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
-        syncPanel.addView(progress, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = pad })
-        statusText = TextView(this).apply {
-            textSize = 16f
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, pad / 2, 0, pad)
-        }
-        syncPanel.addView(statusText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        syncPanel.addView(android.widget.Switch(this).apply {
-            text = "Smaller copies (much faster, good for sharing)"
-            isChecked = store.smallCopies
-            setOnCheckedChangeListener { _, on -> store.smallCopies = on }
-            setPadding(0, 0, 0, pad / 2)
-        }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        syncPanel.addView(TextView(this).apply {
-            text = "With this screen open, touch the phone to the camera's N mark. Or open Send to Smartphone on the camera and tap Get photos. Photos land in the " +
-                "\"A7III Connect\" album, newest first, and copying continues with the screen off."
-            alpha = 0.7f
-        })
-
-        val links = LinearLayout(this).apply { setPadding(0, pad, 0, 0) }
-        links.addView(Button(this, null, android.R.attr.borderlessButtonStyle).apply {
-            text = "Change camera"
-            setOnClickListener { setupPanel.visibility = View.VISIBLE }
-        })
-        links.addView(Button(this, null, android.R.attr.borderlessButtonStyle).apply {
-            text = "Share log"
-            setOnClickListener {
+        val actions = UiActions(
+            sync = { SyncService.start(this) },
+            stop = { SyncService.cancel(this) },
+            saveCamera = { ssid, pass ->
+                store.ssid = ssid
+                store.password = pass
+                refreshStore()
+            },
+            setSmallCopies = { store.smallCopies = it; refreshStore() },
+            shareLog = {
                 startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
                     putExtra(Intent.EXTRA_TEXT, SyncState.logText())
                 }, "Share log"))
-            }
-        })
-        syncPanel.addView(links)
-        root.addView(syncPanel)
+            },
+            openPhoto = { openImage(it) },
+            openAlbum = { photos.firstOrNull()?.let { openImage(it) } },
+        )
 
-        setContentView(root)
-        showPanels()
+        setContent {
+            // Re-read the album whenever a photo lands or a sync ends.
+            LaunchedEffect(status.done, status.phase) { reloadPhotos() }
+            AppTheme {
+                App(
+                    UiState(
+                        status = status,
+                        hasCamera = hasCamera,
+                        cameraName = cameraName,
+                        password = password,
+                        smallCopies = smallCopies,
+                        photos = photos,
+                        photoCount = photoCount,
+                        nfcAvailable = nfcAvailable,
+                        version = version,
+                    ),
+                    actions,
+                )
+            }
+        }
 
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
@@ -141,35 +91,14 @@ class MainActivity : Activity() {
         handleNfc(intent)
     }
 
-    /** Phone touched the camera: save its Wi-Fi details and start copying straight away. */
-    private fun handleNfc(intent: Intent?) {
-        if (!NfcPairing.isNfcIntent(intent)) return
-        onCameraTouched(NfcPairing.read(intent!!))
+    override fun onStart() {
+        super.onStart()
+        SyncState.observe(listener)
     }
 
-    private var lastTouch = 0L
-
-    private fun onCameraTouched(creds: NfcPairing.Credentials?) {
-        // Holding the phone near the camera re-reads the tag every few seconds. Starting over
-        // makes the camera restart its Wi-Fi, which costs a minute, so ignore repeats.
-        val now = System.currentTimeMillis()
-        if (SyncState.status.running || now - lastTouch < NFC_REPEAT_MS) {
-            SyncState.log("NFC tag read again, ignored")
-            return
-        }
-        if (creds == null && lastTouch != 0L) return
-        lastTouch = now
-        if (creds == null) {
-            statusText.text = "Couldn't read the camera's NFC tag. Tap Share log and send it over."
-            if (!store.hasCamera) return
-        } else {
-            store.ssid = creds.ssid
-            store.password = creds.password
-            ssidInput.setText(creds.ssid)
-            passInput.setText(creds.password)
-            showPanels()
-        }
-        if (!SyncState.status.running) SyncService.start(this)
+    override fun onStop() {
+        SyncState.remove(listener)
+        super.onStop()
     }
 
     // While the app is on screen it reads the camera's tag itself. Otherwise Android follows the
@@ -193,34 +122,59 @@ class MainActivity : Activity() {
         super.onPause()
     }
 
-    override fun onStart() {
-        super.onStart()
-        SyncState.observe(listener)
+    private fun refreshStore() {
+        hasCamera = store.hasCamera
+        cameraName = store.ssid
+        password = store.password
+        smallCopies = store.smallCopies
     }
 
-    override fun onStop() {
-        SyncState.remove(listener)
-        super.onStop()
+    private suspend fun reloadPhotos() {
+        val (list, count) = withContext(Dispatchers.IO) {
+            RecentPhotos.load(this@MainActivity) to RecentPhotos.count(this@MainActivity)
+        }
+        photos = list
+        photoCount = count
     }
 
-    private fun showPanels() {
-        setupPanel.visibility = if (store.hasCamera) View.GONE else View.VISIBLE
-        syncPanel.visibility = if (store.hasCamera) View.VISIBLE else View.GONE
-        cameraLabel.text = "Camera: ${store.ssid}"
+    private fun openImage(photo: Photo) {
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(photo.uri, "image/*")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            })
+        }
     }
 
+    private var lastTouch = 0L
     private var wasRunning = false
 
-    private fun render(s: SyncStatus) {
-        // Count the quiet period from the end of a sync too, not just from the tap.
+    private fun onStatus(s: SyncStatus) {
+        // Count the NFC quiet period from the end of a sync too, not just from the tap.
         if (wasRunning && !s.running) lastTouch = System.currentTimeMillis()
         wasRunning = s.running
-        syncButton.text = if (s.running) "Stop" else "Get photos"
-        statusText.text = s.message + (s.currentFile?.let { "\n$it" } ?: "")
-        progress.visibility = if (s.running) View.VISIBLE else View.INVISIBLE
-        progress.isIndeterminate = s.total == 0
-        progress.max = s.total.coerceAtLeast(1)
-        progress.progress = s.done
+        status = s
+    }
+
+    private fun handleNfc(intent: Intent?) {
+        if (!NfcPairing.isNfcIntent(intent)) return
+        NfcPairing.read(intent!!)?.let { onCameraTouched(it) }
+    }
+
+    /** Phone touched the camera: save its Wi-Fi details and start copying straight away. */
+    private fun onCameraTouched(creds: NfcPairing.Credentials) {
+        // Holding the phone near the camera re-reads the tag every few seconds. Starting over
+        // makes the camera restart its Wi-Fi, which costs a minute, so ignore repeats.
+        val now = System.currentTimeMillis()
+        if (SyncState.status.running || now - lastTouch < NFC_REPEAT_MS) {
+            SyncState.log("NFC tag read again, ignored")
+            return
+        }
+        lastTouch = now
+        store.ssid = creds.ssid
+        store.password = creds.password
+        refreshStore()
+        SyncService.start(this)
     }
 
     companion object {

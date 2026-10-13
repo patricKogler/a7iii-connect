@@ -3,9 +3,13 @@ package dev.kogler.a7iiiconnect
 import android.os.Handler
 import android.os.Looper
 
+enum class Phase { IDLE, SEARCHING, READING, COPYING, DONE, FAILED }
+
 /** What the sync is doing right now, shared between the service and the screen. */
 data class SyncStatus(
     val running: Boolean = false,
+    val phase: Phase = Phase.IDLE,
+    val copied: Int = 0,
     val message: String = "Ready",
     val done: Int = 0,
     val total: Int = 0,

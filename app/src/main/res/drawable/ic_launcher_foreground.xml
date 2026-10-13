@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Camera body with a download arrow, centred in the 72dp safe zone of the 108dp canvas. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,38 L44,32 L64,32 L70,38 L76,38 C79.3,38 82,40.7 82,44 L82,70 C82,73.3 79.3,76 76,76 L32,76 C28.7,76 26,73.3 26,70 L26,44 C26,40.7 28.7,38 32,38 Z" />
+    <path
+        android:fillColor="#E8590C"
+        android:pathData="M54,44 C55.1,44 56,44.9 56,46 L56,59.2 L60.6,54.6 C61.4,53.8 62.6,53.8 63.4,54.6 C64.2,55.4 64.2,56.6 63.4,57.4 L55.4,65.4 C54.6,66.2 53.4,66.2 52.6,65.4 L44.6,57.4 C43.8,56.6 43.8,55.4 44.6,54.6 C45.4,53.8 46.6,53.8 47.4,54.6 L52,59.2 L52,46 C52,44.9 52.9,44 54,44 Z" />
+    <path
+        android:fillColor="#E8590C"
+        android:pathData="M44,68 L64,68 C65.1,68 66,68.9 66,70 C66,71.1 65.1,72 64,72 L44,72 C42.9,72 42,71.1 42,70 C42,68.9 42.9,68 44,68 Z" />
+</vector>
