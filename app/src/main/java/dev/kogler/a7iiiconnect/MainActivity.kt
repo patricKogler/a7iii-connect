@@ -147,7 +147,18 @@ class MainActivity : Activity() {
         onCameraTouched(NfcPairing.read(intent!!))
     }
 
+    private var lastTouch = 0L
+
     private fun onCameraTouched(creds: NfcPairing.Credentials?) {
+        // Holding the phone near the camera re-reads the tag every few seconds. Starting over
+        // makes the camera restart its Wi-Fi, which costs a minute, so ignore repeats.
+        val now = System.currentTimeMillis()
+        if (SyncState.status.running || now - lastTouch < NFC_REPEAT_MS) {
+            SyncState.log("NFC tag read again, ignored")
+            return
+        }
+        if (creds == null && lastTouch != 0L) return
+        lastTouch = now
         if (creds == null) {
             statusText.text = "Couldn't read the camera's NFC tag. Tap Share log and send it over."
             if (!store.hasCamera) return
@@ -167,7 +178,10 @@ class MainActivity : Activity() {
         super.onResume()
         NfcAdapter.getDefaultAdapter(this)?.enableReaderMode(
             this,
-            { tag -> NfcPairing.read(tag).let { creds -> runOnUiThread { onCameraTouched(creds) } } },
+            { tag ->
+                // Other tags (bank cards, the camera's FeliCa side) carry no Wi-Fi details; skip them.
+                NfcPairing.read(tag)?.let { creds -> runOnUiThread { onCameraTouched(creds) } }
+            },
             NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B or NfcAdapter.FLAG_READER_NFC_F or
                 NfcAdapter.FLAG_READER_NFC_V,
             null,
@@ -195,12 +209,21 @@ class MainActivity : Activity() {
         cameraLabel.text = "Camera: ${store.ssid}"
     }
 
+    private var wasRunning = false
+
     private fun render(s: SyncStatus) {
+        // Count the quiet period from the end of a sync too, not just from the tap.
+        if (wasRunning && !s.running) lastTouch = System.currentTimeMillis()
+        wasRunning = s.running
         syncButton.text = if (s.running) "Stop" else "Get photos"
         statusText.text = s.message + (s.currentFile?.let { "\n$it" } ?: "")
         progress.visibility = if (s.running) View.VISIBLE else View.INVISIBLE
         progress.isIndeterminate = s.total == 0
         progress.max = s.total.coerceAtLeast(1)
         progress.progress = s.done
+    }
+
+    companion object {
+        private const val NFC_REPEAT_MS = 30_000L
     }
 }
