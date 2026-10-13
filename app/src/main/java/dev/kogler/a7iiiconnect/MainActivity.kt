@@ -264,6 +264,7 @@ class MainActivity : Activity() {
     private fun log(msg: String) {
         val line = "${SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())} $msg\n"
         synchronized(logText) { logText.append(line) }
+        android.util.Log.i("A7IIIConnect", msg)
         main.post {
             logView.append(line)
             scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
