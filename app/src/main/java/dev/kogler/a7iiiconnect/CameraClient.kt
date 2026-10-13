@@ -54,7 +54,7 @@ class CameraClient(private val network: Network, private val log: (String) -> Un
                     break
                 }
                 val text = String(packet.data, 0, packet.length)
-                log("SSDP reply from ${packet.address.hostAddress}:\n${text.trim()}")
+                log("SSDP reply from ${packet.address.hostAddress}")
                 val location = text.lineSequence()
                     .firstOrNull { it.startsWith("LOCATION:", ignoreCase = true) }
                     ?.substringAfter(':')?.trim()
@@ -69,7 +69,7 @@ class CameraClient(private val network: Network, private val log: (String) -> Un
         val url = URL(descriptionUrl)
         baseUrl = "${url.protocol}://${url.host}:${url.port}"
         val xml = httpGet(descriptionUrl)
-        log("Device description (${xml.length} chars):\n${xml.take(2500)}")
+        log("Device description: ${xml.length} chars")
         Regex("<friendlyName>(.*?)</friendlyName>").find(xml)?.let { log("Camera: ${it.groupValues[1]}") }
         val services = Regex("<service>(.*?)</service>", RegexOption.DOT_MATCHES_ALL).findAll(xml)
         for (s in services) {
