@@ -183,6 +183,10 @@ class CameraClient(private val network: Network, private val log: (String) -> Un
     fun bestResource(item: CameraItem): Resource? =
         item.resources.maxByOrNull { it.size ?: resolutionPixels(it.resolution) }
 
+    /** The camera's "large" preview (DLNA JPEG_LRG): much smaller than the original, still fine for sharing. */
+    fun smallResource(item: CameraItem): Resource? =
+        item.resources.firstOrNull { "JPEG_LRG" in it.protocolInfo } ?: bestResource(item)
+
     private fun resolutionPixels(r: String?): Long {
         val parts = r?.split('x') ?: return 0
         return (parts.getOrNull(0)?.toLongOrNull() ?: 0) * (parts.getOrNull(1)?.toLongOrNull() ?: 0)

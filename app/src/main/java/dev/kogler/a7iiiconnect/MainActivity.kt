@@ -97,8 +97,14 @@ class MainActivity : Activity() {
             setPadding(0, pad / 2, 0, pad)
         }
         syncPanel.addView(statusText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        syncPanel.addView(android.widget.Switch(this).apply {
+            text = "Smaller copies (much faster, good for sharing)"
+            isChecked = store.smallCopies
+            setOnCheckedChangeListener { _, on -> store.smallCopies = on }
+            setPadding(0, 0, 0, pad / 2)
+        }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         syncPanel.addView(TextView(this).apply {
-            text = "Before tapping, open Send to Smartphone on the camera. Photos land in the " +
+            text = "Touch the phone to the camera's N mark, or open Send to Smartphone on the camera and tap Get photos. Photos land in the " +
                 "\"A7III Connect\" album, newest first, and copying continues with the screen off."
             alpha = 0.7f
         })
@@ -126,6 +132,29 @@ class MainActivity : Activity() {
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+        if (savedInstanceState == null) handleNfc(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleNfc(intent)
+    }
+
+    /** Phone touched the camera: save its Wi-Fi details and start copying straight away. */
+    private fun handleNfc(intent: Intent?) {
+        if (!NfcPairing.isNfcIntent(intent)) return
+        val creds = NfcPairing.read(intent!!)
+        if (creds == null) {
+            statusText.text = "Couldn't read the camera's NFC tag. Tap Share log and send it over."
+            if (!store.hasCamera) return
+        } else {
+            store.ssid = creds.ssid
+            store.password = creds.password
+            ssidInput.setText(creds.ssid)
+            passInput.setText(creds.password)
+            showPanels()
+        }
+        if (!SyncState.status.running) SyncService.start(this)
     }
 
     override fun onStart() {

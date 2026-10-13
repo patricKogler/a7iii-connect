@@ -24,6 +24,10 @@ class Store(context: Context) {
         get() = prefs.getString("pass", "") ?: ""
         set(v) = prefs.edit().putString("pass", v).apply()
 
+    var smallCopies: Boolean
+        get() = prefs.getBoolean("small", false)
+        set(v) = prefs.edit().putBoolean("small", v).apply()
+
     val hasCamera get() = ssid.isNotBlank()
 
     @Synchronized

@@ -125,20 +125,38 @@ class SyncService : Service() {
                 return
             }
 
-            todo.forEachIndexed { i, item ->
-                if (cancelled || Thread.currentThread().isInterrupted) return@forEachIndexed
-                progress(i, todo.size, item.title)
-                val res = client.bestResource(item) ?: return@forEachIndexed
-                try {
-                    saveWithRetry(client, item, res.url)
-                    store.markCopied(Store.keyFor(item))
-                    copied++
-                } catch (e: Exception) {
-                    if (cancelled) return@forEachIndexed
-                    failed++
-                    SyncState.log("Failed ${item.title}: $e")
-                }
+            val small = store.smallCopies
+            val next = java.util.concurrent.atomic.AtomicInteger(0)
+            val doneCount = java.util.concurrent.atomic.AtomicInteger(0)
+            val failedCount = java.util.concurrent.atomic.AtomicInteger(0)
+            progress(0, todo.size, todo.first().title)
+            val workers = (1..PARALLEL_DOWNLOADS).map {
+                Thread {
+                    while (!cancelled) {
+                        val i = next.getAndIncrement()
+                        if (i >= todo.size) break
+                        val item = todo[i]
+                        val res = (if (small) client.smallResource(item) else client.bestResource(item)) ?: continue
+                        try {
+                            saveWithRetry(client, item, res.url)
+                            store.markCopied(Store.keyFor(item))
+                            progress(doneCount.incrementAndGet(), todo.size, item.title)
+                        } catch (e: Exception) {
+                            if (cancelled) break
+                            failedCount.incrementAndGet()
+                            SyncState.log("Failed ${item.title}: $e")
+                        }
+                    }
+                }.also { it.start() }
             }
+            try {
+                workers.forEach { it.join() }
+            } catch (e: InterruptedException) {
+                cancelled = true
+                workers.forEach { it.join() }
+            }
+            copied = doneCount.get()
+            failed = failedCount.get()
             val left = todo.size - copied
             stopSync(
                 when {
@@ -204,7 +222,7 @@ class SyncService : Service() {
     }
 
     private fun progress(done: Int, total: Int, file: String) {
-        val message = "Copying ${done + 1} of $total"
+        val message = "Copied $done of $total"
         SyncState.update { it.copy(message = message, done = done, total = total, currentFile = file) }
         nm.notify(NOTIFICATION_ID, notification(message, done, total))
     }
@@ -273,6 +291,7 @@ class SyncService : Service() {
         private const val DONE_NOTIFICATION_ID = 2
         private const val CONNECT_TIMEOUT_MS = 120_000
         private const val ACTION_CANCEL = "cancel"
+        private const val PARALLEL_DOWNLOADS = 2
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, SyncService::class.java))
