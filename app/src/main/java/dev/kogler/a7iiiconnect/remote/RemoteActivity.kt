@@ -80,6 +80,7 @@ class RemoteActivity : ComponentActivity() {
     private val cm by lazy { getSystemService(ConnectivityManager::class.java) }
     private var callback: ConnectivityManager.NetworkCallback? = null
     private var remote: CameraRemote? = null
+    @Volatile private var apis: Set<String> = emptySet()
     @Volatile private var running = true
     /** Bumped on every new Wi-Fi request, so a live view loop on an old network stops. */
     @Volatile private var generation = 0
@@ -222,7 +223,7 @@ class RemoteActivity : ComponentActivity() {
                 return
             }
             remote = r
-            var apis = r.availableApis()
+            apis = r.availableApis()
             SyncState.log("Remote: APIs $apis")
             if ("startRecMode" in apis) {
                 r.call("startRecMode")
@@ -283,11 +284,14 @@ class RemoteActivity : ComponentActivity() {
         shooting = true
         Thread {
             try {
-                val preview = r.takePicture()
+                val preview = r.takePicture(apis)
                 shotCount++
                 preview?.let { url -> r.downloadBitmap(url)?.let { lastShot = it } }
             } catch (e: Exception) {
                 SyncState.log("Remote: shutter failed: $e")
+                runOnUiThread {
+                    android.widget.Toast.makeText(this, "Couldn't take the picture: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                }
                 message = "Couldn't take the picture: ${e.message}"
             } finally {
                 shooting = false

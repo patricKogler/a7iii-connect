@@ -63,8 +63,36 @@ class CameraRemote(private val network: Network) {
         (0 until list.length()).map { list.getString(it) }.toSet()
     }.getOrDefault(emptySet())
 
-    /** Takes a picture and returns the URL of the camera's preview copy, if it gave one. */
-    fun takePicture(): String? {
+    /**
+     * Takes a picture and returns the URL of the camera's preview copy, if it gave one.
+     * If the camera refuses a plain shot (40400 "shooting fail", e.g. it couldn't focus in one go),
+     * it makes sure the camera is in still mode, half-presses until focus settles, then shoots.
+     */
+    fun takePicture(apis: Set<String>): String? {
+        try {
+            return shoot()
+        } catch (e: RemoteError) {
+            if (e.code != 40400 && e.code != 1) throw e
+            SyncState.log("Remote: plain shot refused (${e.code}), trying half press first")
+        }
+        if ("getShootMode" in apis) runCatching {
+            val mode = call("getShootMode").optString(0)
+            SyncState.log("Remote: shoot mode $mode")
+            if (mode != "still" && "setShootMode" in apis) call("setShootMode", "still")
+        }
+        val half = "actHalfPressShutter" in apis
+        if (half) {
+            call("actHalfPressShutter")
+            SyncState.log("Remote: focus ${waitForFocus()}")
+        }
+        try {
+            return shoot()
+        } finally {
+            if (half) runCatching { call("cancelHalfPressShutter") }
+        }
+    }
+
+    private fun shoot(): String? {
         val result = try {
             call("actTakePicture")
         } catch (e: RemoteError) {
@@ -72,6 +100,19 @@ class CameraRemote(private val network: Network) {
             if (e.code == 40403) call("awaitTakePicture") else throw e
         }
         return result.optJSONArray(0)?.optString(0)?.takeIf { it.isNotBlank() }
+    }
+
+    /** Polls the camera's events for focusStatus until it settles; returns the last status seen. */
+    private fun waitForFocus(): String {
+        var status = "unknown"
+        val end = System.currentTimeMillis() + 3_000
+        while (System.currentTimeMillis() < end) {
+            val text = runCatching { call("getEvent", false).toString() }.getOrDefault("")
+            Regex("\"focusStatus\"\\s*:\\s*\"(\\w+)\"").find(text)?.let { status = it.groupValues[1] }
+            if (status == "Focused" || status == "Failed") return status
+            Thread.sleep(200)
+        }
+        return status
     }
 
     fun downloadBitmap(url: String): Bitmap? = runCatching {
@@ -129,5 +170,14 @@ class CameraRemote(private val network: Network) {
     }
 
     class RemoteError(method: String, val code: Int, message: String) :
-        IOException("$method failed: $code $message")
+        IOException("$method failed: $code ${message.ifBlank { describe(code) }}")
+
+    companion object {
+        fun describe(code: Int) = when (code) {
+            40400 -> "the camera couldn't take the picture (check focus, drive mode and the memory card)"
+            40401 -> "camera not ready"
+            40402 -> "already shooting"
+            else -> ""
+        }
+    }
 }
