@@ -87,6 +87,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.kogler.a7iiiconnect.develop.engine.DevelopSource
+import dev.kogler.a7iiiconnect.develop.engine.Profile
 import dev.kogler.a7iiiconnect.develop.engine.Renderer
 import dev.kogler.a7iiiconnect.develop.engine.Settings
 import dev.kogler.a7iiiconnect.develop.engine.WhiteBalance
@@ -308,7 +309,7 @@ fun EditorScreen(
                     val change: (Settings) -> Unit = { settings = it; dragging = true }
                     val done: () -> Unit = { dragging = false; commit(settings) }
                     when (tool) {
-                        Tool.LIGHT -> LightPanel(settings, change, done)
+                        Tool.LIGHT -> LightPanel(settings, change, done, commit = { commit(it) })
                         Tool.COLOR -> ColorPanel(settings, o?.preview, change, done, commit = { commit(it) })
                         null -> {}
                     }
@@ -436,7 +437,17 @@ private fun Histogram(h: Array<IntArray>, modifier: Modifier) {
 // Panels
 
 @Composable
-private fun LightPanel(s: Settings, change: (Settings) -> Unit, done: () -> Unit) {
+private fun LightPanel(s: Settings, change: (Settings) -> Unit, done: () -> Unit, commit: (Settings) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Profile", color = Color.White, fontSize = 13.sp)
+        for (p in Profile.entries) {
+            FilterChip(selected = s.profile == p, onClick = { commit(s.copy(profile = p)) }, label = { Text(p.label) })
+        }
+    }
     AdjustSlider("Exposure", s.exposure, -5f..5f, 0f, { signed(it, 2) }, null, { change(s.copy(exposure = it)) }, done)
     AdjustSlider("Contrast", s.contrast, -100f..100f, 0f, { signed(it, 0) }, null, { change(s.copy(contrast = it)) }, done)
     AdjustSlider("Highlights", s.highlights, -100f..100f, 0f, { signed(it, 0) }, null, { change(s.copy(highlights = it)) }, done)
