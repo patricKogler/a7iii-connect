@@ -20,6 +20,7 @@ data class Settings(
     val tint: Float? = null, // -150..150
     val vibrance: Float = 0f,
     val saturation: Float = 0f,
+    val profile: Profile = Profile.COLOR,
 ) {
     val isDefault get() = this == Settings()
 
@@ -27,12 +28,15 @@ data class Settings(
         append("v=1\n")
         append("exposure=$exposure\ncontrast=$contrast\nhighlights=$highlights\nshadows=$shadows\n")
         append("whites=$whites\nblacks=$blacks\nvibrance=$vibrance\nsaturation=$saturation\n")
+        append("profile=${profile.name}\n")
         temperature?.let { append("temperature=$it\n") }
         tint?.let { append("tint=$it\n") }
     }
 
     companion object {
         fun decode(text: String): Settings {
+            val profile = Regex("(?m)^profile=(\\w+)").find(text)?.groupValues?.get(1)
+                ?.let { name -> Profile.entries.firstOrNull { it.name == name } } ?: Profile.COLOR
             val m = text.lineSequence().mapNotNull { line ->
                 val i = line.indexOf('=')
                 if (i <= 0) null else line.substring(0, i).trim() to line.substring(i + 1).trim().toFloatOrNull()
@@ -42,10 +46,22 @@ data class Settings(
                 exposure = f("exposure"), contrast = f("contrast"), highlights = f("highlights"),
                 shadows = f("shadows"), whites = f("whites"), blacks = f("blacks"),
                 temperature = m["temperature"], tint = m["tint"],
-                vibrance = f("vibrance"), saturation = f("saturation"),
+                vibrance = f("vibrance"), saturation = f("saturation"), profile = profile,
             )
         }
     }
+}
+
+/**
+ * The base look applied before the sliders, like Lightroom's profiles. For raws it sets the
+ * filmic curve's contrast (its toe and shoulder) and a saturation boost; JPEGs are already
+ * rendered by the camera, so only Monochrome changes them.
+ */
+enum class Profile(val label: String, val contrast: Double, val saturation: Float) {
+    COLOR("Color", 1.45, 1.10f),
+    VIVID("Vivid", 1.65, 1.28f),
+    NEUTRAL("Neutral", 1.2, 1.0f),
+    MONOCHROME("Monochrome", 1.5, 0f),
 }
 
 /** Lightroom's white balance presets (Kelvin, tint). */
@@ -94,32 +110,41 @@ class Renderer(private val source: DevelopSource, settings: Settings) {
         val rel = DoubleArray(3) { target[it] / ref[it] }
         // Keep brightness steady while the balance moves: normalise by the luminance-weighted gain.
         val norm = 0.30 * rel[0] + 0.59 * rel[1] + 0.11 * rel[2]
-        val gain = 2.0.pow(settings.exposure.toDouble()) * (if (source.isRaw) RAW_BASELINE else 1.0)
+        val gain = 2.0.pow(settings.exposure.toDouble())
         val m = Mat3.mul(color.rgbFromCam, Mat3.diag(rel[0] / norm, rel[1] / norm, rel[2] / norm))
         for (i in 0..8) matrix[i] = (m[i] * gain).toFloat()
 
-        buildTone(settings, if (source.isRaw) RAW_BASELINE else 1.0, source.isRaw)
-        sat = 1f + settings.saturation / 100f
+        buildTone(settings, source.isRaw)
+        val profileSat = if (source.isRaw || settings.profile == Profile.MONOCHROME) settings.profile.saturation else 1f
+        sat = profileSat * (1f + settings.saturation / 100f)
         vib = settings.vibrance / 100f
     }
 
     /**
-     * Scene-linear value -> display value 0..1 (sRGB encoded). The base is a highlight roll-off
-     * that reaches white exactly at the sensor's clip point, then Lightroom-like tone sliders as
-     * smooth curve adjustments.
+     * Scene-linear value -> display value 0..1 (sRGB encoded). For raws the base is a filmic
+     * sigmoid, y = a x^n / (x^n + k), fitted so camera mid grey lands at display mid grey and the
+     * sensor's clip point lands exactly on white; n > 1 gives the toe and shoulder that make a
+     * raw look finished instead of flat. The tone sliders then bend that curve.
      */
-    private fun buildTone(s: Settings, baseline: Double, raw: Boolean) {
-        val white = baseline * 2.0.pow(-s.whites / 100.0 * 1.2)
+    private fun buildTone(s: Settings, raw: Boolean) {
+        val white = 2.0.pow(-s.whites / 100.0 * 1.2)
         val blackPoint = -s.blacks / 100.0 * 0.04
-        val contrast = (if (raw) BASE_CONTRAST else 0.0) + s.contrast / 100.0 * 0.6
+        val n = s.profile.contrast
+        val mn = SCENE_GREY.pow(n)
+        val cn = white.pow(n)
+        val k = mn * cn * (DISPLAY_GREY - 1) / (mn - DISPLAY_GREY * cn)
+        val a = (cn + k) / cn
+        val contrast = s.contrast / 100.0 * 0.6
         val sh = s.shadows / 100.0 * 0.14
         val hi = s.highlights / 100.0 * 0.14
         var prev = 0.0
         for (i in 0..LUT_SIZE) {
             val t = i.toDouble() / LUT_SIZE
             val x = t * t * LUT_MAX
-            // Extended Reinhard: 0 -> 0, white -> 1, gentle shoulder.
-            var y = if (raw) x * (1 + x / (white * white)) / (1 + x) else x / (white / baseline)
+            var y = if (raw) {
+                val xn = x.pow(n)
+                a * xn / (xn + k)
+            } else x / white
             y = (y - blackPoint) / (1 - blackPoint)
             var v = encode(y.coerceIn(0.0, 1.0))
             v += contrast * (0.5 - 0.5 * cos(PI * v) - v)
@@ -172,9 +197,12 @@ class Renderer(private val source: DevelopSource, settings: Settings) {
         private const val LUT_SIZE = 4096
         private const val LUT_MAX = 64.0
         private const val LUT_MAX_F = 64f
-        /** Raw files are rendered ~0.5 EV brighter than linear, like Adobe's Sony baseline. */
-        private const val RAW_BASELINE = 1.45
-        private const val BASE_CONTRAST = 0.18
+        /**
+         * Where a correctly metered mid grey sits in raw (about 3 stops under clipping on the
+         * A7III) and where it should land on screen (linear 0.2, roughly sRGB 124).
+         */
+        private const val SCENE_GREY = 0.12
+        private const val DISPLAY_GREY = 0.20
 
         fun encode(v: Double): Double = if (v <= 0.0031308) v * 12.92 else 1.055 * v.pow(1 / 2.4) - 0.055
     }
