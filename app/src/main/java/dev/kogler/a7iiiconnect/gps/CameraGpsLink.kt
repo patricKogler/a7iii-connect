@@ -19,6 +19,8 @@ import java.util.UUID
  * Setup after each connect: MTU 158 (the record is 95 bytes) > discover > subscribe 0xDD01 >
  * 0xDD30 = 1 (lock) > 0xDD31 = 1 (enable) > read 0xDD21 (does it want time zone fields?).
  * 0xDD30/0xDD31 only exist on newer camera firmware and are skipped when missing.
+ * Every discovery also logs all services and characteristics, to see whether this body has the
+ * Wi-Fi handoff (0xCC06-0xCC08) and remote (0xFF01) characteristics newer Sony apps use.
  */
 @SuppressLint("MissingPermission") // Callers check BLUETOOTH_CONNECT before creating this.
 class CameraGpsLink(
@@ -80,6 +82,11 @@ class CameraGpsLink(
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) = post {
+            // Survey what this camera exposes (CC = Wi-Fi handoff on newer bodies, FF = remote).
+            g.services.forEach { s ->
+                val chars = s.characteristics.joinToString(" ") { "${it.uuid.short()}/${it.properties.toString(16)}" }
+                log("Bluetooth: service ${s.uuid.toString().substring(0, 8)}: $chars")
+            }
             if (g.getService(SERVICE) == null) {
                 log("Bluetooth: camera has no location service. Is Location Info. Link Set. on?")
                 return@post
