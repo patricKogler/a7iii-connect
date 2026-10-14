@@ -146,7 +146,12 @@ class FtpServer(
 
         private fun openData(): Socket? {
             passive?.let { ss ->
-                return try { ss.accept() } finally { runCatching { ss.close() }; passive = null }
+                return try {
+                    ss.accept().also { log("FTP: data connection from ${it.inetAddress.hostAddress}") }
+                } finally {
+                    runCatching { ss.close() }
+                    passive = null
+                }
             }
             active?.let { addr ->
                 active = null
@@ -212,6 +217,7 @@ class FtpServer(
         }
 
         private fun reply(text: String) {
+            log("FTP: < ${text.substringBefore('\r')}")
             writer.write((text + "\r\n").toByteArray(Charsets.UTF_8))
             writer.flush()
         }
