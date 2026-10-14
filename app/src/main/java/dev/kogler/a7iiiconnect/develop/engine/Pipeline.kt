@@ -23,7 +23,19 @@ interface Sampler {
     val scale: Double
     /** Fills [rows] output rows starting at [y0] (rows outside the image are clamped). */
     fun fill(y0: Int, rows: Int, out: LinearImage)
+
+    /**
+     * Where this render sits in the whole (cropped) photo at the same scale: a zoomed-in tile
+     * covers part of the frame. Vignette, grain and the guide maps are positioned by the frame.
+     */
+    val originX: Int get() = 0
+    val originY: Int get() = 0
+    val frameWidth: Int get() = width
+    val frameHeight: Int get() = height
 }
+
+/** A part of the output frame rendered at [scale] (output pixels per full-size pixel). */
+class Region(val scale: Double, val x0: Int, val y0: Int, val width: Int, val height: Int)
 
 /** Samples an in-memory upright preview through a [Geometry]. */
 class ImageSampler(
@@ -31,18 +43,23 @@ class ImageSampler(
     private val geom: Geometry,
     /** Longest output edge, or the natural size when null. */
     maxEdge: Int? = null,
+    region: Region? = null,
 ) : Sampler {
     private val natural = src.width / geom.srcW
-    override val scale: Double = if (maxEdge == null) natural else minOf(natural, maxEdge / maxOf(geom.outW, geom.outH))
-    override val width = maxOf(1, (geom.outW * scale).toInt())
-    override val height = maxOf(1, (geom.outH * scale).toInt())
-    private val direct = geom.isIdentity && width == src.width && height == src.height
+    override val scale: Double = region?.scale ?: if (maxEdge == null) natural else minOf(natural, maxEdge / maxOf(geom.outW, geom.outH))
+    override val frameWidth = maxOf(1, (geom.outW * scale).toInt())
+    override val frameHeight = maxOf(1, (geom.outH * scale).toInt())
+    override val width = region?.width ?: frameWidth
+    override val height = region?.height ?: frameHeight
+    override val originX = region?.x0 ?: 0
+    override val originY = region?.y0 ?: 0
+    private val direct = region == null && geom.isIdentity && width == src.width && height == src.height
 
     override fun fill(y0: Int, rows: Int, out: LinearImage) {
         val toSrc = src.width / geom.srcW
         val vig = geom.hasVignetteCorrection
         parallelRows(rows) { i ->
-            val y = (y0 + i).coerceIn(0, height - 1)
+            val y = (originY + y0 + i).coerceIn(0, frameHeight - 1)
             val o = i * width
             if (direct) {
                 System.arraycopy(src.r, y * width, out.r, o, width)
@@ -53,7 +70,7 @@ class ImageSampler(
             val m = DoubleArray(6)
             val oy = (y + 0.5) / scale
             for (x in 0 until width) {
-                geom.map((x + 0.5) / scale, oy, m)
+                geom.map((originX + x + 0.5) / scale, oy, m)
                 out.r[o + x] = sample(src.r, m[0] * toSrc - 0.5, m[1] * toSrc - 0.5)
                 out.g[o + x] = sample(src.g, m[2] * toSrc - 0.5, m[3] * toSrc - 0.5)
                 out.b[o + x] = sample(src.b, m[4] * toSrc - 0.5, m[5] * toSrc - 0.5)
@@ -330,18 +347,20 @@ class Look(private val source: DevelopSource, private val s: Settings) {
             }
         }
 
-        val gx = if (guide != null) guide.width.toFloat() / w else 0f
-        val gy = if (guide != null) guide.height.toFloat() / H else 0f
+        val gx = if (guide != null) guide.width.toFloat() / sampler.frameWidth else 0f
+        val gy = if (guide != null) guide.height.toFloat() / sampler.frameHeight else 0f
+        val ox = sampler.originX
+        val oy = top + sampler.originY
 
         // --- Dehaze (dark channel prior, with the haze map from the guide) ---
         if (dehaze != 0f && guide != null) {
             val air = guide.air
             val amax = maxOf(air[0], maxOf(air[1], air[2]))
             parallelRows(rows) { j ->
-                val yy = (top + j + 0.5f) * gy - 0.5f
+                val yy = (oy + j + 0.5f) * gy - 0.5f
                 for (x in 0 until w) {
                     val i = j * w + x
-                    val d = guide.at(guide.dark, (x + 0.5f) * gx - 0.5f, yy)
+                    val d = guide.at(guide.dark, (ox + x + 0.5f) * gx - 0.5f, yy)
                     if (dehaze > 0) {
                         val t = maxOf(0.15f, 1 - dehaze * 0.9f * d / amax)
                         r[i] = maxOf(0f, (r[i] - air[0]) / t + air[0])
@@ -367,13 +386,13 @@ class Look(private val source: DevelopSource, private val s: Settings) {
             val mid = log2(SCENE_GREY.toFloat())
             val texAmt = texture * 0.9f * minOf(1f, (scale * 2.5).toFloat().coerceAtLeast(0.4f))
             parallelRows(rows) { j ->
-                val yy = (top + j + 0.5f) * gy - 0.5f
+                val yy = (oy + j + 0.5f) * gy - 0.5f
                 for (x in 0 until w) {
                     val i = j * w + x
                     val l = lum[i]
                     var d = 0f
                     if (guide != null && needsGuide) {
-                        val gxx = (x + 0.5f) * gx - 0.5f
+                        val gxx = (ox + x + 0.5f) * gx - 0.5f
                         val base = guide.at(guide.base, gxx, yy)
                         if (shadows != 0f) d += shadows * 1.7f / (1 + exp((base - mid + 1.2f) * 1.6f))
                         if (highlights != 0f) d += highlights * 1.7f / (1 + exp(-(base - mid - 0.6f) * 1.6f))
@@ -415,15 +434,16 @@ class Look(private val source: DevelopSource, private val s: Settings) {
 
         // Vignette (post-crop), in display space.
         if (vignette != 0f) {
-            val ax = if (vigRound >= 0) 1f + (w.toFloat() / H - 1f) * vigRound else 1f
+            val fw = sampler.frameWidth.toFloat(); val fh = sampler.frameHeight.toFloat()
+            val ax = if (vigRound >= 0) 1f + (fw / fh - 1f) * vigRound else 1f
             val ay = if (vigRound >= 0) 1f else 1f - vigRound * 0.6f
             val e0 = 0.3f + vigMid * 0.7f
             val e1 = e0 + 0.05f + vigFeather * 0.9f
             parallelRows(rows) { j ->
-                val v = ((top + j + 0.5f) / H * 2 - 1) / ay
+                val v = ((oy + j + 0.5f) / fh * 2 - 1) / ay
                 for (x in 0 until w) {
                     val i = j * w + x
-                    val u = ((x + 0.5f) / w * 2 - 1) * ax / maxOf(1f, ax)
+                    val u = ((ox + x + 0.5f) / fw * 2 - 1) * ax / maxOf(1f, ax)
                     val t = smooth(e0, e1, sqrt(u * u + v * v) / 1.4142f * 1.25f)
                     if (t <= 0f) continue
                     if (vignette < 0) {
@@ -466,10 +486,10 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         if (grain > 0) {
             val cell = 1.0 + grainSize * 4.0
             parallelRows(rows) { j ->
-                val fy = (top + j + 0.5) / scale / cell
+                val fy = (oy + j + 0.5) / scale / cell
                 for (x in 0 until w) {
                     val i = j * w + x
-                    val fx = (x + 0.5) / scale / cell
+                    val fx = (ox + x + 0.5) / scale / cell
                     var nz = valueNoise(fx, fy) * (1 - grainRough) + hash(floor(fx * 3).toInt(), floor(fy * 3).toInt()) * grainRough
                     val l = luma(pr[i], pg[i], pb[i])
                     nz *= grain * 0.16f * (0.35f + 2.6f * l * (1 - l))
