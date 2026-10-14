@@ -68,7 +68,14 @@ class BluetoothShutter(
         c.writeType = if (c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0)
             BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         c.value = byteArrayOf((code shr 8).toByte(), code.toByte())
-        if (!g.writeCharacteristic(c)) {
+        // Android runs one GATT write at a time; wait briefly if the previous one is still in flight.
+        var started = g.writeCharacteristic(c)
+        var tries = 0
+        while (!started && tries++ < 10) {
+            Thread.sleep(50)
+            started = g.writeCharacteristic(c)
+        }
+        if (!started) {
             log("Remote: Bluetooth write ${"%04x".format(code)} could not be started")
             return false
         }

@@ -230,7 +230,25 @@ class RemoteActivity : ComponentActivity() {
                 Thread.sleep(1500)
                 apis = r.availableApis()
             }
-            val url = r.call("startLiveview").getString(0)
+            // Right after connecting (or right after a shot) the camera answers 1 "not available"
+            // for a moment; wait until it offers live view and retry instead of giving up.
+            var url: String? = null
+            for (attempt in 1..15) {
+                if (!running || gen != generation) return
+                if ("startLiveview" in apis || apis.isEmpty()) {
+                    try {
+                        url = r.call("startLiveview").getString(0)
+                        break
+                    } catch (e: CameraRemote.RemoteError) {
+                        SyncState.log("Remote: startLiveview refused (${e.code}), try $attempt")
+                    }
+                } else {
+                    SyncState.log("Remote: live view not offered yet, try $attempt")
+                }
+                Thread.sleep(1000)
+                apis = r.availableApis()
+            }
+            if (url == null) throw java.io.IOException("the camera didn't start live view")
             SyncState.log("Remote: live view at $url")
             phase = Phase.LIVE
             message = ""
