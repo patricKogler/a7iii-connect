@@ -19,11 +19,6 @@ import dev.kogler.a7iiiconnect.gps.GpsService
 import dev.kogler.a7iiiconnect.gps.GpsState
 import dev.kogler.a7iiiconnect.gps.GpsStatus
 import dev.kogler.a7iiiconnect.ui.App
-import androidx.activity.result.contract.ActivityResultContracts
-import dev.kogler.a7iiiconnect.gps.CameraPairing
-import dev.kogler.a7iiiconnect.gps.GpsService
-import dev.kogler.a7iiiconnect.gps.GpsState
-import dev.kogler.a7iiiconnect.gps.GpsStatus
 import dev.kogler.a7iiiconnect.ui.AppTheme
 import dev.kogler.a7iiiconnect.ui.UiActions
 import dev.kogler.a7iiiconnect.ui.UiState
