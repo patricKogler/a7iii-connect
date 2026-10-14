@@ -49,6 +49,11 @@
                 <data android:mimeType="application/x-sony-pmm" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".remote.RemoteActivity"
+            android:exported="false"
+            android:screenOrientation="fullUser"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
         <service
             android:name=".SyncService"
             android:exported="false"

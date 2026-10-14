@@ -44,7 +44,9 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Bluetooth
+import androidx.compose.material.icons.rounded.CameraRemote
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.LocationOff
 import androidx.compose.material.icons.rounded.LocationOn
@@ -143,6 +145,7 @@ class UiActions(
     val startPairing: () -> Unit,
     val repairGps: () -> Unit,
     val dismissPairing: () -> Unit,
+    val openRemote: () -> Unit,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -197,6 +200,7 @@ private fun Home(modifier: Modifier, state: UiState, actions: UiActions) {
             fullWidth { NfcTip() }
         }
         fullWidth { GpsCard(state, actions) }
+        if (!state.status.running) fullWidth { RemoteCard(actions.openRemote) }
         fullWidth {
             Row(
                 Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 8.dp),
@@ -468,6 +472,24 @@ private fun GpsCard(state: UiState, actions: UiActions) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun RemoteCard(onOpen: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = RoundedCornerShape(20.dp),
+        onClick = onOpen,
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+    ) {
+        ListItem(
+            colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = Color.Transparent),
+            leadingContent = { Icon(Icons.Rounded.CameraRemote, null, tint = MaterialTheme.colorScheme.primary) },
+            headlineContent = { Text("Remote shooting", fontWeight = FontWeight.Medium) },
+            supportingContent = { Text("Live view and shutter. Turn on Ctrl w/ Smartphone on the camera first.") },
+            trailingContent = { Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null) },
+        )
     }
 }
 

@@ -138,6 +138,7 @@ class MainActivity : ComponentActivity() {
             setGps = { setGps(it) },
             startPairing = { startPairing() },
             repairGps = { showPairIntro = true },
+            openRemote = { startActivity(Intent(this, dev.kogler.a7iiiconnect.remote.RemoteActivity::class.java)) },
             dismissPairing = { pairer?.cancel(); pairer = null; pairing = null; showPairIntro = false },
         )
 
