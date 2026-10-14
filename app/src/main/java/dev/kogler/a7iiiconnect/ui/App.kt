@@ -44,7 +44,10 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.LocationOff
+import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Nfc
@@ -104,6 +107,9 @@ import androidx.compose.ui.unit.dp
 import dev.kogler.a7iiiconnect.Phase
 import dev.kogler.a7iiiconnect.Photo
 import dev.kogler.a7iiiconnect.SyncStatus
+import dev.kogler.a7iiiconnect.gps.CameraPairing
+import dev.kogler.a7iiiconnect.gps.GpsPhase
+import dev.kogler.a7iiiconnect.gps.GpsStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -118,6 +124,11 @@ data class UiState(
     val photoCount: Int,
     val nfcAvailable: Boolean,
     val version: String,
+    val gps: GpsStatus,
+    val gpsEnabled: Boolean,
+    val gpsPaired: Boolean,
+    val pairing: CameraPairing.State?,
+    val showPairIntro: Boolean,
 )
 
 class UiActions(
@@ -128,6 +139,10 @@ class UiActions(
     val shareLog: () -> Unit,
     val openPhoto: (Photo) -> Unit,
     val openAlbum: () -> Unit,
+    val setGps: (Boolean) -> Unit,
+    val startPairing: () -> Unit,
+    val repairGps: () -> Unit,
+    val dismissPairing: () -> Unit,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -160,6 +175,9 @@ fun App(state: UiState, actions: UiActions) {
     if (showSettings) {
         SettingsSheet(state, actions, onDismiss = { showSettings = false })
     }
+    if (state.showPairIntro || state.pairing != null) {
+        PairingDialog(state, actions)
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -178,6 +196,7 @@ private fun Home(modifier: Modifier, state: UiState, actions: UiActions) {
         if (state.nfcAvailable && !state.status.running) {
             fullWidth { NfcTip() }
         }
+        fullWidth { GpsCard(state, actions) }
         fullWidth {
             Row(
                 Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 8.dp),
@@ -406,6 +425,114 @@ private fun EmptyPhotos() {
             style = MaterialTheme.typography.bodyLarge,
         )
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Location linking
+
+@Composable
+private fun GpsCard(state: UiState, actions: UiActions) {
+    val gps = state.gps
+    val (subtitle, active) = when {
+        !state.gpsEnabled -> "Add your phone's location to every photo you take" to false
+        gps.phase == GpsPhase.LINKED -> {
+            val acc = gps.accuracyMeters?.let { " · ±${it.toInt()} m" } ?: ""
+            "Sending location to the camera$acc" to true
+        }
+        gps.phase == GpsPhase.WAITING_FIX -> "Camera connected, waiting for a GPS fix" to true
+        else -> "Waiting for the camera. It connects when the camera is on." to true
+    }
+    Surface(
+        color = if (gps.phase == GpsPhase.LINKED) MaterialTheme.colorScheme.tertiaryContainer
+        else MaterialTheme.colorScheme.surfaceContainer,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+    ) {
+        Column {
+            ListItem(
+                colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = Color.Transparent),
+                leadingContent = {
+                    Icon(
+                        if (active) Icons.Rounded.LocationOn else Icons.Rounded.LocationOff, null,
+                        tint = if (gps.phase == GpsPhase.LINKED) MaterialTheme.colorScheme.onTertiaryContainer
+                        else MaterialTheme.colorScheme.primary,
+                    )
+                },
+                headlineContent = { Text("Geotag photos", fontWeight = FontWeight.Medium) },
+                supportingContent = { Text(subtitle) },
+                trailingContent = { Switch(checked = state.gpsEnabled, onCheckedChange = actions.setGps) },
+            )
+            if (state.gpsPaired && !state.gpsEnabled) {
+                TextButton(onClick = actions.repairGps, modifier = Modifier.padding(start = 56.dp, bottom = 4.dp)) {
+                    Text("Pair again")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PairingDialog(state: UiState, actions: UiActions) {
+    val pairing = state.pairing
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = actions.dismissPairing,
+        icon = { Icon(Icons.Rounded.Bluetooth, null) },
+        title = {
+            Text(
+                when (pairing) {
+                    null -> "Pair over Bluetooth"
+                    CameraPairing.State.Searching -> "Looking for the camera"
+                    is CameraPairing.State.Pairing -> "Pairing"
+                    is CameraPairing.State.Paired -> "Paired"
+                    is CameraPairing.State.Failed -> "Couldn't pair"
+                },
+            )
+        },
+        text = {
+            Column {
+                when (pairing) {
+                    null -> {
+                        Text("On the camera:")
+                        Spacer(Modifier.height(8.dp))
+                        Text("1. MENU > Network > Bluetooth Settings > Bluetooth Function: On")
+                        Text("2. MENU > Network > Location Info. Link Set. > Location Info. Link: On")
+                        Text("3. MENU > Network > Bluetooth Settings > Pairing")
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Then tap Start and confirm the pairing on both the phone and the camera.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    CameraPairing.State.Searching -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp)
+                        Spacer(Modifier.width(16.dp))
+                        Text("Keep the camera on its Pairing screen.")
+                    }
+                    is CameraPairing.State.Pairing -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp)
+                        Spacer(Modifier.width(16.dp))
+                        Text("Found ${pairing.name}. Confirm the pairing on the phone and on the camera.")
+                    }
+                    is CameraPairing.State.Paired ->
+                        Text("${pairing.name} is paired. Photos will now get your location whenever the camera is on.")
+                    is CameraPairing.State.Failed -> Text(pairing.reason)
+                }
+            }
+        },
+        confirmButton = {
+            when (pairing) {
+                null -> Button(onClick = actions.startPairing) { Text("Start") }
+                is CameraPairing.State.Failed -> Button(onClick = actions.startPairing) { Text("Try again") }
+                is CameraPairing.State.Paired -> Button(onClick = actions.dismissPairing) { Text("Done") }
+                else -> Unit
+            }
+        },
+        dismissButton = {
+            if (pairing !is CameraPairing.State.Paired) {
+                TextButton(onClick = actions.dismissPairing) { Text("Cancel") }
+            }
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -13,7 +13,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.activity.result.contract.ActivityResultContracts
+import dev.kogler.a7iiiconnect.gps.CameraPairing
+import dev.kogler.a7iiiconnect.gps.GpsService
+import dev.kogler.a7iiiconnect.gps.GpsState
+import dev.kogler.a7iiiconnect.gps.GpsStatus
 import dev.kogler.a7iiiconnect.ui.App
+import androidx.activity.result.contract.ActivityResultContracts
+import dev.kogler.a7iiiconnect.gps.CameraPairing
+import dev.kogler.a7iiiconnect.gps.GpsService
+import dev.kogler.a7iiiconnect.gps.GpsState
+import dev.kogler.a7iiiconnect.gps.GpsStatus
 import dev.kogler.a7iiiconnect.ui.AppTheme
 import dev.kogler.a7iiiconnect.ui.UiActions
 import dev.kogler.a7iiiconnect.ui.UiState
@@ -31,12 +41,85 @@ class MainActivity : ComponentActivity() {
     private var photos by mutableStateOf(emptyList<Photo>())
     private var photoCount by mutableIntStateOf(0)
     private val listener: (SyncStatus) -> Unit = { onStatus(it) }
+    private var gps by mutableStateOf(GpsStatus())
+    private var gpsEnabled by mutableStateOf(false)
+    private var gpsPaired by mutableStateOf(false)
+    private var pairing by mutableStateOf<CameraPairing.State?>(null)
+    private var pairer: CameraPairing? = null
+    private val gpsListener: (GpsStatus) -> Unit = { gps = it }
+    private var afterPermissions: (() -> Unit)? = null
+
+    private val gpsPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        val next = afterPermissions
+        afterPermissions = null
+        if (result.values.all { it }) next?.invoke()
+        else pairing = CameraPairing.State.Failed("Location and nearby-devices permissions are needed for this")
+    }
+
+    /** Runs [block] once Bluetooth and location permissions are granted. */
+    private fun withGpsPermissions(block: () -> Unit) {
+        val needed = arrayOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        )
+        if (needed.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
+            block()
+        } else {
+            afterPermissions = block
+            gpsPermissions.launch(needed)
+        }
+    }
+
+    private fun setGps(on: Boolean) {
+        if (!on) {
+            store.gpsEnabled = false
+            GpsService.stop(this)
+            refreshStore()
+            return
+        }
+        if (store.gpsCameraAddress.isBlank()) {
+            showPairIntro = true
+            return
+        }
+        withGpsPermissions {
+            store.gpsEnabled = true
+            GpsService.start(this)
+            refreshStore()
+        }
+    }
+
+    private var showPairIntro by mutableStateOf(false)
+
+    private fun startPairing() {
+        showPairIntro = false
+        withGpsPermissions {
+            pairer?.cancel()
+            pairer = CameraPairing(this) { state ->
+                pairing = state
+                if (state is CameraPairing.State.Paired) {
+                    store.gpsCameraAddress = state.device.address
+                    store.gpsEnabled = true
+                    GpsService.stop(this)
+                    GpsService.start(this)
+                    refreshStore()
+                }
+            }.also { it.start() }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         store = Store(this)
         refreshStore()
+        if (store.gpsEnabled && store.gpsCameraAddress.isNotBlank() &&
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        ) {
+            GpsService.start(this)
+        }
         val nfcAvailable = NfcAdapter.getDefaultAdapter(this) != null
         val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "?"
 
@@ -57,6 +140,10 @@ class MainActivity : ComponentActivity() {
             },
             openPhoto = { openImage(it) },
             openAlbum = { photos.firstOrNull()?.let { openImage(it) } },
+            setGps = { setGps(it) },
+            startPairing = { startPairing() },
+            repairGps = { showPairIntro = true },
+            dismissPairing = { pairer?.cancel(); pairer = null; pairing = null; showPairIntro = false },
         )
 
         setContent {
@@ -74,6 +161,11 @@ class MainActivity : ComponentActivity() {
                         photoCount = photoCount,
                         nfcAvailable = nfcAvailable,
                         version = version,
+                        gps = gps,
+                        gpsEnabled = gpsEnabled,
+                        gpsPaired = gpsPaired,
+                        pairing = pairing,
+                        showPairIntro = showPairIntro,
                     ),
                     actions,
                 )
@@ -94,10 +186,12 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         SyncState.observe(listener)
+        GpsState.observe(gpsListener)
     }
 
     override fun onStop() {
         SyncState.remove(listener)
+        GpsState.remove(gpsListener)
         super.onStop()
     }
 
@@ -127,6 +221,8 @@ class MainActivity : ComponentActivity() {
         cameraName = store.ssid
         password = store.password
         smallCopies = store.smallCopies
+        gpsEnabled = store.gpsEnabled
+        gpsPaired = store.gpsCameraAddress.isNotBlank()
     }
 
     private suspend fun reloadPhotos() {

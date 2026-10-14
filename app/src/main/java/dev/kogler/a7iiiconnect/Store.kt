@@ -28,6 +28,15 @@ class Store(context: Context) {
         get() = prefs.getBoolean("small", false)
         set(v) = prefs.edit().putBoolean("small", v).apply()
 
+    /** Bluetooth address of the camera that receives the phone's location. */
+    var gpsCameraAddress: String
+        get() = prefs.getString("gpsAddress", "") ?: ""
+        set(v) = prefs.edit().putString("gpsAddress", v).apply()
+
+    var gpsEnabled: Boolean
+        get() = prefs.getBoolean("gps", false)
+        set(v) = prefs.edit().putBoolean("gps", v).apply()
+
     val hasCamera get() = ssid.isNotBlank()
 
     @Synchronized
