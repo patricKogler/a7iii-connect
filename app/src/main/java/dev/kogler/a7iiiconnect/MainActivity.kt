@@ -1,6 +1,7 @@
 package dev.kogler.a7iiiconnect
 
 import android.Manifest
+import android.content.ContentUris
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.nfc.NfcAdapter
@@ -14,6 +15,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.activity.result.contract.ActivityResultContracts
+import dev.kogler.a7iiiconnect.develop.DevelopActivity
 import dev.kogler.a7iiiconnect.ftp.FtpService
 import dev.kogler.a7iiiconnect.ftp.FtpState
 import dev.kogler.a7iiiconnect.ftp.FtpStatus
@@ -138,7 +140,8 @@ class MainActivity : ComponentActivity() {
                     putExtra(Intent.EXTRA_TEXT, SyncState.logText())
                 }, "Share log"))
             },
-            openPhoto = { openImage(it) },
+            openPhoto = { startActivity(DevelopActivity.intent(this, ContentUris.parseId(it.uri))) },
+            openEditor = { startActivity(DevelopActivity.intent(this)) },
             openAlbum = { photos.firstOrNull()?.let { openImage(it) } },
             setGps = { setGps(it) },
             startPairing = { startPairing() },

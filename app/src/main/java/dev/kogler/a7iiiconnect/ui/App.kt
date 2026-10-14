@@ -55,6 +55,7 @@ import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Nfc
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Wifi
@@ -145,6 +146,7 @@ class UiActions(
     val shareLog: () -> Unit,
     val openPhoto: (Photo) -> Unit,
     val openAlbum: () -> Unit,
+    val openEditor: () -> Unit,
     val setGps: (Boolean) -> Unit,
     val startPairing: () -> Unit,
     val repairGps: () -> Unit,
@@ -223,10 +225,15 @@ private fun Home(modifier: Modifier, state: UiState, actions: UiActions) {
                     }
                 }
                 if (state.photoCount > 0) {
+                    TextButton(onClick = actions.openEditor) {
+                        Icon(Icons.Rounded.Tune, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Edit")
+                    }
                     TextButton(onClick = actions.openAlbum) {
                         Icon(Icons.Outlined.PhotoLibrary, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("Open in Photos")
+                        Text("Photos")
                     }
                 }
             }
