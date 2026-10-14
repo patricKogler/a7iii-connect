@@ -14,6 +14,9 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.activity.result.contract.ActivityResultContracts
+import dev.kogler.a7iiiconnect.ftp.FtpService
+import dev.kogler.a7iiiconnect.ftp.FtpState
+import dev.kogler.a7iiiconnect.ftp.FtpStatus
 import dev.kogler.a7iiiconnect.gps.CameraPairing
 import dev.kogler.a7iiiconnect.gps.GpsService
 import dev.kogler.a7iiiconnect.gps.GpsState
@@ -42,6 +45,8 @@ class MainActivity : ComponentActivity() {
     private var pairing by mutableStateOf<CameraPairing.State?>(null)
     private var pairer: CameraPairing? = null
     private val gpsListener: (GpsStatus) -> Unit = { gps = it }
+    private var ftp by mutableStateOf(FtpStatus())
+    private val ftpListener: (FtpStatus) -> Unit = { ftp = it }
     private var afterPermissions: (() -> Unit)? = null
 
     private val gpsPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -139,12 +144,13 @@ class MainActivity : ComponentActivity() {
             startPairing = { startPairing() },
             repairGps = { showPairIntro = true },
             openRemote = { startActivity(Intent(this, dev.kogler.a7iiiconnect.remote.RemoteActivity::class.java)) },
+            setFtp = { on -> if (on) FtpService.start(this) else FtpService.stop(this) },
             dismissPairing = { pairer?.cancel(); pairer = null; pairing = null; showPairIntro = false },
         )
 
         setContent {
             // Re-read the album whenever a photo lands or a sync ends.
-            LaunchedEffect(status.done, status.phase) { reloadPhotos() }
+            LaunchedEffect(status.done, status.phase, ftp.received) { reloadPhotos() }
             AppTheme {
                 App(
                     UiState(
@@ -162,6 +168,7 @@ class MainActivity : ComponentActivity() {
                         gpsPaired = gpsPaired,
                         pairing = pairing,
                         showPairIntro = showPairIntro,
+                        ftp = ftp,
                     ),
                     actions,
                 )
@@ -183,11 +190,15 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         SyncState.observe(listener)
         GpsState.observe(gpsListener)
+        FtpState.observe(ftpListener)
+        // The hotspot may have been switched on (or got a new address) since the server started.
+        if (FtpState.status.running) FtpState.update { it.copy(addresses = FtpService.addresses()) }
     }
 
     override fun onStop() {
         SyncState.remove(listener)
         GpsState.remove(gpsListener)
+        FtpState.remove(ftpListener)
         super.onStop()
     }
 

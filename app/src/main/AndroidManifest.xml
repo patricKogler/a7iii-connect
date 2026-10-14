@@ -60,6 +60,10 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
         <service
+            android:name=".ftp.FtpService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+        <service
             android:name=".gps.GpsService"
             android:exported="false"
             android:foregroundServiceType="location|connectedDevice" />

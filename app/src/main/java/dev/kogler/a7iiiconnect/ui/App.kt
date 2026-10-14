@@ -58,6 +58,7 @@ import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Wifi
+import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -109,6 +110,8 @@ import androidx.compose.ui.unit.dp
 import dev.kogler.a7iiiconnect.Phase
 import dev.kogler.a7iiiconnect.Photo
 import dev.kogler.a7iiiconnect.SyncStatus
+import dev.kogler.a7iiiconnect.ftp.FtpService
+import dev.kogler.a7iiiconnect.ftp.FtpStatus
 import dev.kogler.a7iiiconnect.gps.CameraPairing
 import dev.kogler.a7iiiconnect.gps.GpsPhase
 import dev.kogler.a7iiiconnect.gps.GpsStatus
@@ -131,6 +134,7 @@ data class UiState(
     val gpsPaired: Boolean,
     val pairing: CameraPairing.State?,
     val showPairIntro: Boolean,
+    val ftp: FtpStatus,
 )
 
 class UiActions(
@@ -146,6 +150,7 @@ class UiActions(
     val repairGps: () -> Unit,
     val dismissPairing: () -> Unit,
     val openRemote: () -> Unit,
+    val setFtp: (Boolean) -> Unit,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -201,6 +206,7 @@ private fun Home(modifier: Modifier, state: UiState, actions: UiActions) {
         }
         fullWidth { GpsCard(state, actions) }
         if (!state.status.running) fullWidth { RemoteCard(actions.openRemote) }
+        if (!state.status.running) fullWidth { FtpCard(state.ftp, actions.setFtp) }
         fullWidth {
             Row(
                 Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 8.dp),
@@ -491,6 +497,59 @@ private fun RemoteCard(onOpen: () -> Unit) {
             headlineContent = { Text("Remote shooting", fontWeight = FontWeight.Medium) },
             supportingContent = { Text("Live view and shutter. Turn on Ctrl w/ Smartphone on the camera first.") },
             trailingContent = { Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null) },
+        )
+    }
+}
+
+@Composable
+private fun FtpCard(ftp: FtpStatus, setFtp: (Boolean) -> Unit) {
+    var showSetup by rememberSaveable { mutableStateOf(false) }
+    // The hotspot is a Wi-Fi interface (ap0, swlan0, wlan1 ...); mobile data ones (rmnet) can't be reached.
+    val address = ftp.addresses.firstOrNull { it.contains("(ap") || it.contains("wlan") }?.substringBefore(' ')
+    val subtitle = when {
+        ftp.error != null -> ftp.error
+        !ftp.running -> "The camera sends RAW and JPEG as you shoot, over your phone's hotspot"
+        address == null -> "Turn on your phone's hotspot so the camera can reach it"
+        ftp.received == 0 -> "Waiting for the camera at $address, port ${FtpService.PORT}"
+        else -> "${ftp.received} files received · last ${ftp.lastFile}"
+    }
+    Surface(
+        color = if (ftp.running && ftp.received > 0) MaterialTheme.colorScheme.tertiaryContainer
+        else MaterialTheme.colorScheme.surfaceContainer,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+    ) {
+        Column {
+            ListItem(
+                colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = Color.Transparent),
+                leadingContent = { Icon(Icons.Rounded.CloudUpload, null, tint = MaterialTheme.colorScheme.primary) },
+                headlineContent = { Text("Receive RAW over FTP", fontWeight = FontWeight.Medium) },
+                supportingContent = { Text(subtitle) },
+                trailingContent = { Switch(checked = ftp.running, onCheckedChange = setFtp) },
+            )
+            TextButton(onClick = { showSetup = true }, modifier = Modifier.padding(start = 56.dp, bottom = 4.dp)) {
+                Text("Camera setup")
+            }
+        }
+    }
+    if (showSetup) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showSetup = false },
+            title = { Text("Set up FTP on the camera") },
+            text = {
+                Text(
+                    "1. Turn on your phone's hotspot and this switch.\n" +
+                        "2. Camera: MENU > Network > Wi-Fi Settings > Access Point Set., join the hotspot.\n" +
+                        "3. MENU > Network > FTP Transfer Func. > Server Setting > Server 1:\n" +
+                        "   Hostname: ${address ?: "(the address shown on the card)"}\n" +
+                        "   Secure Protocol: Off · Port: ${FtpService.PORT}\n" +
+                        "   User and password: anything, e.g. a7iii / a7iii\n" +
+                        "4. FTP Function: On, Auto FTP Transfer: On, RAW+J Trans. Target: RAW & JPEG.\n\n" +
+                        "The hotspot's address can change when it restarts. If uploads stop, check the card " +
+                        "and update the hostname on the camera.",
+                )
+            },
+            confirmButton = { TextButton(onClick = { showSetup = false }) { Text("OK") } },
         )
     }
 }
