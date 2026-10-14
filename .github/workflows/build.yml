@@ -32,7 +32,12 @@ jobs:
       - name: Build
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        run: ./gradlew --no-daemon assembleRelease
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon assembleRelease 2>&1 | tee build.log
+      - name: Report compile errors
+        if: failure()
+        run: grep -E "^e: |error:|What went wrong" -A2 build.log | head -40 | while IFS= read -r l; do echo "::error::$l"; done
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk a7iii-connect.apk
       - uses: actions/upload-artifact@v4
