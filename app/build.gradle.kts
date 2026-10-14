@@ -12,8 +12,8 @@ android {
         applicationId = "dev.kogler.a7iiiconnect"
         minSdk = 31
         targetSdk = 35
-        versionCode = 20
-        versionName = "0.9.1"
+        versionCode = 21
+        versionName = "0.10.0"
     }
 
     // CI decodes the KEYSTORE_B64 secret to a file, so every build has the same signature and
@@ -61,4 +61,5 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.animation:animation")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 }
