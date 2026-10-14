@@ -46,7 +46,7 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Bluetooth
-import androidx.compose.material.icons.rounded.CameraRemote
+import androidx.compose.material.icons.rounded.SettingsRemote
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.LocationOff
 import androidx.compose.material.icons.rounded.LocationOn
@@ -485,7 +485,7 @@ private fun RemoteCard(onOpen: () -> Unit) {
     ) {
         ListItem(
             colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = Color.Transparent),
-            leadingContent = { Icon(Icons.Rounded.CameraRemote, null, tint = MaterialTheme.colorScheme.primary) },
+            leadingContent = { Icon(Icons.Rounded.SettingsRemote, null, tint = MaterialTheme.colorScheme.primary) },
             headlineContent = { Text("Remote shooting", fontWeight = FontWeight.Medium) },
             supportingContent = { Text("Live view and shutter. Turn on Ctrl w/ Smartphone on the camera first.") },
             trailingContent = { Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null) },
