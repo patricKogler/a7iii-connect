@@ -28,6 +28,8 @@ class CameraGpsLink(
     private val device: BluetoothDevice,
     private val log: (String) -> Unit,
     private val onReady: (Boolean) -> Unit,
+    /** The camera turned location linking off, e.g. because its Bluetooth remote was switched on. */
+    private val onCameraOff: () -> Unit = {},
 ) {
     private val main = Handler(Looper.getMainLooper())
     private var gatt: BluetoothGatt? = null
@@ -89,6 +91,7 @@ class CameraGpsLink(
             }
             if (g.getService(SERVICE) == null) {
                 log("Bluetooth: camera has no location service. Is Location Info. Link Set. on?")
+                onCameraOff()
                 return@post
             }
             char(CHAR_STATUS)?.let { c ->
@@ -141,6 +144,7 @@ class CameraGpsLink(
                 if (c.isA(CHAR_STATUS) && value?.contentEquals(byteArrayOf(3, 1, 2, 0)) == true) {
                     log("Bluetooth: location linking was switched off on the camera")
                     setReady(false)
+                    onCameraOff()
                 } else if (c.isA(CHAR_STATUS) && value?.contentEquals(byteArrayOf(3, 1, 2, 1)) == true) {
                     log("Bluetooth: location linking switched on on the camera")
                     g.discoverServices()

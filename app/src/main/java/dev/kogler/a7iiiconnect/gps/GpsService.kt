@@ -26,6 +26,8 @@ data class GpsStatus(
     val phase: GpsPhase = GpsPhase.OFF,
     val lastSentMillis: Long = 0,
     val accuracyMeters: Float? = null,
+    /** The camera stopped taking locations; on the A7III that happens while Bluetooth Rmt Ctrl is on. */
+    val offOnCamera: Boolean = false,
 )
 
 /** Shared GPS-link state for the screen, same pattern as SyncState. */
@@ -94,10 +96,18 @@ class GpsService : Service(), LocationListener {
             .mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
             .maxByOrNull { it.time }
 
-        link = CameraGpsLink(this, adapter.getRemoteDevice(address), SyncState::log) { ready ->
-            if (ready) pushLocation() else GpsState.update { it.copy(phase = GpsPhase.WAITING_CAMERA) }
+        link = CameraGpsLink(this, adapter.getRemoteDevice(address), SyncState::log, onReady = { ready ->
+            if (ready) {
+                GpsState.update { it.copy(offOnCamera = false) }
+                pushLocation()
+            } else {
+                GpsState.update { it.copy(phase = GpsPhase.WAITING_CAMERA) }
+            }
             refreshNotification()
-        }.also { it.start() }
+        }, onCameraOff = {
+            GpsState.update { it.copy(phase = GpsPhase.WAITING_CAMERA, offOnCamera = true) }
+            refreshNotification()
+        }).also { it.start() }
         main.postDelayed(sender, SEND_INTERVAL_MS)
         return START_STICKY
     }
@@ -138,7 +148,7 @@ class GpsService : Service(), LocationListener {
     }
 
     private fun refreshNotification() {
-        val text = when (GpsState.status.phase) {
+        val text = if (GpsState.status.offOnCamera) "Location is off on the camera (Bluetooth remote is on)" else when (GpsState.status.phase) {
             GpsPhase.LINKED -> "Geotagging photos"
             GpsPhase.WAITING_FIX -> "Connected, waiting for a GPS fix"
             else -> "Waiting for the camera"

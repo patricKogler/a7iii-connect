@@ -81,6 +81,8 @@ class RemoteActivity : ComponentActivity() {
     private var callback: ConnectivityManager.NetworkCallback? = null
     private var remote: CameraRemote? = null
     @Volatile private var running = true
+    /** Bumped on every new Wi-Fi request, so a live view loop on an old network stops. */
+    @Volatile private var generation = 0
     private var deadline = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -174,8 +176,9 @@ class RemoteActivity : ComponentActivity() {
             override fun onAvailable(network: Network) {
                 if (started) return
                 started = true
-                SyncState.log("Remote: camera Wi-Fi connected")
-                Thread({ session(network) }, "remote").start()
+                SyncState.log("Remote: camera Wi-Fi connected ($network)")
+                val gen = generation
+                Thread({ session(network, gen) }, "remote").start()
             }
 
             override fun onUnavailable() {
@@ -188,15 +191,26 @@ class RemoteActivity : ComponentActivity() {
             }
 
             override fun onLost(network: Network) {
-                if (running) fail("Lost the connection to the camera.")
+                SyncState.log("Remote: camera Wi-Fi lost ($network)")
+                if (!running) return
+                // Ask for it again; the Bluetooth shutter keeps working meanwhile.
+                runOnUiThread {
+                    phase = Phase.CONNECTING
+                    message = "Reconnecting to the camera ..."
+                    frame = null
+                    remote = null
+                    deadline = System.currentTimeMillis() + 3 * 60_000
+                    connect()
+                }
             }
         }
         callback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
         callback = cb
+        generation++
         cm.requestNetwork(request, cb, 60_000)
     }
 
-    private fun session(network: Network) {
+    private fun session(network: Network, gen: Int) {
         try {
             message = "Starting remote control ..."
             phase = Phase.STARTING
@@ -219,13 +233,30 @@ class RemoteActivity : ComponentActivity() {
             SyncState.log("Remote: live view at $url")
             phase = Phase.LIVE
             message = ""
-            while (running) {
+            val current = { running && gen == generation }
+            var failures = 0
+            while (current()) {
                 try {
-                    r.streamLiveView(url, { running }) { frame = it }
+                    r.streamLiveView(url, current) { failures = 0; frame = it }
                 } catch (e: Exception) {
-                    if (!running) break
-                    SyncState.log("Remote: live view dropped ($e), reconnecting")
-                    Thread.sleep(500)
+                    if (!current()) break
+                    failures++
+                    val alive = cm.getNetworkCapabilities(network) != null
+                    SyncState.log("Remote: live view dropped ($e), network alive=$alive, try $failures")
+                    if (!alive || failures >= 5) {
+                        // The phone no longer has this network; request it afresh instead of spinning.
+                        runOnUiThread {
+                            if (gen != generation || !running) return@runOnUiThread
+                            phase = Phase.CONNECTING
+                            message = "Reconnecting to the camera ..."
+                            frame = null
+                            remote = null
+                            deadline = System.currentTimeMillis() + 3 * 60_000
+                            connect()
+                        }
+                        break
+                    }
+                    Thread.sleep(500L * failures)
                 }
             }
         } catch (e: Exception) {
@@ -305,7 +336,8 @@ class RemoteActivity : ComponentActivity() {
                                 )
                                 Spacer(Modifier.height(32.dp))
                                 Text(
-                                    "For live view on the phone, turn on MENU > Network > Ctrl w/ Smartphone.",
+                                    "For live view on the phone, turn on MENU > Network > Ctrl w/ Smartphone.\n\n" +
+                                        "The camera doesn't geotag while Bluetooth Rmt Ctrl is on.",
                                     color = Color.White.copy(alpha = 0.6f), textAlign = TextAlign.Center,
                                     style = MaterialTheme.typography.bodySmall,
                                 )

@@ -444,6 +444,8 @@ private fun GpsCard(state: UiState, actions: UiActions) {
             "Sending location to the camera$acc" to true
         }
         gps.phase == GpsPhase.WAITING_FIX -> "Camera connected, waiting for a GPS fix" to true
+        gps.offOnCamera -> "Paused: the camera isn't taking locations. It can't while Bluetooth Rmt Ctrl is on, " +
+            "so turn that off under MENU > Network to geotag again." to true
         else -> "Waiting for the camera. It connects when the camera is on." to true
     }
     Surface(
