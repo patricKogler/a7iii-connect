@@ -65,30 +65,25 @@ class CameraRemote(private val network: Network) {
 
     /**
      * Takes a picture and returns the URL of the camera's preview copy, if it gave one.
-     * If the camera refuses a plain shot (40400 "shooting fail", e.g. it couldn't focus in one go),
-     * it makes sure the camera is in still mode, half-presses until focus settles, then shoots.
+     * The A7III refuses a plain actTakePicture (40400) but shoots after a half press, so it
+     * half-presses first, waits for focus, then shoots.
      */
     fun takePicture(apis: Set<String>): String? {
-        try {
-            return shoot()
-        } catch (e: RemoteError) {
-            if (e.code != 40400 && e.code != 1) throw e
-            SyncState.log("Remote: plain shot refused (${e.code}), trying half press first")
-        }
-        if ("getShootMode" in apis) runCatching {
-            val mode = call("getShootMode").optString(0)
-            SyncState.log("Remote: shoot mode $mode")
-            if (mode != "still" && "setShootMode" in apis) call("setShootMode", "still")
-        }
         val half = "actHalfPressShutter" in apis
-        if (half) {
-            call("actHalfPressShutter")
-            SyncState.log("Remote: focus ${waitForFocus()}")
-        }
+        if (!half) return shoot()
+        call("actHalfPressShutter")
         try {
-            return shoot()
+            SyncState.log("Remote: focus ${waitForFocus()}")
+            return try {
+                shoot()
+            } catch (e: RemoteError) {
+                if (e.code != 40400) throw e
+                SyncState.log("Remote: shot refused after focusing, retrying once")
+                Thread.sleep(500)
+                shoot()
+            }
         } finally {
-            if (half) runCatching { call("cancelHalfPressShutter") }
+            runCatching { call("cancelHalfPressShutter") }
         }
     }
 
@@ -105,9 +100,11 @@ class CameraRemote(private val network: Network) {
     /** Polls the camera's events for focusStatus until it settles; returns the last status seen. */
     private fun waitForFocus(): String {
         var status = "unknown"
-        val end = System.currentTimeMillis() + 3_000
+        val end = System.currentTimeMillis() + 2_000
         while (System.currentTimeMillis() < end) {
-            val text = runCatching { call("getEvent", false).toString() }.getOrDefault("")
+            // focusStatus is only reported from getEvent 1.1 on.
+            val text = runCatching { call("getEvent", false, version = "1.1").toString() }
+                .recoverCatching { call("getEvent", false).toString() }.getOrDefault("")
             Regex("\"focusStatus\"\\s*:\\s*\"(\\w+)\"").find(text)?.let { status = it.groupValues[1] }
             if (status == "Focused" || status == "Failed") return status
             Thread.sleep(200)
