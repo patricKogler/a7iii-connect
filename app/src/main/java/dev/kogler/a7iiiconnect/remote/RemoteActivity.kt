@@ -98,8 +98,48 @@ class RemoteActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Per Sony's guide, touching the N mark while the camera is in shooting mode starts its
+        // remote-control Wi-Fi. Read the tag here too, so a tap both wakes the camera and gives us
+        // the right network details.
+        android.nfc.NfcAdapter.getDefaultAdapter(this)?.enableReaderMode(
+            this,
+            { tag ->
+                dev.kogler.a7iiiconnect.NfcPairing.read(tag)?.let { creds ->
+                    runOnUiThread {
+                        if (phase == Phase.CONNECTING || phase == Phase.FAILED) {
+                            SyncState.log("Remote: NFC tap, network ${creds.ssid}")
+                            Store(this).apply { ssid = creds.ssid; password = creds.password }
+                            phase = Phase.CONNECTING
+                            message = "Connecting to the camera ..."
+                            deadline = System.currentTimeMillis() + 3 * 60_000
+                            connect()
+                        }
+                    }
+                }
+            },
+            android.nfc.NfcAdapter.FLAG_READER_NFC_A or android.nfc.NfcAdapter.FLAG_READER_NFC_B or
+                android.nfc.NfcAdapter.FLAG_READER_NFC_F or android.nfc.NfcAdapter.FLAG_READER_NFC_V,
+            null,
+        )
+    }
+
+    override fun onPause() {
+        android.nfc.NfcAdapter.getDefaultAdapter(this)?.disableReaderMode(this)
+        super.onPause()
+    }
+
     private fun connect() {
         val store = Store(this)
+        SyncState.log("Remote: requesting camera Wi-Fi \"${store.ssid}\"")
+        // If nothing shows up quickly, the camera's remote mode is probably off; say how to start it.
+        window.decorView.postDelayed({
+            if (phase == Phase.CONNECTING) {
+                message = "Waiting for the camera's Wi-Fi.\n\nOn the camera: MENU > Network > Ctrl w/ Smartphone > On, " +
+                    "then go back to shooting mode. Or touch the phone to the N mark while the camera is in shooting mode."
+            }
+        }, 15_000)
         val spec = WifiNetworkSpecifier.Builder().setSsid(store.ssid).apply {
             if (store.password.isNotEmpty()) setWpa2Passphrase(store.password)
         }.build()
@@ -113,10 +153,12 @@ class RemoteActivity : ComponentActivity() {
             override fun onAvailable(network: Network) {
                 if (started) return
                 started = true
+                SyncState.log("Remote: camera Wi-Fi connected")
                 Thread({ session(network) }, "remote").start()
             }
 
             override fun onUnavailable() {
+                SyncState.log("Remote: camera Wi-Fi not seen yet")
                 if (running && System.currentTimeMillis() < deadline) {
                     runOnUiThread { connect() }
                 } else {
@@ -153,6 +195,7 @@ class RemoteActivity : ComponentActivity() {
                 apis = r.availableApis()
             }
             val url = r.call("startLiveview").getString(0)
+            SyncState.log("Remote: live view at $url")
             phase = Phase.LIVE
             message = ""
             while (running) {
