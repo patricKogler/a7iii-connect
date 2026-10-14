@@ -12,8 +12,8 @@ android {
         applicationId = "dev.kogler.a7iiiconnect"
         minSdk = 31
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.7"
+        versionCode = 12
+        versionName = "0.7.1"
     }
 
     // CI decodes the KEYSTORE_B64 secret to a file, so every build has the same signature and
@@ -32,7 +32,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Shrinks the Compose icon library down to the icons actually used (~40 MB -> a few MB).
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
             signingConfig = signingConfigs.findByName("fixed") ?: signingConfigs.getByName("debug")
         }
     }
