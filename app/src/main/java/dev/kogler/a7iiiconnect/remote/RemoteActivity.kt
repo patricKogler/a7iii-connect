@@ -60,7 +60,10 @@ import dev.kogler.a7iiiconnect.Store
 import dev.kogler.a7iiiconnect.SyncState
 import dev.kogler.a7iiiconnect.ui.AppTheme
 
-/** Live view and shutter over Wi-Fi, like Imaging Edge's remote shooting. */
+/**
+ * Live view and shutter over Wi-Fi, like Imaging Edge's remote shooting. While the camera's Wi-Fi
+ * isn't up, the shutter works over Bluetooth instead (Bluetooth Rmt Ctrl), without live view.
+ */
 class RemoteActivity : ComponentActivity() {
 
     private enum class Phase { CONNECTING, STARTING, LIVE, UNSUPPORTED, FAILED }
@@ -71,6 +74,8 @@ class RemoteActivity : ComponentActivity() {
     private var lastShot by mutableStateOf<Bitmap?>(null)
     private var shooting by mutableStateOf(false)
     private var shotCount by mutableStateOf(0)
+    private var btState by mutableStateOf<BluetoothShutter.State?>(null)
+    private var shutter: BluetoothShutter? = null
 
     private val cm by lazy { getSystemService(ConnectivityManager::class.java) }
     private var callback: ConnectivityManager.NetworkCallback? = null
@@ -84,11 +89,27 @@ class RemoteActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent { AppTheme { RemoteScreen() } }
         deadline = System.currentTimeMillis() + 3 * 60_000
+        startBluetooth()
         connect()
+    }
+
+    private fun startBluetooth() {
+        val address = Store(this).gpsCameraAddress
+        if (address.isBlank() ||
+            checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            SyncState.log("Remote: no paired camera, Bluetooth shutter off")
+            return
+        }
+        val adapter = getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter ?: return
+        shutter = BluetoothShutter(this, adapter.getRemoteDevice(address), { SyncState.log(it) }) { state ->
+            runOnUiThread { btState = state }
+        }.also { it.start() }
     }
 
     override fun onDestroy() {
         running = false
+        shutter?.stop()
         val r = remote
         Thread {
             runCatching { r?.call("stopLiveview") }
@@ -214,8 +235,20 @@ class RemoteActivity : ComponentActivity() {
     }
 
     private fun shoot() {
-        val r = remote ?: return
         if (shooting) return
+        val r = remote
+        if (phase != Phase.LIVE || r == null) {
+            val bt = shutter?.takeIf { btState == BluetoothShutter.State.READY } ?: return
+            shooting = true
+            Thread {
+                try {
+                    if (bt.takePicture()) shotCount++ else message = "The camera didn't take the picture."
+                } finally {
+                    shooting = false
+                }
+            }.start()
+            return
+        }
         shooting = true
         Thread {
             try {
@@ -259,12 +292,39 @@ class RemoteActivity : ComponentActivity() {
                         CaptureFlash(shotCount)
                     } else {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(32.dp)) {
-                            if (phase == Phase.CONNECTING || phase == Phase.STARTING) {
-                                CircularProgressIndicator(color = Color.White)
-                                Spacer(Modifier.height(24.dp))
+                            if (btState == BluetoothShutter.State.READY) {
+                                Text(
+                                    "Bluetooth shutter ready",
+                                    color = Color.White, style = MaterialTheme.typography.headlineSmall,
+                                    textAlign = TextAlign.Center,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "Shots taken: $shotCount",
+                                    color = Color.White.copy(alpha = 0.7f), textAlign = TextAlign.Center,
+                                )
+                                Spacer(Modifier.height(32.dp))
+                                Text(
+                                    "For live view on the phone, turn on MENU > Network > Ctrl w/ Smartphone.",
+                                    color = Color.White.copy(alpha = 0.6f), textAlign = TextAlign.Center,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            } else {
+                                if (btState == BluetoothShutter.State.CONNECTING) {
+                                    Text(
+                                        "Connecting over Bluetooth ...",
+                                        color = Color.White.copy(alpha = 0.7f), textAlign = TextAlign.Center,
+                                    )
+                                    Spacer(Modifier.height(16.dp))
+                                }
+                                if (phase == Phase.CONNECTING || phase == Phase.STARTING) {
+                                    CircularProgressIndicator(color = Color.White)
+                                    Spacer(Modifier.height(24.dp))
+                                }
+                                Text(message, color = Color.White, textAlign = TextAlign.Center)
                             }
-                            Text(message, color = Color.White, textAlign = TextAlign.Center)
                         }
+                        if (btState == BluetoothShutter.State.READY) CaptureFlash(shotCount)
                     }
                 }
 
@@ -280,7 +340,10 @@ class RemoteActivity : ComponentActivity() {
                             Image(it.asImageBitmap(), "Last photo", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                         }
                     }
-                    ShutterButton(enabled = phase == Phase.LIVE && !shooting, busy = shooting) { shoot() }
+                    ShutterButton(
+                        enabled = (phase == Phase.LIVE || btState == BluetoothShutter.State.READY) && !shooting,
+                        busy = shooting,
+                    ) { shoot() }
                     Spacer(Modifier.width(56.dp))
                 }
             }
