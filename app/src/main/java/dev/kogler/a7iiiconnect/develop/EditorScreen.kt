@@ -114,6 +114,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -1032,64 +1034,126 @@ private fun CurvePanel(c: Controls) {
             onDone = c.done,
             onReset = { c.commit(c.s.withCurve(channel, Curve())) },
         )
-        Text("Drag to add or move a point. Double-tap a point to remove it.", color = Color.Gray, fontSize = 11.sp)
     }
 }
 
-/** Point curve editor: a square graph, input along x, output up y. */
+/**
+ * Point curve editor: a square graph, input along x, output up y. Built for fingers: a tap adds
+ * a point on the curve (so nothing jumps), points move by the finger's motion rather than
+ * snapping under it, the grab radius is generous, and dragging a point off the top or bottom
+ * removes it.
+ */
 @Composable
 private fun CurveEditor(curve: Curve, color: Color, onChange: (Curve) -> Unit, onDone: () -> Unit, onReset: () -> Unit) {
     val current by rememberUpdatedState(curve)
     val change by rememberUpdatedState(onChange)
     val done by rememberUpdatedState(onDone)
+    val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
-    val touch = with(density) { 24.dp.toPx() }
+    val grab = with(density) { 36.dp.toPx() }
+    val removeAt = with(density) { 40.dp.toPx() }
+    // The point under the finger (for the readout and highlight), and whether letting go removes it.
+    var active by remember { mutableStateOf<Pair<Float, Float>?>(null) }
+    var removing by remember { mutableStateOf(false) }
+
+    fun nearest(pts: List<Pair<Float, Float>>, px: Float, py: Float, w: Float, h: Float, endpoints: Boolean = true): Int {
+        val i = pts.indices.filter { endpoints || (it != 0 && it != pts.size - 1) }
+            .minByOrNull { hypot(pts[it].first * w - px, (1 - pts[it].second) * h - py) } ?: return -1
+        return if (hypot(pts[i].first * w - px, (1 - pts[i].second) * h - py) < grab) i else -1
+    }
+
+    /** Adds a point at input [x] on the current curve; returns the new list and its index. */
+    fun addOnCurve(pts: MutableList<Pair<Float, Float>>, x: Float): Int {
+        val cx = x.coerceIn(0.02f, 0.98f)
+        if (pts.size >= 16 || pts.any { abs(it.first - cx) < 0.02f }) return -1
+        val t = current.table(1024)
+        val pt = cx to t[(cx * 1023).roundToInt()]
+        pts += pt
+        pts.sortBy { it.first }
+        return pts.indexOf(pt)
+    }
+
+    val readout = active?.let { (x, y) -> if (removing) "Release to remove this point" else "Input ${(x * 255).roundToInt()}  →  Output ${(y * 255).roundToInt()}" }
+    Text(
+        readout ?: "Tap the curve to add a point. Drag to move it, or drag it off the graph to remove it.",
+        color = if (removing) Color(0xFFFF8080) else Color.Gray, fontSize = 12.sp,
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+    )
     Box(Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
         Box(
-            Modifier.widthIn(max = 260.dp).fillMaxWidth().aspectRatio(1f)
+            Modifier.widthIn(max = 380.dp).fillMaxWidth().aspectRatio(1f)
                 .background(Color(0xFF1A1A1A), RoundedCornerShape(4.dp))
                 .pointerInput(Unit) {
-                    var sel = -1
-                    detectDragGestures(
-                        onDragStart = { p ->
+                    detectTapGestures(
+                        onTap = { p ->
                             val pts = current.points.toMutableList()
-                            val x = (p.x / size.width).coerceIn(0f, 1f); val y = (1 - p.y / size.height).coerceIn(0f, 1f)
-                            sel = pts.indices.minByOrNull { hypot((pts[it].first - x) * size.width, (pts[it].second - y) * size.height) }
-                                ?.takeIf { hypot((pts[it].first - x) * size.width, (pts[it].second - y) * size.height) < touch } ?: -1
-                            if (sel < 0 && pts.size < 12) {
-                                pts += x to y
-                                pts.sortBy { it.first }
-                                sel = pts.indexOfFirst { it.first == x && it.second == y }
-                                change(Curve(pts))
+                            if (nearest(pts, p.x, p.y, size.width.toFloat(), size.height.toFloat()) >= 0) return@detectTapGestures
+                            if (addOnCurve(pts, p.x / size.width) >= 0) {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                change(Curve(pts)); done()
                             }
                         },
-                        onDrag = { ch, _ ->
-                            ch.consume()
-                            if (sel < 0) return@detectDragGestures
+                        onDoubleTap = { p ->
                             val pts = current.points.toMutableList()
-                            if (sel >= pts.size) return@detectDragGestures
-                            val lo = if (sel == 0) 0f else pts[sel - 1].first + 0.01f
-                            val hi = if (sel == pts.size - 1) 1f else pts[sel + 1].first - 0.01f
-                            val x = (ch.position.x / size.width).coerceIn(lo, maxOf(lo, hi))
-                            val y = (1 - ch.position.y / size.height).coerceIn(0f, 1f)
-                            pts[sel] = x to y
-                            change(Curve(pts))
+                            val i = nearest(pts, p.x, p.y, size.width.toFloat(), size.height.toFloat(), endpoints = false)
+                            if (i >= 0) {
+                                pts.removeAt(i)
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                change(Curve(pts)); done()
+                            }
                         },
-                        onDragEnd = { sel = -1; done() },
-                        onDragCancel = { sel = -1; done() },
                     )
                 }
                 .pointerInput(Unit) {
-                    detectTapGestures(onDoubleTap = { p ->
-                        val pts = current.points.toMutableList()
-                        val x = p.x / size.width; val y = 1 - p.y / size.height
-                        val i = pts.indices.filter { it != 0 && it != pts.size - 1 }
-                            .minByOrNull { hypot((pts[it].first - x) * size.width, (pts[it].second - y) * size.height) }
-                        if (i != null && hypot((pts[i].first - x) * size.width, (pts[i].second - y) * size.height) < touch) {
-                            pts.removeAt(i)
-                            change(Curve(pts)); done()
+                    // The gesture keeps its own copy of the points: the curve passed in only
+                    // catches up after recomposition, and indexing that stale list moved the wrong point.
+                    var pts = mutableListOf<Pair<Float, Float>>()
+                    var sel = -1
+                    var px = 0f; var py = 0f
+                    fun finish() {
+                        if (sel >= 0 && removing) {
+                            pts.removeAt(sel)
+                            change(Curve(pts))
                         }
-                    })
+                        sel = -1; active = null; removing = false
+                        done()
+                    }
+                    detectDragGestures(
+                        onDragStart = { p ->
+                            pts = current.points.toMutableList()
+                            sel = nearest(pts, p.x, p.y, size.width.toFloat(), size.height.toFloat())
+                            if (sel < 0) {
+                                sel = addOnCurve(pts, p.x / size.width)
+                                if (sel >= 0) change(Curve(pts))
+                            }
+                            if (sel >= 0) {
+                                px = pts[sel].first; py = pts[sel].second
+                                active = pts[sel]
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            }
+                        },
+                        onDrag = { ch, delta ->
+                            ch.consume()
+                            if (sel < 0) return@detectDragGestures
+                            // Follow the finger's motion, so the point stays visible beside it.
+                            px += delta.x / size.width
+                            py -= delta.y / size.height
+                            val endpoint = sel == 0 || sel == pts.size - 1
+                            val margin = removeAt / size.height
+                            val out = !endpoint && (py < -margin || py > 1 + margin)
+                            if (out != removing) {
+                                removing = out
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
+                            val lo = if (sel == 0) 0f else pts[sel - 1].first + 0.01f
+                            val hi = if (sel == pts.size - 1) 1f else pts[sel + 1].first - 0.01f
+                            pts[sel] = px.coerceIn(lo, maxOf(lo, hi)) to py.coerceIn(0f, 1f)
+                            active = pts[sel]
+                            change(Curve(if (out) pts.filterIndexed { i, _ -> i != sel } else pts.toList()))
+                        },
+                        onDragEnd = { finish() },
+                        onDragCancel = { finish() },
+                    )
                 },
         ) {
             Canvas(Modifier.fillMaxSize()) {
@@ -1099,13 +1163,24 @@ private fun CurveEditor(curve: Curve, color: Color, onChange: (Curve) -> Unit, o
                     drawLine(Color(0xFF333333), Offset(0f, h * i / 4), Offset(w, h * i / 4), 1f)
                 }
                 drawLine(Color(0xFF444444), Offset(0f, h), Offset(w, 0f), 1f)
-                val t = curve.table(128)
+                val a = active
+                if (a != null && !removing) {
+                    val ax = a.first * w; val ay = (1 - a.second) * h
+                    drawLine(color.copy(alpha = 0.35f), Offset(ax, 0f), Offset(ax, h), 1.dp.toPx())
+                    drawLine(color.copy(alpha = 0.35f), Offset(0f, ay), Offset(w, ay), 1.dp.toPx())
+                }
+                val t = curve.table(256)
                 val path = Path()
-                t.forEachIndexed { i, v -> val x = w * i / 127f; val y = h * (1 - v); if (i == 0) path.moveTo(x, y) else path.lineTo(x, y) }
-                drawPath(path, color, style = Stroke(2.dp.toPx()))
-                for ((x, y) in curve.points) {
-                    drawCircle(color, 5.dp.toPx(), Offset(x * w, (1 - y) * h))
-                    drawCircle(Color.Black, 3.dp.toPx(), Offset(x * w, (1 - y) * h))
+                t.forEachIndexed { i, v -> val x = w * i / 255f; val y = h * (1 - v); if (i == 0) path.moveTo(x, y) else path.lineTo(x, y) }
+                drawPath(path, color, style = Stroke(2.5.dp.toPx()))
+                for (pt in curve.points) {
+                    val o = Offset(pt.first * w, (1 - pt.second) * h)
+                    val on = a != null && pt == a
+                    drawCircle(color, (if (on) 10 else 7).dp.toPx(), o)
+                    drawCircle(Color.Black, (if (on) 6 else 4).dp.toPx(), o)
+                }
+                if (a != null && removing) {
+                    drawCircle(Color(0xFFFF8080), 10.dp.toPx(), Offset(a.first * w, (1 - a.second) * h), style = Stroke(2.dp.toPx()))
                 }
             }
         }
