@@ -1,35 +1,10 @@
-probe rect	ffff0000
-probe shader-const	ff00ff00
-probe shader-texture	ff0000ff
-probe shader-f16	ffffff00
-probe u-float	ff000000
-probe u-float3	ff000000
-probe u-2nd	ff000000
-probe u-array	ff4080bf
-probe u-shader+f	ff000000
 case	meanAbs	p99	max
-# stage scene	ff0c0f18
-# stage lin	ff000000
-# stage tone0.12	ff7c7c7c
-# stage lut-raw	ffffffff
-# stage row0	ff808080
-# stage toned	ff000000
-# cpu scene 0.047077417 0.057217687 0.09535903, row0 [1.6353863, -0.42196244, -0.2134239], tone(0.12) 0.48341262
-# raw-default gpu center ff000000, cpu ff33407b
-raw-default	62.10	213	238
-# raw-light gpu center ff000000, cpu ff475aab
-raw-light	80.12	216	255
-# raw-local gpu center ff000000, cpu ff2c3a7a
-raw-local	60.17	217	255
-# raw-color gpu center ff0a0a0a, cpu ff424c7a
-raw-color	66.66	204	226
-# raw-mono gpu center ff000000, cpu ff2d2d2d
-raw-mono	44.84	183	211
-# raw-curves gpu center ff000000, cpu ff2a2d78
-raw-curves	62.25	237	248
-# raw-effects gpu center ff000000, cpu ff33407b
-raw-effects	57.71	210	238
-# raw-grain gpu center ff000000, cpu ff26336f
-raw-grain	62.35	213	251
-# jpeg-mixed gpu center ff363636, cpu ff565a86
-jpeg-mixed	52.97	195	232
+raw-default	0.15	4	8
+raw-light	0.18	5	8
+raw-local	0.60	5	28
+raw-color	0.17	5	8
+raw-mono	0.17	6	8
+raw-curves	0.17	6	8
+raw-effects	0.37	15	31
+raw-grain	5.40	21	35
+jpeg-mixed	0.02	1	1
