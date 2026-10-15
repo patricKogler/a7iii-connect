@@ -16,10 +16,19 @@ import dev.kogler.a7iiiconnect.develop.engine.CameraColor
 import dev.kogler.a7iiiconnect.develop.engine.ChannelSource
 import dev.kogler.a7iiiconnect.develop.engine.Demosaic
 import dev.kogler.a7iiiconnect.develop.engine.DevelopSource
+import dev.kogler.a7iiiconnect.develop.engine.FullImage
+import dev.kogler.a7iiiconnect.develop.engine.FullSampler
+import dev.kogler.a7iiiconnect.develop.engine.Geometry
+import dev.kogler.a7iiiconnect.develop.engine.Guide
+import dev.kogler.a7iiiconnect.develop.engine.ImageSampler
 import dev.kogler.a7iiiconnect.develop.engine.LinearImage
+import dev.kogler.a7iiiconnect.develop.engine.Look
 import dev.kogler.a7iiiconnect.develop.engine.RawImage
-import dev.kogler.a7iiiconnect.develop.engine.Renderer
+import dev.kogler.a7iiiconnect.develop.engine.Region
+import dev.kogler.a7iiiconnect.develop.engine.Sampler
 import dev.kogler.a7iiiconnect.develop.engine.Settings
+import dev.kogler.a7iiiconnect.develop.engine.renderBands
+import dev.kogler.a7iiiconnect.develop.engine.sensorBounds
 import java.io.FileInputStream
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -33,7 +42,18 @@ class OpenedPhoto(
     val draft: DevelopSource,
     val orientation: Int,
     val raw: RawImage?,
-)
+) {
+    fun geometry(s: Settings, ignoreCrop: Boolean = false) =
+        Geometry(s, preview.fullWidth.toDouble(), preview.fullHeight.toDouble(), preview.lens, ignoreCrop)
+}
+
+/** Export size and JPEG quality, like Lightroom's export options. */
+data class ExportOptions(val maxEdge: Int? = null, val quality: Int = 92) {
+    companion object {
+        val SIZES = listOf<Pair<String, Int?>>("Full size" to null, "3000 px" to 3000, "2048 px" to 2048, "1080 px" to 1080)
+        val QUALITIES = listOf("Maximum" to 100, "High" to 92, "Medium" to 80)
+    }
+}
 
 const val PREVIEW_EDGE = 2048
 private const val DRAFT_EDGE = 1024
@@ -86,13 +106,12 @@ object Photos {
                     val color = CameraColor.forCamera(info.model)
                     val half = Demosaic.halfSize(raw)
                     val preview = half.downscaled(PREVIEW_EDGE).oriented(info.orientation)
-                    val draft = preview.downscaled(DRAFT_EDGE)
-                    return OpenedPhoto(
-                        photo,
-                        DevelopSource(preview, color, info.asShot, true),
-                        DevelopSource(draft, color, info.asShot, true),
-                        info.orientation, raw,
+                    val swap = info.orientation >= 5
+                    val source = DevelopSource(
+                        preview, color, info.asShot, true,
+                        if (swap) raw.height else raw.width, if (swap) raw.width else raw.height, info.lens,
                     )
+                    return OpenedPhoto(photo, source, source.withImage(preview.downscaled(DRAFT_EDGE)), info.orientation, raw)
                 }
             }
         }
@@ -107,12 +126,38 @@ object Photos {
             ?: error("can't decode ${photo.name}")
         val lin = toLinear(bmp).also { bmp.recycle() }.downscaled(PREVIEW_EDGE).oriented(orientation)
         val one = floatArrayOf(1f, 1f, 1f)
-        return OpenedPhoto(
-            photo,
-            DevelopSource(lin, CameraColor.SRGB, one, false),
-            DevelopSource(lin.downscaled(DRAFT_EDGE), CameraColor.SRGB, one, false),
-            orientation, null,
+        val swap = orientation >= 5
+        val source = DevelopSource(
+            lin, CameraColor.SRGB, one, false,
+            if (swap) bounds.outHeight else bounds.outWidth, if (swap) bounds.outWidth else bounds.outHeight,
         )
+        return OpenedPhoto(photo, source, source.withImage(lin.downscaled(DRAFT_EDGE)), orientation, null)
+    }
+
+    /** Upright linear pixels of a JPEG, subsampled to at least [minEdge] on the long side. */
+    private fun decodeLinear(context: Context, photo: LibraryPhoto, minEdge: Int): LinearImage {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(photo.uri)!!.use { BitmapFactory.decodeStream(it, null, bounds) }
+        val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, minEdge) }
+        val bmp = context.contentResolver.openInputStream(photo.uri)!!.use { BitmapFactory.decodeStream(it, null, opts) }
+            ?: error("can't decode ${photo.name}")
+        return toLinear(bmp).also { bmp.recycle() }.oriented(exifOrientation(context, photo.uri))
+    }
+
+    /**
+     * Sharp zoom: renders [region] of the photo from the full-resolution raw (only the sensor
+     * area it needs is demosaiced). Null for JPEGs, whose preview is already their best.
+     */
+    fun renderTile(opened: OpenedPhoto, settings: Settings, guide: Guide?, region: Region): Bitmap? {
+        val raw = opened.raw ?: return null
+        val geom = opened.geometry(settings)
+        val look = Look(opened.preview, settings)
+        val b = sensorBounds(geom, opened.orientation, raw.width, raw.height, region, look.margin(region.scale) + 8)
+        val part = FullImage.demosaic(raw, b[0], b[1], b[2], b[3])
+        val sampler = FullSampler(part, opened.orientation, geom, region)
+        val bmp = Bitmap.createBitmap(region.width, region.height, Bitmap.Config.ARGB_8888)
+        renderBands(look, sampler, guide, 256) { y, rows, px -> bmp.setPixels(px, 0, region.width, 0, y, region.width, rows) }
+        return bmp
     }
 
     private fun toLinear(bmp: Bitmap): LinearImage {
@@ -122,46 +167,41 @@ object Photos {
     }
 
     /**
-     * Renders [settings] at full resolution and saves a JPEG to Pictures/[EXPORT_ALBUM], with the
+     * Renders [settings] at the chosen size and saves a JPEG to Pictures/[EXPORT_ALBUM], with the
      * original's EXIF (date, camera, lens, exposure, GPS). Returns the new file.
      */
-    fun export(context: Context, opened: OpenedPhoto, settings: Settings, progress: (Float) -> Unit): Uri {
+    fun export(context: Context, opened: OpenedPhoto, settings: Settings, options: ExportOptions, progress: (Float) -> Unit): Uri {
         val photo = opened.photo
-        val bitmap: Bitmap
-        if (opened.raw != null) {
-            val raw = opened.raw
-            val source = DevelopSource(LinearImage(1, 1), opened.preview.color, opened.preview.baked, true)
-            val renderer = Renderer(source, settings)
-            bitmap = Bitmap.createBitmap(raw.width, raw.height, Bitmap.Config.ARGB_8888)
-            val band = 128
-            val buf = LinearImage(raw.width, band)
-            val px = IntArray(raw.width * band)
-            var y = 0
-            while (y < raw.height) {
-                val y1 = minOf(raw.height, y + band)
-                Demosaic.fullRows(raw, y, y1, buf)
-                renderer.render(buf, px, 0, y1 - y)
-                bitmap.setPixels(px, 0, raw.width, 0, y, raw.width, y1 - y)
-                y = y1
-                progress(0.9f * y / raw.height)
+        val geom = opened.geometry(settings)
+        val look = Look(opened.preview, settings)
+        // The large-radius maps come from the preview, so the export looks like the screen.
+        val guide = look.guide(opened.preview.image, geom)
+        val sampler: Sampler = when {
+            options.maxEdge != null && options.maxEdge <= 3000 -> {
+                // Small exports: resample a half-size (raw) or subsampled (JPEG) image.
+                val img = if (opened.raw != null) Demosaic.halfSize(opened.raw).oriented(opened.orientation)
+                else decodeLinear(context, photo, options.maxEdge * 2)
+                ImageSampler(img, geom, options.maxEdge)
             }
-        } else {
-            val opts = BitmapFactory.Options().apply { inMutable = true; inPreferredConfig = Bitmap.Config.ARGB_8888 }
-            bitmap = context.contentResolver.openInputStream(photo.uri)!!.use { BitmapFactory.decodeStream(it, null, opts) }
-                ?: error("can't decode ${photo.name}")
-            val renderer = Renderer(opened.preview, settings)
-            val band = 128
-            val px = IntArray(bitmap.width * band)
-            var y = 0
-            while (y < bitmap.height) {
-                val rows = minOf(band, bitmap.height - y)
-                bitmap.getPixels(px, 0, bitmap.width, 0, y, bitmap.width, rows)
-                val lin = LinearImage.fromArgb(px, bitmap.width, rows)
-                renderer.render(lin, px, 0, rows)
-                bitmap.setPixels(px, 0, bitmap.width, 0, y, bitmap.width, rows)
-                y += rows
-                progress(0.9f * y / bitmap.height)
+            opened.raw != null -> FullSampler(FullImage.demosaic(opened.raw) { progress(0.4f * it) }, opened.orientation, geom)
+            else -> {
+                val bmp = context.contentResolver.openInputStream(photo.uri)!!.use { BitmapFactory.decodeStream(it) }
+                    ?: error("can't decode ${photo.name}")
+                val full = FullImage.fromArgb(bmp.width, bmp.height) { y, n, px -> bmp.getPixels(px, 0, bmp.width, 0, y, bmp.width, n) }
+                bmp.recycle()
+                FullSampler(full, opened.orientation, geom)
             }
+        }
+        progress(0.4f)
+        var bitmap = Bitmap.createBitmap(sampler.width, sampler.height, Bitmap.Config.ARGB_8888)
+        renderBands(look, sampler, guide) { y, rows, px ->
+            bitmap.setPixels(px, 0, sampler.width, 0, y, sampler.width, rows)
+            progress(0.4f + 0.5f * (y + rows) / sampler.height)
+        }
+        val edge = options.maxEdge
+        if (edge != null && maxOf(bitmap.width, bitmap.height) > edge) {
+            val k = edge.toFloat() / maxOf(bitmap.width, bitmap.height)
+            bitmap = Bitmap.createScaledBitmap(bitmap, (bitmap.width * k).toInt().coerceAtLeast(1), (bitmap.height * k).toInt().coerceAtLeast(1), true)
         }
 
         val name = photo.name.substringBeforeLast('.') + "-edit.jpg"
@@ -175,10 +215,10 @@ object Photos {
         }
         val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: error("MediaStore refused $name")
         try {
-            resolver.openOutputStream(uri)!!.use { bitmap.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+            resolver.openOutputStream(uri)!!.use { bitmap.compress(Bitmap.CompressFormat.JPEG, options.quality, it) }
             bitmap.recycle()
             progress(0.97f)
-            runCatching { copyExif(context, photo.uri, uri, opened.orientation) }
+            runCatching { copyExif(context, photo.uri, uri) }
             resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
         } catch (e: Throwable) {
             resolver.delete(uri, null, null)
@@ -188,13 +228,13 @@ object Photos {
         return uri
     }
 
-    private fun copyExif(context: Context, from: Uri, to: Uri, orientation: Int) {
+    private fun copyExif(context: Context, from: Uri, to: Uri) {
         val src = context.contentResolver.openInputStream(from)!!.use { ExifInterface(it) }
         context.contentResolver.openFileDescriptor(to, "rw")!!.use { pfd ->
             val dst = ExifInterface(pfd.fileDescriptor)
             for (tag in EXIF_TAGS) src.getAttribute(tag)?.let { dst.setAttribute(tag, it) }
-            // Pixels are written as the sensor saw them; the tag turns them upright.
-            dst.setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
+            // Pixels are written upright.
+            dst.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
             dst.setAttribute(ExifInterface.TAG_SOFTWARE, "A7III Connect")
             dst.setAttribute(
                 ExifInterface.TAG_DATETIME,

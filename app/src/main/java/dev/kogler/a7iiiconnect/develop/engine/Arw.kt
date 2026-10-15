@@ -14,7 +14,17 @@ class RawInfo internal constructor(
     /** The biggest embedded JPEG preview (offset, length), if any. */
     val preview: LongRange?,
     internal val raw: RawIfd?,
+    /** The camera's own lens-correction data for the lens used, if it wrote any. */
+    val lens: LensData? = null,
 )
+
+/**
+ * Sony's embedded lens corrections (tags 0x7032/0x7035/0x7037), as read by darktable: [n] knots
+ * spread over the image radius with distortion, red/blue chromatic aberration and vignetting.
+ */
+class LensData(val distortion: IntArray, val caRed: IntArray, val caBlue: IntArray, val vignetting: IntArray) {
+    val n get() = distortion.size
+}
 
 internal class RawIfd(
     val width: Int,
@@ -93,6 +103,21 @@ object Arw {
             white = white shr 2
         }
 
+        val lens = runCatching {
+            fun find(tag: Int) = (listOfNotNull(rawIfd) + all).firstNotNullOfOrNull { ifd -> ifd[tag]?.let { tiff.ints(it) } }
+            val d = find(0x7037); val c = find(0x7035); val v = find(0x7032)
+            if (d == null || c == null || v == null) null else {
+                val n = d[0].toInt()
+                if (n !in 2..16 || c[0].toInt() != 2 * n || v[0].toInt() != n || d.size < n + 1 || c.size < 2 * n + 1 || v.size < n + 1) null
+                else LensData(
+                    IntArray(n) { d[it + 1].toShort().toInt() },
+                    IntArray(n) { c[it + 1].toShort().toInt() },
+                    IntArray(n) { c[n + it + 1].toShort().toInt() },
+                    IntArray(n) { v[it + 1].toShort().toInt() },
+                )
+            }
+        }.getOrNull()
+
         return RawInfo(
             make = tiff.string(ifd0, TAG_MAKE) ?: "",
             model = tiff.string(ifd0, TAG_MODEL) ?: "",
@@ -102,6 +127,7 @@ object Arw {
             white = white,
             preview = preview,
             raw = raw,
+            lens = lens,
         )
     }
 
