@@ -10,7 +10,6 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
 import com.github.takahirom.roborazzi.captureRoboImage
 import dev.kogler.a7iiiconnect.develop.engine.P
 import dev.kogler.a7iiiconnect.develop.engine.Settings
@@ -79,13 +78,15 @@ class EditorScreenshots {
         tool("GEOMETRY"); shot("09-geometry")
         tool("PRESETS"); shot("10-presets")
         tool("CROP"); awaitRender(); shot("11-crop")
+
+        // Closing the panel brings the filmstrip back.
+        tool("CROP"); awaitRender(); shot("12-no-panel")
+        tool("LIGHT")
+        compose.onNodeWithTag("compare").performClick()
+        awaitRender(); shot("13-split")
     }
 
     private fun tool(name: String) {
-        // Scrolling the tool strip animates, which never finishes while the clock is paused.
-        compose.mainClock.autoAdvance = true
-        compose.onNodeWithTag("tool-$name").performScrollTo()
-        compose.mainClock.autoAdvance = false
         compose.onNodeWithTag("tool-$name").performClick()
         settle()
     }

@@ -12,7 +12,13 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
@@ -25,11 +31,13 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -53,6 +61,7 @@ import androidx.compose.material.icons.outlined.Grain
 import androidx.compose.material.icons.outlined.Lens
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Style
+import androidx.compose.material.icons.outlined.Swipe
 import androidx.compose.material.icons.outlined.Transform
 import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material.icons.rounded.Compare
@@ -72,8 +81,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -83,6 +90,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -109,9 +117,12 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -145,6 +156,8 @@ import dev.kogler.a7iiiconnect.develop.engine.renderBands
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.PI
@@ -155,18 +168,43 @@ import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-/** The tool strip, in Lightroom mobile's order. Auto is an action, not a panel. */
-private enum class Tool(val label: String, val icon: ImageVector) {
-    PRESETS("Presets", Icons.Outlined.Style),
-    CROP("Crop", Icons.Outlined.Crop),
-    AUTO("Auto", Icons.Outlined.AutoAwesome),
-    LIGHT("Light", Icons.Outlined.WbSunny),
-    COLOR("Color", Icons.Outlined.Palette),
-    EFFECTS("Effects", Icons.Outlined.BlurOn),
-    DETAIL("Detail", Icons.Outlined.Grain),
-    OPTICS("Optics", Icons.Outlined.Lens),
-    GEOMETRY("Geometry", Icons.Outlined.Transform),
+/**
+ * The tool strip, in Lightroom mobile's order. Every entry opens a panel; Auto is a button in
+ * the Light panel. [groups] are what the panel edits, for the "changed" dot and per-panel compare.
+ */
+private enum class Tool(val label: String, val icon: ImageVector, val groups: List<Group>) {
+    PRESETS("Presets", Icons.Outlined.Style, emptyList()),
+    CROP("Crop", Icons.Outlined.Crop, listOf(Group.CROP)),
+    LIGHT("Light", Icons.Outlined.WbSunny, listOf(Group.LIGHT, Group.CURVE)),
+    COLOR("Color", Icons.Outlined.Palette, listOf(Group.COLOR, Group.MIXER, Group.GRADING)),
+    EFFECTS("Effects", Icons.Outlined.BlurOn, listOf(Group.EFFECTS)),
+    DETAIL("Detail", Icons.Outlined.Grain, listOf(Group.DETAIL)),
+    OPTICS("Optics", Icons.Outlined.Lens, listOf(Group.OPTICS)),
+    GEOMETRY("Geometry", Icons.Outlined.Transform, listOf(Group.GEOMETRY)),
 }
+
+/** Groups that move pixels around; a before/after split keeps them so both halves line up. */
+private val FRAMING = setOf(Group.CROP, Group.GEOMETRY, Group.OPTICS)
+
+/** The "before" side of the split: without [panel]'s edits, or without any look edits. */
+private fun compareBase(s: Settings, panel: Tool?): Settings {
+    val groups = panel?.groups?.filter { it !in FRAMING }?.takeIf { it.isNotEmpty() } ?: (Group.entries - FRAMING)
+    return groups.fold(s) { acc, g -> acc.reset(g) }
+}
+
+/** Sliders that swipe mode cycles through; a closed panel (or Presets) swipes Light. */
+private fun swipeParams(t: Tool?): List<Param> = when (t) {
+    Tool.CROP -> emptyList()
+    Tool.COLOR -> listOf(P.VIBRANCE, P.SATURATION)
+    Tool.EFFECTS -> listOf(P.TEXTURE, P.CLARITY, P.DEHAZE, P.VIGNETTE, P.GRAIN)
+    Tool.DETAIL -> listOf(P.SHARPEN, P.NOISE, P.COLOR_NOISE)
+    Tool.OPTICS -> listOf(P.DEFRINGE, P.MANUAL_DISTORTION, P.MANUAL_VIGNETTING)
+    Tool.GEOMETRY -> listOf(P.VERTICAL, P.HORIZONTAL, P.ROTATE, P.SCALE)
+    else -> listOf(P.EXPOSURE, P.CONTRAST, P.HIGHLIGHTS, P.SHADOWS, P.WHITES, P.BLACKS)
+}
+
+/** Swipe mode's gesture callbacks: [onMove] gets dx as a fraction of the width and dy in px. */
+private class SwipeAdjust(val onStart: (horizontal: Boolean) -> Unit, val onMove: (dx: Float, dy: Float) -> Unit, val onEnd: () -> Unit)
 
 /** Undo/redo history of one photo's settings. */
 private class History(initial: Settings) {
@@ -254,13 +292,23 @@ fun EditorScreen(
     var viewport by remember { mutableStateOf<Viewport?>(null) }
     var tile by remember { mutableStateOf<Tile?>(null) }
     var presets by remember { mutableStateOf(store.userPresets()) }
+    var split by remember { mutableStateOf(false) }
+    var splitAt by remember { mutableFloatStateOf(0.5f) }
+    var splitPanelOnly by remember { mutableStateOf(false) }
+    var compareImage by remember { mutableStateOf<ImageBitmap?>(null) }
+    var swipeMode by remember { mutableStateOf(store.swipeAdjust) }
+    var swipeKey by remember { mutableStateOf(P.EXPOSURE.key) }
+    var swipeAxis by remember { mutableIntStateOf(0) }
+    val swipeState = remember { SwipeState() }
+    val haptics = LocalHapticFeedback.current
+    val density = LocalDensity.current
     val snackbar = remember { SnackbarHostState() }
     val guides = remember { GuideCache() }
     val cropMode = tool == Tool.CROP
 
     // Open the photo: show the camera's embedded JPEG at once, then the real render.
     LaunchedEffect(photo.id) {
-        opened = null; rendered = null; before = null; loadError = null; tile = null
+        opened = null; rendered = null; before = null; compareImage = null; loadError = null; tile = null
         guides.clear()
         settings = store.load(photo.id)
         history = History(settings)
@@ -310,6 +358,19 @@ fun EditorScreen(
         }
     }
 
+    // Split view: render the "before" half on the CPU whenever it would look different.
+    val compareGuides = remember { GuideCache() }
+    LaunchedEffect(split, opened) {
+        val o = opened ?: return@LaunchedEffect
+        if (!split) { compareImage = null; return@LaunchedEffect }
+        val pool = BitmapPool()
+        compareGuides.clear()
+        snapshotFlow { if (dragging) null else compareBase(settings, if (splitPanelOnly) tool else null) }
+            .filterNotNull().distinctUntilChanged().collectLatest { base ->
+                compareImage = withContext(Dispatchers.Default) { (pool.render(o, o.preview, base, false, compareGuides).layer as BitmapLayer).image }
+            }
+    }
+
     // Sharp zoom: once the view settles while zoomed in, render the visible part from the raw.
     LaunchedEffect(viewport, rendered, dragging) {
         val o = opened ?: return@LaunchedEffect
@@ -343,6 +404,60 @@ fun EditorScreen(
         history.push(s)
         store.save(photo.id, s)
     }
+
+    fun undo() { settings = history.undo(); store.save(photo.id, settings) }
+    fun redo() { settings = history.redo(); store.save(photo.id, settings) }
+
+    fun auto() {
+        val src = opened?.preview ?: return
+        scope.launch {
+            val a = withContext(Dispatchers.Default) { autoTone(src, settings) }
+            commit(a)
+            val r = snackbar.showSnackbar("Auto applied", "Undo", duration = SnackbarDuration.Short)
+            if (r == SnackbarResult.ActionPerformed && settings == a) undo()
+        }
+    }
+
+    // Swipe mode (Snapseed): up/down on the photo picks a slider, left/right changes it.
+    val swipeList = swipeParams(tool)
+    val swipeStep = with(density) { 36.dp.toPx() }
+    val swipe = if (swipeMode && swipeList.isNotEmpty() && opened != null && !showBefore) SwipeAdjust(
+        onStart = { horizontal ->
+            val i = swipeList.indexOfFirst { it.key == swipeKey }.coerceAtLeast(0)
+            val p = swipeList[i]
+            swipeKey = p.key
+            swipeState.startIndex = i
+            swipeState.acc = 0f
+            swipeState.detent = Detent(p.min, p.max, p.default).apply { start(settings[p]) }
+            swipeAxis = if (horizontal) 1 else 2
+        },
+        onMove = { dx, dy ->
+            if (swipeAxis == 2) {
+                swipeState.acc += dy
+                val i = (swipeState.startIndex + (swipeState.acc / swipeStep).toInt()).coerceIn(0, swipeList.size - 1)
+                if (swipeList[i].key != swipeKey) {
+                    swipeKey = swipeList[i].key
+                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                }
+            } else {
+                val p = swipeList.firstOrNull { it.key == swipeKey }
+                val d = swipeState.detent
+                if (p != null && d != null) {
+                    // The photo's width is half the slider's range.
+                    val next = d.move(dx * (p.max - p.min) / 2)
+                    if (next != settings[p]) {
+                        if (next == p.default) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        dragging = true
+                        settings = settings.with(p, next)
+                    }
+                }
+            }
+        },
+        onEnd = {
+            if (dragging) { dragging = false; commit(settings) }
+            swipeAxis = 0
+        },
+    ) else null
 
     fun go(i: Int) {
         if (i == index || i !in photos.indices) return
@@ -382,12 +497,6 @@ fun EditorScreen(
                     photo.name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f),
                 )
-                IconButton(onClick = { settings = history.undo(); store.save(photo.id, settings) }, enabled = history.canUndo) {
-                    Icon(Icons.AutoMirrored.Rounded.Undo, "Undo", tint = if (history.canUndo) Color.White else Color.Gray)
-                }
-                IconButton(onClick = { settings = history.redo(); store.save(photo.id, settings) }, enabled = history.canRedo) {
-                    Icon(Icons.AutoMirrored.Rounded.Redo, "Redo", tint = if (history.canRedo) Color.White else Color.Gray)
-                }
                 Box {
                     IconButton(onClick = { shareMenu = true }, enabled = opened != null && exportProgress == null) {
                         Icon(Icons.Rounded.Share, "Export", tint = Color.White)
@@ -442,6 +551,10 @@ fun EditorScreen(
                         layer = shown,
                         tile = if (showBefore) null else tile?.takeIf { it.settings == r?.settings },
                         grid = tool == Tool.GEOMETRY && dragging,
+                        compare = if (split && !showBefore) compareImage?.let { BitmapLayer(it) } else null,
+                        splitAt = splitAt,
+                        onSplit = { splitAt = it },
+                        swipe = swipe,
                         onHold = { showBefore = it },
                         onViewport = { viewport = it },
                     )
@@ -452,7 +565,44 @@ fun EditorScreen(
                 loadError?.let {
                     Text("Can't open this photo: $it", color = Color.White, modifier = Modifier.align(Alignment.Center).padding(24.dp))
                 }
-                if (!cropMode) r?.histogram?.let { Histogram(it, Modifier.align(Alignment.TopEnd).padding(8.dp).size(120.dp, 56.dp)) }
+                if (!cropMode && !split) r?.histogram?.let { Histogram(it, Modifier.align(Alignment.TopEnd).padding(8.dp).size(120.dp, 56.dp)) }
+                if (split && !cropMode && !showBefore) {
+                    // Tap "Before" to compare against just this panel's edits.
+                    val panel = tool?.takeIf { t -> t.groups.any { it !in FRAMING } }
+                    OverlayLabel(
+                        if (splitPanelOnly && panel != null) "Before · no ${panel.label} edits ▾" else if (panel != null) "Before · all edits ▾" else "Before",
+                        Modifier.align(Alignment.TopStart).then(if (panel != null) Modifier.clickable { splitPanelOnly = !splitPanelOnly } else Modifier),
+                    )
+                    OverlayLabel("After", Modifier.align(Alignment.TopEnd))
+                }
+                if (swipe != null && !cropMode) {
+                    val p = swipeList.firstOrNull { it.key == swipeKey } ?: swipeList.first()
+                    if (swipeAxis == 2) {
+                        Column(
+                            Modifier.align(Alignment.Center).background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
+                                .padding(vertical = 8.dp),
+                        ) {
+                            for (q in swipeList) {
+                                val sel = q.key == p.key
+                                Row(Modifier.width(220.dp).padding(horizontal = 16.dp, vertical = 6.dp)) {
+                                    val c = if (sel) Color.White else Color.Gray
+                                    val w = if (sel) FontWeight.SemiBold else FontWeight.Normal
+                                    Text(q.label, color = c, fontWeight = w, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                                    Text(formatParam(q, settings[q]), color = c, fontWeight = w, fontSize = 15.sp)
+                                }
+                            }
+                        }
+                    } else {
+                        Text(
+                            "${p.label}  ${formatParam(p, settings[p])}",
+                            color = Color.White, fontSize = if (swipeAxis == 1) 16.sp else 12.sp,
+                            fontWeight = if (swipeAxis == 1) FontWeight.SemiBold else FontWeight.Normal,
+                            modifier = Modifier.align(Alignment.TopCenter).padding(top = if (split) 40.dp else 8.dp)
+                                .background(Color.Black.copy(alpha = if (swipeAxis == 1) 0.7f else 0.45f), RoundedCornerShape(16.dp))
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                        )
+                    }
+                }
                 if (showBefore) {
                     Text(
                         "Before", color = Color.White, fontSize = 12.sp,
@@ -461,22 +611,38 @@ fun EditorScreen(
                     )
                 }
                 if (!cropMode) {
-                    Box(
-                        Modifier.align(Alignment.BottomEnd).padding(8.dp).size(44.dp)
-                            .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(22.dp))
-                            .pointerInput(Unit) {
-                                detectTapGestures(onPress = { showBefore = true; tryAwaitRelease(); showBefore = false })
+                    // Thumb-reach controls along the bottom of the photo.
+                    Row(Modifier.align(Alignment.BottomStart).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OverlayButton(Icons.AutoMirrored.Rounded.Undo, "Undo", enabled = history.canUndo) { undo() }
+                        OverlayButton(Icons.AutoMirrored.Rounded.Redo, "Redo", enabled = history.canRedo) { redo() }
+                    }
+                    Row(Modifier.align(Alignment.BottomEnd).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OverlayButton(Icons.Outlined.Swipe, "Swipe on the photo to adjust", selected = swipeMode) {
+                            swipeMode = !swipeMode
+                            store.swipeAdjust = swipeMode
+                            if (swipeMode) scope.launch { snackbar.showSnackbar("Swipe up or down on the photo to pick a slider, left or right to change it") }
+                        }
+                        // Tap for a split view, hold for the original.
+                        OverlayButton(
+                            Icons.Rounded.Compare, "Compare: tap for split view, hold for the original", selected = split,
+                            modifier = Modifier.testTag("compare").pointerInput(Unit) {
+                                detectTapGestures(
+                                    onTap = { split = !split },
+                                    onLongPress = { showBefore = true },
+                                    onPress = { tryAwaitRelease(); showBefore = false },
+                                )
                             },
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.Rounded.Compare, "Hold to see the original", tint = Color.White) }
+                        )
+                    }
                 }
             }
 
-            if (!cropMode) Filmstrip(photos, index, onSelect = { go(it) })
+            // The filmstrip only shows with no panel open, so editing gets the room.
+            if (!cropMode && tool == null) Filmstrip(photos, index, onSelect = { go(it) })
 
             // Adjustment panel
             val o = opened
-            if (tool != null && tool != Tool.AUTO) {
+            if (tool != null) CompositionLocalProvider(LocalAdjusting provides dragging) {
                 Column(
                     Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState())
                         .padding(horizontal = 16.dp, vertical = 4.dp),
@@ -498,7 +664,7 @@ fun EditorScreen(
                             cropAspect = a
                             if (o != null) commit(fitAspect(settings, a, o))
                         })
-                        Tool.LIGHT -> LightPanel(ctl)
+                        Tool.LIGHT -> LightPanel(ctl, onAuto = if (o != null) ({ auto() }) else null)
                         Tool.COLOR -> ColorPanel(ctl, o?.preview)
                         Tool.EFFECTS -> EffectsPanel(ctl)
                         Tool.DETAIL -> DetailPanel(ctl)
@@ -509,33 +675,22 @@ fun EditorScreen(
                 }
             }
 
-            // Tool strip
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 6.dp, horizontal = 4.dp),
-            ) {
+            // Tool strip: every tool fits on screen; a dot marks the ones with edits.
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 2.dp)) {
                 for (t in Tool.entries) {
                     val selected = tool == t
+                    val changed = t.groups.any { !settings.isDefault(it) }
                     Column(
-                        Modifier.testTag("tool-${t.name}").clip(RoundedCornerShape(8.dp)).clickable {
-                            if (t == Tool.AUTO) {
-                                val src = opened?.preview
-                                if (src != null) {
-                                    scope.launch {
-                                        val s = settings
-                                        val auto = withContext(Dispatchers.Default) { autoTone(src, s) }
-                                        commit(auto)
-                                        snackbar.showSnackbar("Auto applied")
-                                    }
-                                }
-                            } else {
-                                tool = if (selected) null else t
-                            }
-                        }.padding(horizontal = 12.dp, vertical = 4.dp),
+                        Modifier.weight(1f).testTag("tool-${t.name}").clip(RoundedCornerShape(8.dp))
+                            .clickable { tool = if (selected) null else t }.padding(vertical = 4.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         val c = if (selected) MaterialTheme.colorScheme.primary else Color.White
-                        Icon(t.icon, null, tint = c)
-                        Text(t.label, color = c, fontSize = 12.sp)
+                        Box {
+                            Icon(t.icon, null, tint = c)
+                            if (changed) ChangedDot(Modifier.align(Alignment.TopEnd).offset(x = 5.dp, y = (-1).dp))
+                        }
+                        Text(t.label, color = c, fontSize = 11.sp, maxLines = 1, softWrap = false)
                     }
                 }
             }
@@ -700,6 +855,10 @@ private fun ZoomableImage(
     layer: PhotoLayer?,
     tile: Tile?,
     grid: Boolean,
+    compare: PhotoLayer?,
+    splitAt: Float,
+    onSplit: (Float) -> Unit,
+    swipe: SwipeAdjust?,
     onHold: (Boolean) -> Unit,
     onViewport: (Viewport?) -> Unit,
 ) {
@@ -708,6 +867,9 @@ private fun ZoomableImage(
     var box by remember { mutableStateOf(Size.Zero) }
     val report by rememberUpdatedState(onViewport)
     val img by rememberUpdatedState(layer)
+    val adjust by rememberUpdatedState(swipe)
+    val split by rememberUpdatedState(splitAt)
+    val splitChanged by rememberUpdatedState(onSplit)
 
     fun clampOffset(o: Offset, s: Float): Offset {
         val i = img ?: return Offset.Zero
@@ -736,10 +898,46 @@ private fun ZoomableImage(
     Box(
         Modifier.fillMaxSize()
             .onSizeChanged { box = Size(it.width.toFloat(), it.height.toFloat()) }
-            .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
+            .pointerInput(swipe != null) {
+                fun transform(pan: Offset, zoom: Float) {
                     scale = (scale * zoom).coerceIn(1f, 12f)
                     offset = if (scale == 1f) Offset.Zero else clampOffset(offset + pan, scale)
+                }
+                if (adjust == null) {
+                    detectTransformGestures { _, pan, zoom, _ -> transform(pan, zoom) }
+                    return@pointerInput
+                }
+                // Swipe mode: one finger adjusts (the first move picks the axis), two fingers zoom and pan.
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var axis = 0 // 0 undecided, 1 sideways, 2 up/down, 3 zoom
+                    var moved = Offset.Zero
+                    while (true) {
+                        val ev = awaitPointerEvent()
+                        val pressed = ev.changes.filter { it.pressed }
+                        if (pressed.isEmpty()) break
+                        if (pressed.size > 1 && axis == 0) axis = 3
+                        when (axis) {
+                            3 -> {
+                                transform(ev.calculatePan(), ev.calculateZoom())
+                                ev.changes.forEach { if (it.positionChanged()) it.consume() }
+                            }
+                            0 -> {
+                                moved += pressed[0].positionChange()
+                                if (abs(moved.x) > viewConfiguration.touchSlop || abs(moved.y) > viewConfiguration.touchSlop) {
+                                    axis = if (abs(moved.x) > abs(moved.y)) 1 else 2
+                                    adjust?.onStart?.invoke(axis == 1)
+                                    pressed[0].consume()
+                                }
+                            }
+                            else -> {
+                                val d = pressed[0].positionChange()
+                                adjust?.onMove?.invoke(d.x / size.width, d.y)
+                                pressed[0].consume()
+                            }
+                        }
+                    }
+                    if (axis == 1 || axis == 2) adjust?.onEnd?.invoke()
                 }
             }
             .pointerInput(Unit) {
@@ -767,10 +965,88 @@ private fun ZoomableImage(
                         filterQuality = FilterQuality.Medium,
                     )
                 }
+                if (compare != null) {
+                    // The divider is in screen space; this canvas is zoomed and panned.
+                    val cx = size.width / 2 + (splitAt * size.width - size.width / 2 - offset.x) / scale
+                    clipRect(right = cx) { drawLayer(compare, fitRect(size, compare.width, compare.height)) }
+                }
                 if (grid) drawGrid(r, 8, Color.White.copy(alpha = 0.35f))
             }
         }
+        if (compare != null) {
+            Canvas(Modifier.fillMaxSize()) {
+                val x = splitAt * size.width
+                drawLine(Color.White, Offset(x, 0f), Offset(x, size.height), 2.dp.toPx())
+                val c = Offset(x, size.height / 2)
+                drawCircle(Color.Black.copy(alpha = 0.5f), 16.dp.toPx(), c)
+                drawCircle(Color.White, 16.dp.toPx(), c, style = Stroke(2.dp.toPx()))
+                val a = 5.dp.toPx()
+                for (sgn in listOf(-1f, 1f)) {
+                    val tip = c + Offset(sgn * 10.dp.toPx(), 0f)
+                    val path = Path().apply {
+                        moveTo(tip.x, tip.y)
+                        lineTo(tip.x - sgn * a, tip.y - a)
+                        lineTo(tip.x - sgn * a, tip.y + a)
+                        close()
+                    }
+                    drawPath(path, Color.White)
+                }
+            }
+            // A wide grab strip over the divider.
+            Box(
+                Modifier.fillMaxHeight().width(48.dp)
+                    .offset { IntOffset((split * box.width - 24.dp.toPx()).roundToInt(), 0) }
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures { change, dx ->
+                            change.consume()
+                            if (box.width > 0f) splitChanged((split + dx / box.width).coerceIn(0.02f, 0.98f))
+                        }
+                    },
+            )
+        }
     }
+}
+
+/** Swipe mode's gesture state, kept across one gesture's callbacks. */
+private class SwipeState {
+    var acc = 0f
+    var startIndex = 0
+    var detent: Detent? = null
+}
+
+@Composable
+private fun OverlayButton(
+    icon: ImageVector,
+    description: String,
+    enabled: Boolean = true,
+    selected: Boolean = false,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+) {
+    Box(
+        Modifier.size(44.dp).clip(CircleShape)
+            .background(if (selected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.45f))
+            .then(if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick) else Modifier)
+            .then(modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, description, tint = when { selected -> MaterialTheme.colorScheme.onPrimary; enabled -> Color.White; else -> Color.Gray })
+    }
+}
+
+@Composable
+private fun OverlayLabel(text: String, modifier: Modifier) {
+    Text(
+        text, color = Color.White, fontSize = 12.sp,
+        modifier = modifier.padding(8.dp).clip(RoundedCornerShape(4.dp))
+            .background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 6.dp, vertical = 2.dp),
+    )
+}
+
+/** Marks a tool, tab or slider that differs from its default. */
+@Composable
+private fun ChangedDot(modifier: Modifier = Modifier) {
+    Box(modifier.size(6.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
 }
 
 private fun DrawScope.drawGrid(r: Rect, n: Int, color: Color) {
@@ -961,9 +1237,10 @@ private fun CropPanel(c: Controls, o: OpenedPhoto?, aspect: Float?, onAspect: (F
 private class Controls(val s: Settings, val change: (Settings) -> Unit, val done: () -> Unit, val commit: (Settings) -> Unit)
 
 @Composable
-private fun SectionHeader(title: String, c: Controls, vararg groups: Group) {
-    Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun SectionHeader(title: String, c: Controls, vararg groups: Group, actions: @Composable () -> Unit = {}) {
+    Row(Modifier.fillMaxWidth().padding(top = 8.dp).fadeWhileAdjusting(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.weight(1f))
+        actions()
         if (groups.isNotEmpty() && groups.any { !c.s.isDefault(it) }) {
             TextButton(onClick = { c.commit(groups.fold(c.s) { acc, g -> acc.reset(g) }) }) { Text("Reset", fontSize = 12.sp) }
         }
@@ -973,33 +1250,48 @@ private fun SectionHeader(title: String, c: Controls, vararg groups: Group) {
 @Composable
 private fun ParamSlider(p: Param, c: Controls, label: String = p.label, track: Brush? = null) {
     AdjustSlider(
-        label, c.s[p], p.min..p.max, p.default,
-        { if (p.min < 0f) signed(it, p.decimals) else plain(it, p.decimals) }, track,
+        label, c.s[p], p.min..p.max, p.default, { formatParam(p, it) }, track,
         { c.change(c.s.with(p, it)) }, c.done,
+        changed = p.key in c.s.values,
     )
 }
 
+private fun formatParam(p: Param, v: Float) = if (p.min < 0f) signed(v, p.decimals) else plain(v, p.decimals)
+
 @Composable
 private fun ParamSwitch(p: Param, c: Controls, label: String = p.label) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().fadeWhileAdjusting(), verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
         Switch(checked = c.s.on(p), onCheckedChange = { c.commit(c.s.with(p, if (it) 1f else 0f)) })
     }
 }
 
 @Composable
-private fun Chips(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        options.forEachIndexed { i, label -> FilterChip(selected = i == selected, onClick = { onSelect(i) }, label = { Text(label) }) }
+private fun Chips(options: List<String>, selected: Int, marked: List<Boolean> = emptyList(), onSelect: (Int) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp).fadeWhileAdjusting(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        options.forEachIndexed { i, label ->
+            FilterChip(
+                selected = i == selected, onClick = { onSelect(i) },
+                label = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(label)
+                        if (marked.getOrElse(i) { false }) ChangedDot(Modifier.padding(start = 6.dp))
+                    }
+                },
+            )
+        }
     }
 }
 
 @Composable
-private fun LightPanel(c: Controls) {
+private fun LightPanel(c: Controls, onAuto: (() -> Unit)?) {
     val s = c.s
     var curve by remember { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp),
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp).fadeWhileAdjusting(),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1008,9 +1300,17 @@ private fun LightPanel(c: Controls) {
             FilterChip(selected = s.profile == p, onClick = { c.commit(s.copy(profile = p)) }, label = { Text(p.label) })
         }
     }
-    Chips(listOf("Sliders", "Curve"), if (curve) 1 else 0) { curve = it == 1 }
+    Chips(listOf("Sliders", "Curve"), if (curve) 1 else 0, listOf(!s.isDefault(Group.LIGHT), !s.isDefault(Group.CURVE))) { curve = it == 1 }
     if (!curve) {
-        SectionHeader("Light", c, Group.LIGHT)
+        SectionHeader("Light", c, Group.LIGHT) {
+            if (onAuto != null) {
+                TextButton(onClick = onAuto) {
+                    Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Auto", fontSize = 12.sp)
+                }
+            }
+        }
         for (p in listOf(P.EXPOSURE, P.CONTRAST, P.HIGHLIGHTS, P.SHADOWS, P.WHITES, P.BLACKS)) ParamSlider(p, c)
     } else {
         CurvePanel(c)
@@ -1197,7 +1497,8 @@ private fun hueColor(h: Float, s: Float = 0.85f, v: Float = 0.95f) = Color.hsv((
 @Composable
 private fun ColorPanel(c: Controls, source: DevelopSource?) {
     var mode by remember { mutableIntStateOf(0) }
-    Chips(listOf("Basic", "Mix", "Grading"), mode) { mode = it }
+    val s = c.s
+    Chips(listOf("Basic", "Mix", "Grading"), mode, listOf(!s.isDefault(Group.COLOR), !s.isDefault(Group.MIXER), !s.isDefault(Group.GRADING))) { mode = it }
     when (mode) {
         0 -> BasicColor(c, source)
         1 -> MixPanel(c)
@@ -1214,7 +1515,7 @@ private fun BasicColor(c: Controls, source: DevelopSource?) {
     val preset = WhiteBalance.entries.firstOrNull { it.kelvin == s.temperature && it.tint == s.tint }
     SectionHeader("White balance", c)
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp),
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp).fadeWhileAdjusting(),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         FilterChip(selected = s.temperature == null, onClick = { c.commit(s.withWhiteBalance(null, null)) }, label = { Text("As Shot") })
@@ -1232,11 +1533,14 @@ private fun BasicColor(c: Controls, source: DevelopSource?) {
         { "${(1e6f / (500f - it * 460f) / 50f).roundToInt() * 50}" }, TEMP_TRACK,
         { c.change(s.withWhiteBalance(1e6f / (500f - it * 460f), tint)) }, c.done,
         reset = { c.commit(s.withWhiteBalance(null, null)) },
+        parse = { t -> parseNumber(t)?.takeIf { it > 0f }?.let { k -> (500f - 1e6f / k) / 460f } },
+        changed = s.temperature != null,
     )
     AdjustSlider(
         "Tint", tint, -150f..150f, t0.toFloat(), { signed(it, 0) }, TINT_TRACK,
         { c.change(s.withWhiteBalance(kelvin, it)) }, c.done,
         reset = { c.commit(s.withWhiteBalance(null, null)) },
+        changed = s.tint != null,
     )
     Spacer(Modifier.height(8.dp))
     ParamSlider(P.VIBRANCE, c, track = SAT_TRACK)
@@ -1253,7 +1557,7 @@ private fun MixPanel(c: Controls) {
         return
     }
     var band by remember { mutableIntStateOf(0) }
-    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp).fadeWhileAdjusting(), horizontalArrangement = Arrangement.SpaceEvenly) {
         P.MIX_BANDS.forEachIndexed { i, (_, hue) ->
             Box(
                 Modifier.size(28.dp).clip(CircleShape).background(hueColor(hue))
@@ -1272,7 +1576,10 @@ private fun MixPanel(c: Controls) {
 private fun GradingPanel(c: Controls) {
     var zone by remember { mutableIntStateOf(0) }
     SectionHeader("Color grading", c, Group.GRADING)
-    Chips(listOf("Shadows", "Midtones", "Highlights", "Global"), zone) { zone = it }
+    Chips(
+        listOf("Shadows", "Midtones", "Highlights", "Global"), zone,
+        List(4) { z -> listOf(P.GRADE_HUE[z], P.GRADE_SAT[z], P.GRADE_LUM[z]).any { it.key in c.s.values } },
+    ) { zone = it }
     ColorWheel(
         hue = c.s[P.GRADE_HUE[zone]], sat = c.s[P.GRADE_SAT[zone]],
         onChange = { h, sat -> c.change(c.s.with(P.GRADE_HUE[zone] to h, P.GRADE_SAT[zone] to sat)) },
@@ -1529,7 +1836,10 @@ private fun signed(v: Float, decimals: Int): String {
 
 private fun plain(v: Float, decimals: Int) = if (decimals == 0) "${v.roundToInt()}" else "%.${decimals}f".format(v)
 
-/** A Lightroom-style slider row. Double-tap the label to reset it. */
+/**
+ * A Lightroom-style slider row. Drag the slider (slower as your finger moves away from it), tap
+ * the value to type one, double-tap or long-press the label to reset. A dot marks a change.
+ */
 @Composable
 private fun AdjustSlider(
     label: String,
@@ -1541,36 +1851,46 @@ private fun AdjustSlider(
     onChange: (Float) -> Unit,
     onDone: () -> Unit,
     reset: (() -> Unit)? = null,
+    parse: (String) -> Float? = ::parseNumber,
+    changed: Boolean = abs(value - default) > 1e-4f,
 ) {
-    Column(Modifier.fillMaxWidth()) {
-        Row(
-            Modifier.fillMaxWidth().pointerInput(label) {
-                detectTapGestures(onDoubleTap = { if (reset != null) reset() else { onChange(default); onDone() } })
-            }.padding(top = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(label, color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
-            Text(format(value), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-        }
-        Box(contentAlignment = Alignment.Center) {
-            if (track != null) {
-                Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(track))
+    var active by remember { mutableStateOf(false) }
+    var speed by remember { mutableFloatStateOf(1f) }
+    var typing by remember { mutableStateOf(false) }
+    val haptics = LocalHapticFeedback.current
+    val fade by animateFloatAsState(if (LocalAdjusting.current && !active) 0f else 1f, label = "fade")
+    val resetNow by rememberUpdatedState({ if (reset != null) reset() else { onChange(default); onDone() } })
+    Column(Modifier.fillMaxWidth().graphicsLayer { alpha = fade }) {
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.weight(1f).pointerInput(Unit) {
+                    detectTapGestures(
+                        onDoubleTap = { resetNow() },
+                        onLongPress = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); resetNow() },
+                    )
+                }.padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(label, color = Color.White, fontSize = 13.sp)
+                if (changed) ChangedDot(Modifier.padding(start = 6.dp))
             }
-            Slider(
-                value = value.coerceIn(range.start, range.endInclusive),
-                onValueChange = onChange,
-                onValueChangeFinished = onDone,
-                valueRange = range,
-                colors = if (track != null) SliderDefaults.colors(
-                    thumbColor = Color.White,
-                    activeTrackColor = Color.Transparent,
-                    inactiveTrackColor = Color.Transparent,
-                ) else SliderDefaults.colors(
-                    thumbColor = Color.White,
-                    activeTrackColor = Color(0xFF9A9A9A),
-                    inactiveTrackColor = Color(0xFF4A4A4A),
-                ),
+            if (speed < 1f) Text(speedLabel(speed), color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(end = 6.dp))
+            Text(
+                format(value), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { typing = true }
+                    .background(Color.White.copy(alpha = 0.08f)).padding(horizontal = 6.dp, vertical = 2.dp),
             )
+        }
+        PrecisionSlider(
+            value = value, range = range, default = default, track = track,
+            onChange = onChange, onDone = onDone,
+            onActive = { active = it }, onSpeed = { speed = it },
+        )
+    }
+    if (typing) {
+        ValueDialog(label, format(value), onDismiss = { typing = false }) { text ->
+            parse(text)?.let { onChange(it.coerceIn(range.start, range.endInclusive)); onDone() }
+            typing = false
         }
     }
 }
