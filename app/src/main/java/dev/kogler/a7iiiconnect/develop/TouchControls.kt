@@ -5,6 +5,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -103,6 +104,7 @@ internal fun PrecisionSlider(
     onDone: () -> Unit,
     onActive: (Boolean) -> Unit,
     onSpeed: (Float) -> Unit,
+    onDoubleTap: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val haptics = LocalHapticFeedback.current
@@ -111,6 +113,7 @@ internal fun PrecisionSlider(
     val done by rememberUpdatedState(onDone)
     val active by rememberUpdatedState(onActive)
     val speedChanged by rememberUpdatedState(onSpeed)
+    val doubleTap by rememberUpdatedState(onDoubleTap)
     val lo = range.start; val hi = range.endInclusive
     val span = (hi - lo).coerceAtLeast(1e-6f)
 
@@ -146,6 +149,9 @@ internal fun PrecisionSlider(
                 if (speed != 1f) speedChanged(1f)
                 done()
             }
+        }.pointerInput(Unit) {
+            // A drag consumes its moves, which cancels this; a double tap resets.
+            detectTapGestures(onDoubleTap = { doubleTap?.invoke() })
         },
     ) {
         val pad = 12.dp.toPx()
