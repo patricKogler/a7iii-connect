@@ -69,45 +69,6 @@ class GpuParityTest {
 
         val outDir = File("build/screenshots").apply { mkdirs() }
         val report = StringBuilder()
-        // Controls: does the offscreen hardware path draw at all, and do shaders and textures reach it?
-        fun probe(name: String, draw: (Canvas) -> Unit) {
-            val r = runCatching {
-                val b = hardwareDraw(4, 4, draw)
-                "%08x".format(b.getPixel(1, 1))
-            }
-            report.append("probe $name\t${r.getOrElse { "${it.javaClass.simpleName}: ${it.message}" }}\n")
-        }
-        probe("rect") { it.drawColor(0xffff0000.toInt()) }
-        probe("shader-const") { c ->
-            val sh = android.graphics.RuntimeShader("half4 main(float2 p) { return half4(0, 1, 0, 1); }")
-            c.drawRect(0f, 0f, 4f, 4f, android.graphics.Paint().apply { shader = sh })
-        }
-        probe("shader-texture") { c ->
-            val tex = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888).apply { eraseColor(0xff0000ff.toInt()) }
-            val sh = android.graphics.RuntimeShader("uniform shader s; half4 main(float2 p) { return sample(s, p); }")
-            sh.setInputShader("s", android.graphics.BitmapShader(tex, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP))
-            c.drawRect(0f, 0f, 4f, 4f, android.graphics.Paint().apply { shader = sh })
-        }
-        probe("shader-f16") { c ->
-            val tex = Bitmap.createBitmap(4, 4, Bitmap.Config.RGBA_F16, true, android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.EXTENDED_SRGB))
-            tex.eraseColor(0xffffff00.toInt())
-            val sh = android.graphics.RuntimeShader("uniform shader s; half4 main(float2 p) { return sample(s, p); }")
-            sh.setInputShader("s", android.graphics.BitmapShader(tex, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP))
-            c.drawRect(0f, 0f, 4f, 4f, android.graphics.Paint().apply { shader = sh })
-        }
-        fun uprobe(name: String, src: String, set: (android.graphics.RuntimeShader) -> Unit) = probe(name) { c ->
-            val sh = android.graphics.RuntimeShader(src)
-            set(sh)
-            c.drawRect(0f, 0f, 4f, 4f, android.graphics.Paint().apply { shader = sh })
-        }
-        uprobe("u-float", "uniform float a; half4 main(float2 p) { return half4(a, 0, 0, 1); }") { it.setFloatUniform("a", 0.5f) }
-        uprobe("u-float3", "uniform float3 a; half4 main(float2 p) { return half4(a, 1); }") { it.setFloatUniform("a", 0.25f, 0.5f, 0.75f) }
-        uprobe("u-2nd", "uniform float2 a; uniform float3 b; half4 main(float2 p) { return half4(b, 1); }") { it.setFloatUniform("a", 9f, 9f); it.setFloatUniform("b", 0.25f, 0.5f, 0.75f) }
-        uprobe("u-array", "uniform float a[4]; half4 main(float2 p) { return half4(a[1], a[2], a[3], 1); }") { it.setFloatUniform("a", floatArrayOf(0.1f, 0.25f, 0.5f, 0.75f)) }
-        uprobe("u-shader+f", "uniform shader s; uniform float3 a; half4 main(float2 p) { return half4(a, 1); }") {
-            it.setInputShader("s", android.graphics.BitmapShader(Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888), android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP))
-            it.setFloatUniform("a", 0.25f, 0.5f, 0.75f)
-        }
         report.append("case\tmeanAbs\tp99\tmax\n")
         for ((name, pair) in cases) {
             val (src, s) = pair
@@ -129,30 +90,9 @@ class GpuParityTest {
                     gpu.set(frame)
                     return hardwareDraw(sw, sh) { gpu.draw(it, 0f, 0f, sw.toFloat(), sh.toFloat()) }
                 }
-                if (name == "raw-default") {
-                    // Stage outputs at the centre pixel, to find where the shader departs from the CPU.
-                    val stages = listOf(
-                        "scene" to ("    float3 c = lin(p);\n" to "    float3 c = lin(p);\n    return half4(half3(clamp(EVAL(scene, p).rgb, 0.0, 1.0)), 1.0);\n"),
-                        "lin" to ("    float3 c = lin(p);\n" to "    float3 c = lin(p);\n    return half4(half3(clamp(c, 0.0, 1.0)), 1.0);\n"),
-                        "tone0.12" to ("    float3 c = lin(p);\n" to "    float3 c = lin(p);\n    return half4(half3(tone(0.12)), 1.0);\n"),
-                        "lut-raw" to ("    float3 c = lin(p);\n" to "    float3 c = lin(p);\n    return half4(EVAL(toneLut, float2(2048.5, 0.5)).rgb, 1.0);\n"),
-                        "row0" to ("    float3 c = lin(p);\n" to "    float3 c = lin(p);\n    return half4(half3(clamp(row0 * 0.5 + 0.5, 0.0, 1.0)), 1.0);\n"),
-                        "toned" to ("    // Tone curve and point curves, into display space.\n" to "    c = float3(tone(c.r), tone(c.g), tone(c.b));\n    return half4(half3(clamp(c, 0.0, 1.0)), 1.0);\n"),
-                    )
-                    for ((stage, rep) in stages) {
-                        val r = runCatching {
-                            val b = gpuRender(GpuPreview.AGSL.replace(rep.first, rep.second))
-                            "%08x".format(b.getPixel(sw / 2, sh / 2))
-                        }
-                        report.append("# stage $stage\t${r.getOrElse { it.message?.lines()?.take(3)?.joinToString(" | ") }}\n")
-                    }
-                    val sc = scene.width / 2 + scene.width * (scene.height / 2)
-                    report.append("# cpu scene ${scene.r[sc]} ${scene.g[sc]} ${scene.b[sc]}, row0 ${look.shaderParams(sampler.scale).matrix.take(3)}, tone(0.12) ${look.shaderParams(sampler.scale).tone[(kotlin.math.sqrt(0.12 / 64.0) * 4096).toInt()]}\n")
-                }
                 val out = gpuRender(GpuPreview.AGSL)
                 val g = IntArray(sw * sh)
                 out.getPixels(g, 0, sw, 0, 0, sw, sh)
-                report.append("# $name gpu center ${"%08x".format(g[(sh / 2) * sw + sw / 2])}, cpu ${"%08x".format(cpu[(sh / 2) * sw + sw / 2])}\n")
 
                 val diffs = IntArray(sw * sh * 3)
                 var sum = 0L
