@@ -50,6 +50,15 @@ android {
     buildFeatures {
         compose = true
     }
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            all {
+                it.maxHeapSize = "4g"
+                it.systemProperty("roborazzi.test.record", "true")
+            }
+        }
+    }
 }
 
 dependencies {
@@ -62,4 +71,14 @@ dependencies {
     implementation("androidx.compose.animation:animation")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+
+    // Screenshot tests: the editor rendered on the JVM (Robolectric + Roborazzi).
+    testImplementation(composeBom)
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.36.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.36.0")
+    debugImplementation(composeBom)
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

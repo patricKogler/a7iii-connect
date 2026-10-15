@@ -111,6 +111,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -461,7 +462,7 @@ fun EditorScreen(
                 for (t in Tool.entries) {
                     val selected = tool == t
                     Column(
-                        Modifier.clip(RoundedCornerShape(8.dp)).clickable {
+                        Modifier.testTag("tool-${t.name}").clip(RoundedCornerShape(8.dp)).clickable {
                             if (t == Tool.AUTO) {
                                 val src = opened?.preview
                                 if (src != null) {
@@ -546,6 +547,10 @@ private class GuideCache {
     }
 }
 
+/** Finished preview renders, so screenshot tests know when the photo is on screen. */
+@Volatile
+internal var renderCount = 0
+
 /** Two bitmaps per size, alternated, so the one on screen is never being written. */
 private class BitmapPool {
     private val bitmaps = HashMap<Long, Array<Bitmap>>()
@@ -564,6 +569,7 @@ private class BitmapPool {
         val px = IntArray(w * h)
         renderBands(look, sampler, guide, 256) { y, rows, band -> System.arraycopy(band, 0, px, y * w, rows * w) }
         bmp.setPixels(px, 0, w, 0, 0, w, h)
+        renderCount++
         return Rendered(bmp.asImageBitmap(), histogram(px), s, crop)
     }
 }
