@@ -739,25 +739,28 @@ private fun geometryKey(o: OpenedPhoto, s: Settings, crop: Boolean) = listOf(
 
 /**
  * Guides are slow to build (a few hundred ms), so keep the last one while only non-guide sliders
- * move. Exposure doesn't change it (see Look.guide); while white balance is being dragged the
- * previous one is close enough.
+ * move. Exposure doesn't change it (see Look.guide); while any slider (white balance, geometry,
+ * lens) is being dragged the previous one is close enough.
  */
 private class GuideCache {
     private var geoKey: Any? = null
     private var colorKey: Any? = null
+    private var cropMode: Boolean? = null
     private var guide: Guide? = null
     private var bitmap: Bitmap? = null
 
     @Synchronized
-    fun clear() { geoKey = null; colorKey = null; guide = null; bitmap = null }
+    fun clear() { geoKey = null; colorKey = null; cropMode = null; guide = null; bitmap = null }
 
     @Synchronized
     fun get(o: OpenedPhoto, look: Look, s: Settings, crop: Boolean, allowStale: Boolean = false): Guide? {
         val gk = geometryKey(o, s, crop)
         val ck = listOf(s.profile, s.temperature, s.tint)
-        if (gk == geoKey && guide != null && (ck == colorKey || allowStale)) return guide
+        // While a slider moves, any recent guide will do (the shader samples it by position, so
+        // a slightly different geometry only blurs the local tone briefly); it's rebuilt on release.
+        if (guide != null && ((gk == geoKey && ck == colorKey) || (allowStale && crop == cropMode))) return guide
         val g = look.guide(o.preview.image, o.geometry(s, crop)) ?: return null
-        geoKey = gk; colorKey = ck; guide = g; bitmap = null
+        geoKey = gk; colorKey = ck; cropMode = crop; guide = g; bitmap = null
         return g
     }
 
@@ -1838,7 +1841,8 @@ private fun plain(v: Float, decimals: Int) = if (decimals == 0) "${v.roundToInt(
 
 /**
  * A Lightroom-style slider row. Drag the slider (slower as your finger moves away from it), tap
- * the value to type one, double-tap or long-press the label to reset. A dot marks a change.
+ * the value to type one, double-tap the slider or double-tap/long-press the label to reset. A dot
+ * marks a change.
  */
 @Composable
 private fun AdjustSlider(
@@ -1885,6 +1889,7 @@ private fun AdjustSlider(
             value = value, range = range, default = default, track = track,
             onChange = onChange, onDone = onDone,
             onActive = { active = it }, onSpeed = { speed = it },
+            onDoubleTap = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); resetNow() },
         )
     }
     if (typing) {
