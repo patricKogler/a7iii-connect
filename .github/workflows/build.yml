@@ -19,6 +19,14 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
+      - name: Build the Rust engine (arm64)
+        run: |
+          rustup target add aarch64-linux-android
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android31-clang"
+          cargo build --manifest-path native/Cargo.toml --release --target aarch64-linux-android
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp native/target/aarch64-linux-android/release/libdevelop.so app/src/main/jniLibs/arm64-v8a/
       - name: Decode signing key
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}

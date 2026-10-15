@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -104,6 +106,8 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -111,6 +115,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -122,6 +128,7 @@ import dev.kogler.a7iiiconnect.develop.engine.DevelopSource
 import dev.kogler.a7iiiconnect.develop.engine.Group
 import dev.kogler.a7iiiconnect.develop.engine.Guide
 import dev.kogler.a7iiiconnect.develop.engine.ImageSampler
+import dev.kogler.a7iiiconnect.develop.engine.LinearImage
 import dev.kogler.a7iiiconnect.develop.engine.Look
 import dev.kogler.a7iiiconnect.develop.engine.P
 import dev.kogler.a7iiiconnect.develop.engine.Param
@@ -181,7 +188,33 @@ private class History(initial: Settings) {
     fun redo(): Settings { if (at < steps.size - 1) at++; version++; return steps[at] }
 }
 
-private class Rendered(val image: ImageBitmap, val histogram: Array<IntArray>, val settings: Settings, val cropMode: Boolean)
+private class Rendered(val layer: PhotoLayer, val histogram: Array<IntArray>?, val settings: Settings, val cropMode: Boolean)
+
+/** What the photo area draws: a rendered bitmap, or the GPU preview's current frame. */
+private sealed interface PhotoLayer {
+    val width: Int
+    val height: Int
+}
+
+private class BitmapLayer(val image: ImageBitmap) : PhotoLayer {
+    override val width get() = image.width
+    override val height get() = image.height
+}
+
+/** [version] changes with every frame so Compose redraws. */
+private class GpuLayer(val gpu: GpuPreview, override val width: Int, override val height: Int, val version: Int) : PhotoLayer
+
+private fun DrawScope.drawLayer(layer: PhotoLayer, r: Rect) {
+    when (layer) {
+        is BitmapLayer -> drawImage(
+            layer.image, dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()),
+            dstSize = IntSize(r.width.roundToInt(), r.height.roundToInt()), filterQuality = FilterQuality.Medium,
+        )
+        is GpuLayer -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            drawIntoCanvas { layer.gpu.draw(it.nativeCanvas, r.left, r.top, r.width, r.height) }
+        }
+    }
+}
 
 /** A sharp full-resolution render of part of the photo, placed by its fraction of the frame. */
 private class Tile(val image: ImageBitmap, val area: Rect, val settings: Settings)
@@ -238,21 +271,40 @@ fun EditorScreen(
         result.onSuccess { opened = it }.onFailure { loadError = it.message ?: it.javaClass.simpleName }
     }
 
-    // Re-render on every change; while a slider moves, use the smaller draft for speed. The crop
-    // tool shows the whole frame so the crop box can be moved over it.
+    // Re-render on every change. On Android 13+ the GPU runs the develop shader, so only geometry
+    // changes touch the CPU; otherwise the CPU renders, using the smaller draft while a slider
+    // moves. The crop tool shows the whole frame so the crop box can be moved over it.
+    // Shaders only draw on a hardware canvas, so a software-drawn window keeps the CPU render.
+    val hardware = LocalView.current.isHardwareAccelerated
     LaunchedEffect(opened) {
         val o = opened ?: return@LaunchedEffect
+        val gpu = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && hardware && gpuPreviewEnabled) runCatching { GpuPreview() }.getOrNull() else null
         val pool = BitmapPool()
+        val scenes = if (gpu != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) SceneCache() else null
+        var version = 0
         snapshotFlow { Triple(settings, dragging, tool == Tool.CROP) }.collectLatest { (s, d, crop) ->
-            val src = if (d) o.draft else o.preview
-            rendered = withContext(Dispatchers.Default) { pool.render(o, src, s, crop, guides) }
+            if (gpu != null && scenes != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val frame = withContext(Dispatchers.Default) { scenes.frame(o, s, d, crop, guides) }
+                gpu.set(frame)
+                val layer = GpuLayer(gpu, frame.scene.width, frame.scene.height, ++version)
+                rendered = Rendered(layer, rendered?.histogram, s, crop)
+                renderCount++
+                if (!d) {
+                    delay(120)
+                    val h = withContext(Dispatchers.Default) { histogramOf(o, s, crop, guides) }
+                    rendered = Rendered(layer, h, s, crop)
+                }
+            } else {
+                val src = if (d) o.draft else o.preview
+                rendered = withContext(Dispatchers.Default) { pool.render(o, src, s, crop, guides) }
+            }
         }
     }
 
     LaunchedEffect(showBefore, opened) {
         val o = opened ?: return@LaunchedEffect
         if (showBefore && before == null) {
-            before = withContext(Dispatchers.Default) { BitmapPool().render(o, o.preview, Settings(), false, GuideCache()).image }
+            before = withContext(Dispatchers.Default) { (BitmapPool().render(o, o.preview, Settings(), false, GuideCache()).layer as BitmapLayer).image }
         }
     }
 
@@ -270,7 +322,7 @@ fun EditorScreen(
                 val geom = o.geometry(s)
                 val fullW = v.area.width * geom.outW
                 val scale = minOf(1.0, v.screenWidth / fullW)
-                val previewScale = r.image.width / geom.outW
+                val previewScale = r.layer.width / geom.outW
                 if (scale < previewScale * 1.2) return@runCatching null
                 val fw = geom.outW * scale; val fh = geom.outH * scale
                 val x0 = (v.area.left * fw).toInt(); val y0 = (v.area.top * fh).toInt()
@@ -372,11 +424,12 @@ fun EditorScreen(
             // Photo
             Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(0.dp))) {
                 val r = rendered
-                val shown = if (showBefore) before ?: r?.image else r?.image ?: placeholder
+                val shown: PhotoLayer? = if (showBefore) before?.let { BitmapLayer(it) } ?: r?.layer
+                else r?.layer ?: placeholder?.let { BitmapLayer(it) }
                 val o = opened
                 if (cropMode && r != null && o != null) {
                     CropView(
-                        image = r.image,
+                        layer = r.layer,
                         settings = settings,
                         aspect = cropAspect,
                         onChange = { settings = it },
@@ -384,7 +437,7 @@ fun EditorScreen(
                     )
                 } else {
                     ZoomableImage(
-                        image = shown,
+                        layer = shown,
                         tile = if (showBefore) null else tile?.takeIf { it.settings == r?.settings },
                         grid = tool == Tool.GEOMETRY && dragging,
                         onHold = { showBefore = it },
@@ -461,7 +514,7 @@ fun EditorScreen(
                 for (t in Tool.entries) {
                     val selected = tool == t
                     Column(
-                        Modifier.clip(RoundedCornerShape(8.dp)).clickable {
+                        Modifier.testTag("tool-${t.name}").clip(RoundedCornerShape(8.dp)).clickable {
                             if (t == Tool.AUTO) {
                                 val src = opened?.preview
                                 if (src != null) {
@@ -521,30 +574,93 @@ fun EditorScreen(
 // so it survives switching tools, like Lightroom's.
 private var cropAspect by mutableStateOf<Float?>(null)
 
-/** Guides are slow to build (a few hundred ms), so keep the last one while only non-guide sliders move. */
+/** The settings that move pixels around (lens, geometry, crop): a new scene when they change. */
+private fun geometryKey(o: OpenedPhoto, s: Settings, crop: Boolean) = listOf(
+    o.photo.id, crop,
+    s.values.filterKeys { k -> P.byKey[k]?.group.let { it == Group.OPTICS || it == Group.GEOMETRY || it == Group.CROP } },
+)
+
+/**
+ * Guides are slow to build (a few hundred ms), so keep the last one while only non-guide sliders
+ * move. Exposure doesn't change it (see Look.guide); while white balance is being dragged the
+ * previous one is close enough.
+ */
 private class GuideCache {
-    private var key: Any? = null
+    private var geoKey: Any? = null
+    private var colorKey: Any? = null
     private var guide: Guide? = null
+    private var bitmap: Bitmap? = null
 
     @Synchronized
-    fun clear() { key = null; guide = null }
+    fun clear() { geoKey = null; colorKey = null; guide = null; bitmap = null }
 
     @Synchronized
-    fun get(o: OpenedPhoto, look: Look, s: Settings, crop: Boolean): Guide? {
-        val k = listOf(
-            o.photo.id, crop, s.profile,
-            s.values.filterKeys { k ->
-                val g = P.byKey[k]?.group
-                g == Group.OPTICS || g == Group.GEOMETRY || g == Group.CROP ||
-                    k == P.EXPOSURE.key || k == P.TEMPERATURE.key || k == P.TINT.key
-            },
-        )
-        if (k == key && guide != null) return guide
+    fun get(o: OpenedPhoto, look: Look, s: Settings, crop: Boolean, allowStale: Boolean = false): Guide? {
+        val gk = geometryKey(o, s, crop)
+        val ck = listOf(s.profile, s.temperature, s.tint)
+        if (gk == geoKey && guide != null && (ck == colorKey || allowStale)) return guide
         val g = look.guide(o.preview.image, o.geometry(s, crop)) ?: return null
-        key = k; guide = g
+        geoKey = gk; colorKey = ck; guide = g; bitmap = null
         return g
     }
+
+    /** The guide as a GPU texture. */
+    @Synchronized
+    fun bitmapOf(g: Guide): Bitmap? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null
+        if (g !== guide) return GpuPreview.guideBitmap(g)
+        return bitmap ?: GpuPreview.guideBitmap(g).also { bitmap = it }
+    }
 }
+
+/**
+ * The GPU preview's input: the photo's camera pixels with lens, geometry and crop applied. Built
+ * from the small draft while geometry sliders move, and from the full preview otherwise.
+ */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private class SceneCache {
+    private var key: Any? = null
+    private var fromPreview = false
+    private var scene: Bitmap? = null
+    private var scale = 1.0
+
+    fun frame(o: OpenedPhoto, s: Settings, dragging: Boolean, crop: Boolean, guides: GuideCache): GpuPreview.Frame {
+        val k = geometryKey(o, s, crop)
+        val geom = o.geometry(s, crop)
+        if (k != key || scene == null || (!fromPreview && !dragging)) {
+            val src = if (dragging) o.draft else o.preview
+            val sampler = ImageSampler(src.image, geom)
+            val img = LinearImage(sampler.width, sampler.height)
+            sampler.fill(0, sampler.height, img)
+            scene = GpuPreview.sceneBitmap(img)
+            scale = sampler.scale
+            key = k
+            fromPreview = !dragging
+        }
+        val look = Look(o.preview, s)
+        val guide = guides.get(o, look, s, crop, allowStale = dragging)
+        return GpuPreview.prepare(scene!!, guide, guide?.let { guides.bitmapOf(it) }, look.shaderParams(scale))
+    }
+}
+
+/** Histogram of a small CPU render, for the overlay (the GPU frame isn't read back). */
+private fun histogramOf(o: OpenedPhoto, s: Settings, crop: Boolean, guides: GuideCache): Array<IntArray> {
+    val look = Look(o.preview, s)
+    val sampler = ImageSampler(o.preview.image, o.geometry(s, crop), 360)
+    val px = IntArray(sampler.width * sampler.height)
+    renderBands(look, sampler, guides.get(o, look, s, crop), 256) { y, rows, band ->
+        System.arraycopy(band, 0, px, y * sampler.width, rows * sampler.width)
+    }
+    return histogram(px, 1)
+}
+
+/** Finished preview renders, so screenshot tests know when the photo is on screen. */
+@Volatile
+internal var renderCount = 0
+
+/** Off in JVM screenshot tests, whose software canvas can't draw shaders. */
+@Volatile
+internal var gpuPreviewEnabled = true
 
 /** Two bitmaps per size, alternated, so the one on screen is never being written. */
 private class BitmapPool {
@@ -564,7 +680,8 @@ private class BitmapPool {
         val px = IntArray(w * h)
         renderBands(look, sampler, guide, 256) { y, rows, band -> System.arraycopy(band, 0, px, y * w, rows * w) }
         bmp.setPixels(px, 0, w, 0, 0, w, h)
-        return Rendered(bmp.asImageBitmap(), histogram(px), s, crop)
+        renderCount++
+        return Rendered(BitmapLayer(bmp.asImageBitmap()), histogram(px), s, crop)
     }
 }
 
@@ -578,7 +695,7 @@ private fun fitRect(box: Size, w: Int, h: Int): Rect {
 
 @Composable
 private fun ZoomableImage(
-    image: ImageBitmap?,
+    layer: PhotoLayer?,
     tile: Tile?,
     grid: Boolean,
     onHold: (Boolean) -> Unit,
@@ -588,7 +705,7 @@ private fun ZoomableImage(
     var offset by remember { mutableStateOf(Offset.Zero) }
     var box by remember { mutableStateOf(Size.Zero) }
     val report by rememberUpdatedState(onViewport)
-    val img by rememberUpdatedState(image)
+    val img by rememberUpdatedState(layer)
 
     fun clampOffset(o: Offset, s: Float): Offset {
         val i = img ?: return Offset.Zero
@@ -599,8 +716,8 @@ private fun ZoomableImage(
     }
 
     // Tell the editor which part of the photo is on screen, for sharp zoom.
-    LaunchedEffect(scale, offset, box, image?.width, image?.height) {
-        val i = image
+    LaunchedEffect(scale, offset, box, layer?.width, layer?.height) {
+        val i = layer
         if (i == null || scale < 1.5f || box == Size.Zero) { report(null); return@LaunchedEffect }
         val r = fitRect(box, i.width, i.height)
         val c = Offset(box.width / 2, box.height / 2)
@@ -631,18 +748,14 @@ private fun ZoomableImage(
                 )
             },
     ) {
-        if (image != null) {
+        if (layer != null) {
             Canvas(
                 Modifier.fillMaxSize().graphicsLayer {
                     scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y
                 },
             ) {
-                val r = fitRect(size, image.width, image.height)
-                drawImage(
-                    image, dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()),
-                    dstSize = IntSize(r.width.roundToInt(), r.height.roundToInt()),
-                    filterQuality = FilterQuality.Medium,
-                )
+                val r = fitRect(size, layer.width, layer.height)
+                drawLayer(layer, r)
                 if (tile != null) {
                     val a = tile.area
                     val l = r.left + a.left * r.width; val t = r.top + a.top * r.height
@@ -676,7 +789,7 @@ private enum class Handle { TL, TR, BL, BR, L, R, T, B, MOVE }
  * edges resize, inside moves; an aspect lock keeps the box's shape.
  */
 @Composable
-private fun CropView(image: ImageBitmap, settings: Settings, aspect: Float?, onChange: (Settings) -> Unit, onDone: () -> Unit) {
+private fun CropView(layer: PhotoLayer, settings: Settings, aspect: Float?, onChange: (Settings) -> Unit, onDone: () -> Unit) {
     var box by remember { mutableStateOf(Size.Zero) }
     val s by rememberUpdatedState(settings)
     val lock by rememberUpdatedState(aspect)
@@ -688,13 +801,13 @@ private fun CropView(image: ImageBitmap, settings: Settings, aspect: Float?, onC
     Box(
         Modifier.fillMaxSize().padding(20.dp)
             .onSizeChanged { box = Size(it.width.toFloat(), it.height.toFloat()) }
-            .pointerInput(image.width, image.height) {
+            .pointerInput(layer.width, layer.height) {
                 var handle = Handle.MOVE
                 var start = floatArrayOf(0f, 0f, 1f, 1f)
                 var moved = Offset.Zero
                 detectDragGestures(
                     onDragStart = { p ->
-                        val r = fitRect(box, image.width, image.height)
+                        val r = fitRect(box, layer.width, layer.height)
                         start = floatArrayOf(s[P.CROP_LEFT], s[P.CROP_TOP], s[P.CROP_RIGHT], s[P.CROP_BOTTOM])
                         val l = r.left + start[0] * r.width; val t = r.top + start[1] * r.height
                         val rr = r.left + start[2] * r.width; val b = r.top + start[3] * r.height
@@ -715,8 +828,8 @@ private fun CropView(image: ImageBitmap, settings: Settings, aspect: Float?, onC
                     onDrag = { c, d ->
                         c.consume()
                         moved += d
-                        val r = fitRect(box, image.width, image.height)
-                        val crop = dragCrop(start, handle, moved.x / r.width, moved.y / r.height, lock?.let { it * image.height / image.width })
+                        val r = fitRect(box, layer.width, layer.height)
+                        val crop = dragCrop(start, handle, moved.x / r.width, moved.y / r.height, lock?.let { it * layer.height / layer.width })
                         change(s.with(P.CROP_LEFT to crop[0], P.CROP_TOP to crop[1], P.CROP_RIGHT to crop[2], P.CROP_BOTTOM to crop[3]))
                     },
                     onDragEnd = { done() },
@@ -725,11 +838,8 @@ private fun CropView(image: ImageBitmap, settings: Settings, aspect: Float?, onC
             },
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            val r = fitRect(size, image.width, image.height)
-            drawImage(
-                image, dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()),
-                dstSize = IntSize(r.width.roundToInt(), r.height.roundToInt()), filterQuality = FilterQuality.Medium,
-            )
+            val r = fitRect(size, layer.width, layer.height)
+            drawLayer(layer, r)
             val c = Rect(
                 r.left + s[P.CROP_LEFT] * r.width, r.top + s[P.CROP_TOP] * r.height,
                 r.left + s[P.CROP_RIGHT] * r.width, r.top + s[P.CROP_BOTTOM] * r.height,
