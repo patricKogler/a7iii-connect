@@ -1,10 +1,10 @@
 case	meanAbs	p99	max
-raw-default	FAILED	IllegalStateException: no hardware buffer
-raw-light	FAILED	IllegalStateException: no hardware buffer
-raw-local	FAILED	IllegalStateException: no hardware buffer
-raw-color	FAILED	IllegalStateException: no hardware buffer
-raw-mono	FAILED	IllegalStateException: no hardware buffer
-raw-curves	FAILED	IllegalStateException: no hardware buffer
-raw-effects	FAILED	IllegalStateException: no hardware buffer
-raw-grain	FAILED	IllegalStateException: no hardware buffer
-jpeg-mixed	FAILED	IllegalStateException: no hardware buffer
+raw-default	62.10	213	238
+raw-light	158.94	255	255
+raw-local	52.68	199	237
+raw-color	71.31	198	219
+raw-mono	44.84	183	211
+raw-curves	62.25	237	248
+raw-effects	57.71	210	238
+raw-grain	62.35	213	251
+jpeg-mixed	98.03	195	232
