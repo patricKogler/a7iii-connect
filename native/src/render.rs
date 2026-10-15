@@ -46,6 +46,22 @@ pub mod idx {
     pub const COUNT: usize = 87;
 }
 
+/// Mask layout, as in Kotlin's `MaskSet`: per mask kind, two points, cos/sin of the angle,
+/// feather, invert, exclude-subject, then the local sliders from offset 10.
+pub const MASK_STRIDE: usize = 19;
+pub const LOCALS: usize = 9;
+pub mod loc {
+    pub const EV: usize = 0;
+    pub const TEMP: usize = 1;
+    pub const TINT: usize = 2;
+    pub const CONTRAST: usize = 3;
+    pub const HIGHLIGHTS: usize = 4;
+    pub const SHADOWS: usize = 5;
+    pub const CLARITY: usize = 6;
+    pub const DEHAZE: usize = 7;
+    pub const SATURATION: usize = 8;
+}
+
 const LN2: f32 = 0.6931472;
 const LUT_SIZE: usize = 4096;
 const LUT_MAX_F: f32 = 64.0;
@@ -67,6 +83,101 @@ fn exp2(v: f32) -> f32 {
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// A grey map over the upright photo (the subject), sampled by fractions of its size.
+pub struct Subject<'a> {
+    pub width: usize,
+    pub height: usize,
+    pub data: &'a [f32],
+}
+
+impl Subject<'_> {
+    fn at(&self, u: f32, v: f32) -> f32 {
+        let x = (u * self.width as f32 - 0.5).clamp(0.0, self.width as f32 - 1.0);
+        let y = (v * self.height as f32 - 0.5).clamp(0.0, self.height as f32 - 1.0);
+        let x0 = x as usize;
+        let y0 = y as usize;
+        let x1 = (x0 + 1).min(self.width - 1);
+        let y1 = (y0 + 1).min(self.height - 1);
+        let fx = x - x0 as f32;
+        let fy = y - y0 as f32;
+        let (d, w) = (self.data, self.width);
+        let a = d[y0 * w + x0] + (d[y0 * w + x1] - d[y0 * w + x0]) * fx;
+        let b = d[y1 * w + x0] + (d[y1 * w + x1] - d[y1 * w + x0]) * fx;
+        a + (b - a) * fy
+    }
+}
+
+/// The photo's masks, a port of Kotlin's `MaskSet`.
+pub struct Masks<'a> {
+    pub count: usize,
+    pub src_w: f32,
+    pub src_h: f32,
+    pub p: &'a [f32],
+    pub subject: Option<Subject<'a>>,
+}
+
+impl Masks<'_> {
+    pub fn uses(&self, i: usize) -> bool {
+        (0..self.count).any(|k| self.p[k * MASK_STRIDE + 10 + i] != 0.0)
+    }
+
+    fn subject_at(&self, x: f32, y: f32) -> f32 {
+        match &self.subject {
+            Some(s) => s.at(x / self.src_w, y / self.src_h),
+            None => 0.0,
+        }
+    }
+
+    fn weight(&self, k: usize, x: f32, y: f32) -> f32 {
+        let p = &self.p[k * MASK_STRIDE..(k + 1) * MASK_STRIDE];
+        let mut w = match p[0] as i32 {
+            1 => {
+                let dx = p[3] - p[1];
+                let dy = p[4] - p[2];
+                let t = ((x - p[1]) * dx + (y - p[2]) * dy) / (dx * dx + dy * dy).max(1e-6);
+                1.0 - smooth(0.0, 1.0, t)
+            }
+            2 => {
+                let qx = x - p[1];
+                let qy = y - p[2];
+                let rx = (qx * p[5] + qy * p[6]) / p[3];
+                let ry = (-qx * p[6] + qy * p[5]) / p[4];
+                1.0 - smooth(1.0 - p[7], 1.0, (rx * rx + ry * ry).sqrt())
+            }
+            _ => self.subject_at(x, y),
+        };
+        if p[8] > 0.5 {
+            w = 1.0 - w;
+        }
+        if p[9] > 0.5 {
+            w *= 1.0 - self.subject_at(x, y);
+        }
+        w
+    }
+
+    fn add(&self, x: f32, y: f32, out: &mut [f32]) {
+        for k in 0..self.count {
+            let w = self.weight(k, x, y);
+            if w <= 0.0 {
+                continue;
+            }
+            let o = k * MASK_STRIDE + 10;
+            for i in 0..LOCALS {
+                out[i] += w * self.p[o + i];
+            }
+        }
+    }
+}
+
+/// A mask's Exposure (stops), Temp and Tint (-1..1) as linear RGB gains.
+fn local_gains(ev: f32, temp: f32, tint: f32) -> [f32; 3] {
+    let r = exp2(0.4 * temp);
+    let g = exp2(-0.3 * tint);
+    let b = exp2(-0.4 * temp);
+    let k = exp2(ev) / (0.2126 * r + 0.7152 * g + 0.0722 * b);
+    [r * k, g * k, b * k]
 }
 
 pub struct Look<'a> {
@@ -245,7 +356,8 @@ impl Look<'_> {
     }
 
     /// Renders output rows [y0, y1) into `out` (ARGB, row-major, frame.width per row).
-    pub fn render(&self, guide: Option<&Guide>, src: &Source, grid: &Grid, fr: &Frame, y0: usize, y1: usize, out: &mut [i32]) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn render(&self, guide: Option<&Guide>, masks: Option<&Masks>, src: &Source, grid: &Grid, fr: &Frame, y0: usize, y1: usize, out: &mut [i32]) {
         let w = fr.width;
         let hh = fr.height;
         let scale = fr.scale;
@@ -277,6 +389,38 @@ impl Look<'_> {
                     bb[x] = (mx[6] * cr + mx[7] * cg + mx[8] * cb).max(0.0);
                 }
             });
+
+        // --- Masks: every pixel's local sliders (LOCALS per pixel), then local exposure and WB ---
+        let masks = masks.filter(|m| m.count > 0 && (0..LOCALS).any(|i| m.uses(i)));
+        let mut lv: Vec<f32> = Vec::new();
+        let mut used = [false; LOCALS];
+        if let Some(ms) = masks {
+            for (i, u) in used.iter_mut().enumerate() {
+                *u = ms.uses(i);
+            }
+            lv = vec![0f32; n * LOCALS];
+            lv.par_chunks_mut(w * LOCALS).enumerate().for_each(|(i, row)| {
+                let y = (fr.origin_y + top + i).min(fr.frame_height - 1);
+                let mut coords = [0f64; 6];
+                for x in 0..w {
+                    grid.lookup((fr.origin_x + x) as f32, y as f32, &mut coords);
+                    ms.add(coords[2] as f32, coords[3] as f32, &mut row[x * LOCALS..(x + 1) * LOCALS]);
+                }
+            });
+        }
+        let has_loc = !lv.is_empty();
+        let lc = |i: usize, k: usize| if has_loc { lv[i * LOCALS + k] } else { 0.0 };
+        if used[loc::EV] || used[loc::TEMP] || used[loc::TINT] {
+            r.par_chunks_mut(w).zip(g.par_chunks_mut(w)).zip(b.par_chunks_mut(w)).enumerate().for_each(|(j, ((rr, gg), bb))| {
+                for x in 0..w {
+                    let i = j * w + x;
+                    let k = local_gains(lc(i, loc::EV), lc(i, loc::TEMP), lc(i, loc::TINT));
+                    rr[x] *= k[0];
+                    gg[x] *= k[1];
+                    bb[x] *= k[2];
+                }
+            });
+        }
 
         // --- Noise reduction (linear) ---
         let color_noise = self.g(idx::COLOR_NOISE);
@@ -326,21 +470,26 @@ impl Look<'_> {
 
         // --- Dehaze ---
         let dehaze = self.g(idx::DEHAZE);
-        if let (true, Some(gd)) = (dehaze != 0.0, guide) {
-            let gain = exp2(ev);
-            let air = [gd.air[0] * gain, gd.air[1] * gain, gd.air[2] * gain];
+        if let (true, Some(gd)) = (dehaze != 0.0 || used[loc::DEHAZE], guide) {
             let amax = gd.air[0].max(gd.air[1].max(gd.air[2]));
             r.par_chunks_mut(w).zip(g.par_chunks_mut(w)).zip(b.par_chunks_mut(w)).enumerate().for_each(|(j, ((rr, gg), bb))| {
                 let yy = (oy + j as f32 + 0.5) * gy - 0.5;
                 for x in 0..w {
+                    let i = j * w + x;
+                    let dz = dehaze + lc(i, loc::DEHAZE);
+                    if dz == 0.0 {
+                        continue;
+                    }
+                    let gain = exp2(ev + lc(i, loc::EV));
+                    let air = [gd.air[0] * gain, gd.air[1] * gain, gd.air[2] * gain];
                     let d = gd.at(gd.dark, (ox + x as f32 + 0.5) * gx - 0.5, yy);
-                    if dehaze > 0.0 {
-                        let t = (1.0 - dehaze * 0.9 * d / amax).max(0.15);
+                    if dz > 0.0 {
+                        let t = (1.0 - dz * 0.9 * d / amax).max(0.15);
                         rr[x] = ((rr[x] - air[0]) / t + air[0]).max(0.0);
                         gg[x] = ((gg[x] - air[1]) / t + air[1]).max(0.0);
                         bb[x] = ((bb[x] - air[2]) / t + air[2]).max(0.0);
                     } else {
-                        let k = -dehaze * 0.6;
+                        let k = -dz * 0.6;
                         rr[x] += (air[0] - rr[x]) * k;
                         gg[x] += (air[1] - gg[x]) * k;
                         bb[x] += (air[2] - bb[x]) * k;
@@ -355,7 +504,8 @@ impl Look<'_> {
         let clarity = self.g(idx::CLARITY);
         let texture = self.g(idx::TEXTURE);
         let needs_guide = self.g(idx::NEEDS_GUIDE) > 0.5;
-        if needs_guide && guide.is_some() && (shadows != 0.0 || highlights != 0.0 || clarity != 0.0) || texture != 0.0 {
+        let local_tone = shadows != 0.0 || highlights != 0.0 || clarity != 0.0 || used[loc::SHADOWS] || used[loc::HIGHLIGHTS] || used[loc::CLARITY];
+        if needs_guide && guide.is_some() && local_tone || texture != 0.0 {
             let lum: Vec<f32> = (0..n).map(|i| log2(luma(r[i], g[i], b[i]))).collect();
             let small = if texture != 0.0 {
                 let mut s = lum.clone();
@@ -370,22 +520,26 @@ impl Look<'_> {
                 let yy = (oy + j as f32 + 0.5) * gy - 0.5;
                 for x in 0..w {
                     let i = j * w + x;
-                    let l = lum[i];
+                    let lu = lum[i];
                     let mut d = 0f32;
                     if let (true, Some(gd)) = (needs_guide, guide) {
                         let gxx = (ox + x as f32 + 0.5) * gx - 0.5;
-                        let base = gd.at(gd.base, gxx, yy) + ev;
-                        if shadows != 0.0 { d += shadows * 1.7 / (1.0 + ((base - mid + 1.2) * 1.6).exp()); }
-                        if highlights != 0.0 { d += highlights * 1.7 / (1.0 + (-(base - mid - 0.6) * 1.6).exp()); }
-                        if clarity != 0.0 {
-                            let med = gd.at(gd.medium, gxx, yy) + ev;
-                            let z = (l - mid) / 3.5;
+                        let e = ev + lc(i, loc::EV);
+                        let base = gd.at(gd.base, gxx, yy) + e;
+                        let sh = shadows + lc(i, loc::SHADOWS);
+                        let hi = highlights + lc(i, loc::HIGHLIGHTS);
+                        let cl = clarity + lc(i, loc::CLARITY);
+                        if sh != 0.0 { d += sh * 1.7 / (1.0 + ((base - mid + 1.2) * 1.6).exp()); }
+                        if hi != 0.0 { d += hi * 1.7 / (1.0 + (-(base - mid - 0.6) * 1.6).exp()); }
+                        if cl != 0.0 {
+                            let med = gd.at(gd.medium, gxx, yy) + e;
+                            let z = (lu - mid) / 3.5;
                             let w_mid = (-(z * z)).exp();
-                            d += clarity * 0.7 * (l - med).clamp(-2.0, 2.0) * w_mid;
+                            d += cl * 0.7 * (lu - med).clamp(-2.0, 2.0) * w_mid;
                         }
                     }
                     if let Some(s) = &small {
-                        d += tex_amt * (l - s[i]).clamp(-1.5, 1.5);
+                        d += tex_amt * (lu - s[i]).clamp(-1.5, 1.5);
                     }
                     if d != 0.0 {
                         let f = exp2(d);
@@ -399,15 +553,23 @@ impl Look<'_> {
 
         // --- Tone, curves, colour (display space) ---
         let has_curves = self.curves.len() >= 3 * 1024;
-        r.par_chunks_mut(w).zip(g.par_chunks_mut(w)).zip(b.par_chunks_mut(w)).for_each(|((rr, gg), bb)| {
+        let (l_contrast, l_sat) = (used[loc::CONTRAST], used[loc::SATURATION]);
+        r.par_chunks_mut(w).zip(g.par_chunks_mut(w)).zip(b.par_chunks_mut(w)).enumerate().for_each(|(j, ((rr, gg), bb))| {
             for x in 0..w {
+                let i = j * w + x;
                 let mut c = [self.lookup(rr[x]), self.lookup(gg[x]), self.lookup(bb[x])];
                 if has_curves {
                     for k in 0..3 {
                         c[k] = lerp_table(&self.curves[k * 1024..(k + 1) * 1024], c[k]);
                     }
                 }
+                if l_contrast {
+                    local_contrast(&mut c, lc(i, loc::CONTRAST));
+                }
                 self.color(&mut c);
+                if l_sat {
+                    local_saturation(&mut c, lc(i, loc::SATURATION));
+                }
                 rr[x] = c[0];
                 gg[x] = c[1];
                 bb[x] = c[2];
@@ -638,6 +800,28 @@ impl Look<'_> {
                 bb[x] += (li - bb[x]) * k;
             }
         });
+    }
+}
+
+fn local_contrast(p: &mut [f32; 3], amount: f32) {
+    if amount == 0.0 {
+        return;
+    }
+    let k = amount * 0.6;
+    for c in p.iter_mut() {
+        let v = c.clamp(0.0, 1.0);
+        *c = v + k * (0.5 - 0.5 * (std::f32::consts::PI * v).cos() - v);
+    }
+}
+
+fn local_saturation(p: &mut [f32; 3], amount: f32) {
+    if amount == 0.0 {
+        return;
+    }
+    let l = luma(p[0], p[1], p[2]);
+    let f = 1.0 + amount;
+    for c in p.iter_mut() {
+        *c = l + (*c - l) * f;
     }
 }
 

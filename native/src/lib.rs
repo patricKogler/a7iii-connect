@@ -131,6 +131,8 @@ pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native
 /// `src_info`: width, height, left, top, sensor width, sensor height, orientation.
 /// `grid_info`: x0, y0, nx, ny, step. `frame`: width, height, frame width, frame height,
 /// origin x, origin y, scale. `guide_size`: width, height (null when there is no guide).
+/// `masks`: count, photo width, photo height, then the masks (null without any);
+/// `subject_size`: width, height of `subject` (null when there is no subject map).
 #[no_mangle]
 pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native_render(
     env: *mut JNIEnv,
@@ -149,12 +151,15 @@ pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native
     grid_info: jfloatArray,
     vig: jfloatArray,
     frame: jdoubleArray,
+    masks: jfloatArray,
+    subject_size: jintArray,
+    subject: jfloatArray,
     y0: jint,
     y1: jint,
     out: jintArray,
 ) -> jboolean {
     guarded(|| {
-        let lens: Vec<usize> = [params, tone, curves, guide_size, base, medium, dark, air, src, src_info, grid, grid_info, vig, frame, out]
+        let lens: Vec<usize> = [params, tone, curves, guide_size, base, medium, dark, air, src, src_info, grid, grid_info, vig, frame, out, masks, subject_size, subject]
             .iter()
             .map(|&a| len(env, a))
             .collect();
@@ -197,6 +202,9 @@ pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native
         let s = Pinned::<u16>::new(env, src, lens[8], false)?;
         let g = Pinned::<f32>::new(env, grid, lens[10], false)?;
         let v = Pinned::<f32>::new(env, vig, lens[12], false)?;
+        let mk = Pinned::<f32>::new(env, masks, lens[15], false)?;
+        let ss = Pinned::<i32>::new(env, subject_size, lens[16], false)?;
+        let sj = Pinned::<f32>::new(env, subject, lens[17], false)?;
         let mut o = Pinned::<i32>::new(env, out, lens[14], true)?;
 
         let guide = if gs.slice().len() >= 2 {
@@ -216,6 +224,25 @@ pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native
         } else {
             None
         };
+        let masks = if mk.slice().len() >= 3 {
+            let m = mk.slice();
+            let count = m[0] as usize;
+            if count > 64 || m.len() < 3 + count * render::MASK_STRIDE || m[1] <= 0.0 || m[2] <= 0.0 {
+                return None;
+            }
+            let subject = if ss.slice().len() >= 2 {
+                let (w, h) = (ss.slice()[0] as usize, ss.slice()[1] as usize);
+                if w == 0 || h == 0 || sj.slice().len() < w * h {
+                    return None;
+                }
+                Some(render::Subject { width: w, height: h, data: sj.slice() })
+            } else {
+                None
+            };
+            Some(render::Masks { count, src_w: m[1], src_h: m[2], p: &m[3..3 + count * render::MASK_STRIDE], subject })
+        } else {
+            None
+        };
         let look = render::Look { p: p.slice(), tone: tn.slice(), curves: cv.slice() };
         let source = render::Source {
             data: s.slice(),
@@ -228,7 +255,7 @@ pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native
             orientation: si[6] as i32,
         };
         let grid = render::Grid { x0: gi[0], y0: gi[1], nx, ny, step: gi[4], map: g.slice(), vig: v.slice() };
-        look.render(guide.as_ref(), &source, &grid, &fr, y0 as usize, y1 as usize, o.slice_mut());
+        look.render(guide.as_ref(), masks.as_ref(), &source, &grid, &fr, y0 as usize, y1 as usize, o.slice_mut());
         Some(())
     })
 }

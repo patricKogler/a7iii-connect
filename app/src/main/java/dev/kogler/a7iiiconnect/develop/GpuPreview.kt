@@ -10,8 +10,10 @@ import android.graphics.Shader
 import android.os.Build
 import android.util.Half
 import androidx.annotation.RequiresApi
+import dev.kogler.a7iiiconnect.develop.engine.Geometry
 import dev.kogler.a7iiiconnect.develop.engine.Guide
 import dev.kogler.a7iiiconnect.develop.engine.LinearImage
+import dev.kogler.a7iiiconnect.develop.engine.MaskImage
 import dev.kogler.a7iiiconnect.develop.engine.ShaderParams
 import dev.kogler.a7iiiconnect.develop.engine.parallelRows
 import java.nio.ShortBuffer
@@ -40,6 +42,9 @@ internal class GpuPreview(source: String = AGSL) {
         val tone: Bitmap,
         val curves: Bitmap?,
         val params: ShaderParams,
+        /** Source position per frame position (see [coordsBitmap]); null without masks. */
+        val coords: Bitmap?,
+        val subject: Bitmap?,
     )
 
     /**
@@ -57,6 +62,8 @@ internal class GpuPreview(source: String = AGSL) {
         shader.setInputShader("toneLut", linear(f.tone))
         shader.setInputShader("curves", linear(f.curves ?: f.tone))
         shader.setInputShader("guide", linear(f.guide ?: f.tone))
+        shader.setInputShader("coords", linear(f.coords ?: f.tone))
+        shader.setInputShader("subject", linear(f.subject ?: f.tone))
         u("frameSize", width.toFloat(), height.toFloat())
         u("guideScale", (f.guide?.width ?: 1).toFloat() / width, (f.guide?.height ?: 1).toFloat() / height)
         val m = p.matrix
@@ -102,6 +109,13 @@ internal class GpuPreview(source: String = AGSL) {
         u("grainCell", p.grainCell)
         u("grainRough", p.grainRough)
         u("scale", p.scale)
+        val masks = if (f.coords != null) p.maskCount else 0
+        u("maskCount", masks.toFloat())
+        u("maskData", *p.masks)
+        u("srcSize", p.sourceSize[0], p.sourceSize[1])
+        u("coordScale", 1f / COORD_STEP, 1f / COORD_STEP)
+        u("hasSubject", if (f.subject != null) 1f else 0f)
+        u("subjSize", (f.subject?.width ?: 1).toFloat(), (f.subject?.height ?: 1).toFloat())
     }
 
     /** Draws the developed photo into [canvas] at (left, top), [w] x [h] on screen. */
@@ -135,11 +149,43 @@ internal class GpuPreview(source: String = AGSL) {
             .apply { filterMode = BitmapShader.FILTER_MODE_LINEAR }
 
         /** Builds a frame's textures (any thread). [scene] holds camera RGB, as-shot WB. */
-        fun prepare(scene: Bitmap, guide: Guide?, guideBitmap: Bitmap?, params: ShaderParams): Frame {
+        fun prepare(
+            scene: Bitmap, guide: Guide?, guideBitmap: Bitmap?, params: ShaderParams,
+            coords: Bitmap? = null, subject: Bitmap? = null,
+        ): Frame {
             val tone = floatBitmap(params.tone.size, 1) { _, x, c -> if (c == 3) 1f else params.tone[x] }
             val curves = params.curves?.let { cv -> floatBitmap(cv[0].size, 3) { y, x, c -> if (c == 3) 1f else cv[y][x] } }
-            return Frame(scene, guideBitmap, guide?.air ?: FloatArray(3), tone, curves, params)
+            return Frame(
+                scene, guideBitmap, guide?.air ?: FloatArray(3), tone, curves, params,
+                coords.takeIf { params.maskCount > 0 }, subject.takeIf { params.maskCount > 0 && params.subject != null },
+            )
         }
+
+        /** Frame pixels per node of [coordsBitmap]. */
+        const val COORD_STEP = 8
+
+        /**
+         * Where each part of a [w] x [h] frame (at [scale] frame pixels per full-size pixel) comes
+         * from in the upright photo, as fractions of its size: one node every [COORD_STEP] pixels,
+         * which the shader interpolates. Masks are placed by these positions.
+         */
+        fun coordsBitmap(geom: Geometry, scale: Double, w: Int, h: Int): Bitmap {
+            val nx = w / COORD_STEP + 2
+            val ny = h / COORD_STEP + 2
+            val pos = FloatArray(nx * ny * 2)
+            parallelRows(ny) { j ->
+                val m = DoubleArray(6)
+                for (i in 0 until nx) {
+                    geom.map(i * COORD_STEP / scale, j * COORD_STEP / scale, m)
+                    pos[(j * nx + i) * 2] = (m[2] / geom.srcW).toFloat()
+                    pos[(j * nx + i) * 2 + 1] = (m[3] / geom.srcH).toFloat()
+                }
+            }
+            return floatBitmap(nx, ny) { y, x, c -> if (c < 2) pos[(y * nx + x) * 2 + c] else 1f }
+        }
+
+        /** The subject map as a texture. */
+        fun subjectBitmap(m: MaskImage): Bitmap = floatBitmap(m.width, m.height) { y, x, c -> if (c == 3) 1f else m.data[y * m.width + x] }
 
         /** The geometry-corrected camera pixels as a float texture. */
         fun sceneBitmap(img: LinearImage): Bitmap = floatBitmap(img.width, img.height) { y, x, c ->
@@ -223,6 +269,14 @@ uniform float grain;
 uniform float grainCell;
 uniform float grainRough;
 uniform float scale;
+uniform shader coords;
+uniform shader subject;
+uniform float2 coordScale;
+uniform float2 srcSize;
+uniform float2 subjSize;
+uniform float hasSubject;
+uniform float maskCount;
+uniform float maskData[152];
 
 const float LUT_SIZE = 4096.0;
 const float LUT_MAX = 64.0;
@@ -320,6 +374,11 @@ float3 colorize(float3 c) {
 }
 
 float lumAt(float2 p) { return logv(luma(lin(p))); }
+
+float subjectAt(float2 uv) {
+    if (hasSubject == 0.0) return 0.0;
+    return EVAL(subject, uv * subjSize).r;
+}
 float displayLum(float2 p) { return tone(luma(lin(p))); }
 
 // Sine-free hash on small (wrapped) cell coordinates: sin() of large arguments loses precision
@@ -342,24 +401,76 @@ float valueNoise(float2 q) {
 half4 main(float2 p) {
     float3 c = lin(p);
 
+    // Masks: this pixel's local sliders, summed over the masks by how much each covers it.
+    float lEv = 0.0;
+    float lTemp = 0.0;
+    float lTint = 0.0;
+    float lContrast = 0.0;
+    float lHighlights = 0.0;
+    float lShadows = 0.0;
+    float lClarity = 0.0;
+    float lDehaze = 0.0;
+    float lSat = 0.0;
+    if (maskCount > 0.0) {
+        float2 uv = EVAL(coords, p * coordScale + 0.5).rg;
+        float2 q = uv * srcSize;
+        float subj = subjectAt(uv);
+        for (int k = 0; k < 8; k++) {
+            if (float(k) < maskCount) {
+                float kind = maskData[k * 19];
+                float w = 0.0;
+                if (kind < 1.5) {
+                    float2 a = float2(maskData[k * 19 + 1], maskData[k * 19 + 2]);
+                    float2 dd = float2(maskData[k * 19 + 3], maskData[k * 19 + 4]) - a;
+                    w = 1.0 - smoothstep(0.0, 1.0, dot(q - a, dd) / max(0.000001, dot(dd, dd)));
+                } else if (kind < 2.5) {
+                    float2 o = q - float2(maskData[k * 19 + 1], maskData[k * 19 + 2]);
+                    float cs = maskData[k * 19 + 5];
+                    float sn = maskData[k * 19 + 6];
+                    float rx = (o.x * cs + o.y * sn) / maskData[k * 19 + 3];
+                    float ry = (-o.x * sn + o.y * cs) / maskData[k * 19 + 4];
+                    w = 1.0 - smoothstep(1.0 - maskData[k * 19 + 7], 1.0, sqrt(rx * rx + ry * ry));
+                } else {
+                    w = subj;
+                }
+                if (maskData[k * 19 + 8] > 0.5) w = 1.0 - w;
+                if (maskData[k * 19 + 9] > 0.5) w *= 1.0 - subj;
+                lEv += w * maskData[k * 19 + 10];
+                lTemp += w * maskData[k * 19 + 11];
+                lTint += w * maskData[k * 19 + 12];
+                lContrast += w * maskData[k * 19 + 13];
+                lHighlights += w * maskData[k * 19 + 14];
+                lShadows += w * maskData[k * 19 + 15];
+                lClarity += w * maskData[k * 19 + 16];
+                lDehaze += w * maskData[k * 19 + 17];
+                lSat += w * maskData[k * 19 + 18];
+            }
+        }
+        if (lEv != 0.0 || lTemp != 0.0 || lTint != 0.0) {
+            float3 k3 = float3(exp2(0.4 * lTemp), exp2(-0.3 * lTint), exp2(-0.4 * lTemp));
+            c *= k3 * (exp2(lEv) / luma(k3));
+        }
+    }
+
     float base = 0.0;
     float med = 0.0;
     float hazeRatio = 0.0;
     if (hasGuide > 0.0) {
         float3 g = EVAL(guide, p * guideScale).rgb;
-        base = g.r * 40.0 - 20.0 + ev;
-        med = g.g * 40.0 - 20.0 + ev;
+        base = g.r * 40.0 - 20.0 + ev + lEv;
+        med = g.g * 40.0 - 20.0 + ev + lEv;
         hazeRatio = g.b * 2.0;
     }
 
     // Dehaze: dark channel prior with the haze map from the guide.
-    if (dehaze != 0.0 && hasGuide > 0.0) {
-        float3 a = air * exp2(ev);
-        if (dehaze > 0.0) {
-            float t = max(0.15, 1.0 - dehaze * 0.9 * hazeRatio);
+    float dz = dehaze + lDehaze;
+    if (dz != 0.0 && hasGuide > 0.0) {
+        float3 a = air * exp2(ev + lEv);
+        if (dz > 0.0) {
+            float t = max(0.15, 1.0 - dz * 0.9 * hazeRatio);
             c = max((c - a) / t + a, float3(0.0));
         } else {
-            c += (a - c) * (-dehaze * 0.6);
+            c += (a - c) * (-dz * 0.6);
         }
     }
 
@@ -367,11 +478,14 @@ half4 main(float2 p) {
     float l = logv(luma(c));
     float d = 0.0;
     if (hasGuide > 0.0) {
-        if (shadows != 0.0) d += shadows * 1.7 / (1.0 + exp((base - MID + 1.2) * 1.6));
-        if (highlights != 0.0) d += highlights * 1.7 / (1.0 + exp(-(base - MID - 0.6) * 1.6));
-        if (clarity != 0.0) {
+        float sh = shadows + lShadows;
+        float hi = highlights + lHighlights;
+        float cl = clarity + lClarity;
+        if (sh != 0.0) d += sh * 1.7 / (1.0 + exp((base - MID + 1.2) * 1.6));
+        if (hi != 0.0) d += hi * 1.7 / (1.0 + exp(-(base - MID - 0.6) * 1.6));
+        if (cl != 0.0) {
             float z = (l - MID) / 3.5;
-            d += clarity * 0.7 * clamp(l - med, -2.0, 2.0) * exp(-z * z);
+            d += cl * 0.7 * clamp(l - med, -2.0, 2.0) * exp(-z * z);
         }
     }
     if (textureAmt != 0.0) {
@@ -379,14 +493,23 @@ half4 main(float2 p) {
         float s = 4.0 * l
             + 2.0 * (lumAt(p + float2(r, 0.0)) + lumAt(p - float2(r, 0.0)) + lumAt(p + float2(0.0, r)) + lumAt(p - float2(0.0, r)))
             + lumAt(p + float2(r, r)) + lumAt(p - float2(r, r)) + lumAt(p + float2(r, -r)) + lumAt(p - float2(r, -r));
-        d += textureAmt * clamp(l - s / 16.0, -1.5, 1.5);
+        // The neighbours are sampled without the mask's exposure; it varies slowly, so add it back.
+        d += textureAmt * clamp(l - s / 16.0 - lEv * 0.75, -1.5, 1.5);
     }
     if (d != 0.0) c *= exp2(d);
 
     // Tone curve and point curves, into display space.
     c = float3(tone(c.r), tone(c.g), tone(c.b));
     if (useCurves > 0.0) c = float3(curve(c.r, 0.0), curve(c.g, 1.0), curve(c.b, 2.0));
+    if (lContrast != 0.0) {
+        float3 v = clamp(c, 0.0, 1.0);
+        c = v + lContrast * 0.6 * (0.5 - 0.5 * cos(3.14159265 * v) - v);
+    }
     c = colorize(c);
+    if (lSat != 0.0) {
+        float ls = luma(c);
+        c = ls + (c - ls) * (1.0 + lSat);
+    }
 
     // Vignette (post-crop).
     if (vignette != 0.0) {

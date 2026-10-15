@@ -151,6 +151,29 @@ class Geometry(
         }
     }
 
+    /**
+     * The output position (full-size pixels, like [map]'s input) that [map] sends to source
+     * pixel ([sx], [sy]): [map] inverted by Newton steps, for drawing mask handles.
+     */
+    fun unmap(sx: Double, sy: Double): DoubleArray {
+        val m = DoubleArray(6)
+        var x = outW / 2; var y = outH / 2
+        for (step in 0 until 30) {
+            map(x, y, m)
+            val fx = m[2] - sx; val fy = m[3] - sy
+            if (abs(fx) + abs(fy) < 1e-4) break
+            map(x + 1, y, m)
+            val a = m[2] - sx - fx; val c = m[3] - sy - fy
+            map(x, y + 1, m)
+            val b = m[2] - sx - fx; val d = m[3] - sy - fy
+            val det = a * d - b * c
+            if (abs(det) < 1e-12) break
+            x -= (d * fx - b * fy) / det
+            y -= (a * fy - c * fx) / det
+        }
+        return doubleArrayOf(x, y)
+    }
+
     /** Brightness gain that undoes lens vignetting (and manual Optics vignetting) at a source pixel. */
     fun vignetteGain(sx: Double, sy: Double): Float {
         val r = hypot(sx - srcW / 2, sy - srcH / 2) / hd
