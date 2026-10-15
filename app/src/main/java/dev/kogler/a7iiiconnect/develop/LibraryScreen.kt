@@ -4,8 +4,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -64,7 +62,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material3.InputChip
-import androidx.compose.material.icons.rounded.Flag
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.IosShare
 import androidx.compose.material.icons.rounded.People
 import androidx.compose.material.icons.rounded.Swipe
@@ -119,7 +117,7 @@ private fun TransferStrip(status: SyncStatus, onClick: () -> Unit) {
 }
 
 enum class QuickFilter(val label: String) {
-    ALL("All"), TO_REVIEW("To review"), PICKS("Picks"), BEST("Best"), EDITED("Edited"), REJECTED("Rejected")
+    ALL("All"), TO_REVIEW("To review"), PICKS("Picks"), EDITED("Edited"), REJECTED("Rejected")
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -130,8 +128,8 @@ fun LibraryScreen(
     marks: Map<String, Mark>,
     exported: Set<String>,
     onOpen: (Shot) -> Unit,
-    onCull: (round: Int, shots: List<Shot>) -> Unit,
-    onTogether: (round: Int, shots: List<Shot>) -> Unit,
+    onCull: (title: String, shots: List<Shot>) -> Unit,
+    onTogether: (shots: List<Shot>) -> Unit,
     onDeleteRejected: () -> Unit,
     transfer: SyncStatus,
     onCamera: () -> Unit,
@@ -149,7 +147,6 @@ fun LibraryScreen(
 ) {
     // Days picked by long-pressing their headers; Review then covers just those.
     var selectedDays by remember { mutableStateOf(emptySet<Long>()) }
-    val bestLevel = shots.maxOfOrNull { marks[it.key]?.level ?: 0 } ?: 0
     val facts = remember(shots, meta, places, edited, exported) {
         shots.map { ShotFacts(it, meta[it.key], it.key in edited, Photos.exportName(it.primary).lowercase() in exported, places[it.key]) }
     }
@@ -159,18 +156,16 @@ fun LibraryScreen(
         QuickFilter.ALL -> filtered
         QuickFilter.TO_REVIEW -> filtered.filter { it.key !in marks }
         QuickFilter.PICKS -> filtered.filter { marks[it.key]?.picked == true }
-        QuickFilter.BEST -> if (bestLevel < 1) emptyList() else filtered.filter { marks[it.key]?.level == bestLevel }
         QuickFilter.EDITED -> filtered.filter { it.key in edited }
         QuickFilter.REJECTED -> filtered.filter { marks[it.key]?.rejected == true }
     }
     val rejected = shots.count { marks[it.key]?.rejected == true }
     val days = shown.groupBy { dayOf(it.takenMillis) }
-    val scope = if (selectedDays.isEmpty()) filtered else filtered.filter { dayOf(it.takenMillis) in selectedDays }
-    // Every round that still has shots to show, with how many.
-    val rounds = (1..(bestLevel + 1).coerceAtLeast(1)).mapNotNull { r ->
-        scope.filter { marks[it.key].dueIn(r) }.takeIf { it.isNotEmpty() }?.let { r to it }
-    }
-    var roundMenu by remember { mutableStateOf(false) }
+    val scope = if (selectedDays.isEmpty()) shown else shown.filter { dayOf(it.takenMillis) in selectedDays }
+    // Review deals what's on screen: the shots still to review, or on Picks (or Rejected) those
+    // shots again, to narrow them down (or rescue some).
+    val revisit = filter == QuickFilter.PICKS || filter == QuickFilter.REJECTED
+    val due = if (revisit) scope else scope.filter { it.key !in marks }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -181,31 +176,20 @@ fun LibraryScreen(
                     }
                 },
                 actions = {
-                    // Together: the first round still open, for the selected days or else the newest
+                    // Together: the same shots as Review, for the selected days or else the newest
                     // day with shots in it. Nothing to review: join someone else's photos.
                     IconButton(onClick = {
-                        val (r, due) = rounds.firstOrNull() ?: (1 to emptyList())
                         val newest = due.maxOfOrNull { dayOf(it.takenMillis) }
-                        onTogether(r, if (selectedDays.isNotEmpty()) due else due.filter { dayOf(it.takenMillis) == newest })
+                        onTogether(if (selectedDays.isNotEmpty()) due else due.filter { dayOf(it.takenMillis) == newest })
                     }) { Icon(Icons.Rounded.People, "Together") }
-                    if (rounds.isNotEmpty()) {
-                        Box {
-                            TextButton(
-                                onClick = { if (rounds.size == 1) onCull(rounds[0].first, rounds[0].second) else roundMenu = true },
-                                modifier = Modifier.testTag("review"),
-                            ) {
-                                Icon(Icons.Rounded.Swipe, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text(if (rounds.size == 1) "Review ${rounds[0].second.size}" else "Review")
-                            }
-                            DropdownMenu(expanded = roundMenu, onDismissRequest = { roundMenu = false }) {
-                                for ((r, due) in rounds) {
-                                    DropdownMenuItem(
-                                        text = { Text(if (r == 1) "Round 1 · ${due.size} to sort" else "Round $r · ${due.size} picks") },
-                                        onClick = { roundMenu = false; onCull(r, due) },
-                                    )
-                                }
-                            }
+                    if (due.isNotEmpty()) {
+                        TextButton(
+                            onClick = { onCull(if (revisit) filter.label else "Review", due) },
+                            modifier = Modifier.testTag("review"),
+                        ) {
+                            Icon(Icons.Rounded.Swipe, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Review ${due.size}")
                         }
                     }
                     IconButton(onClick = onCamera, modifier = Modifier.testTag("camera")) {
@@ -242,7 +226,6 @@ fun LibraryScreen(
                     )
                 }
                 for (f in QuickFilter.entries) {
-                    if (f == QuickFilter.BEST && bestLevel < 2) continue
                     FilterChip(selected = filter == f, onClick = { onQuickFilter(f) }, label = { Text(f.label) })
                 }
             }
@@ -427,15 +410,7 @@ fun Thumb(
         when {
             mark == null -> {}
             mark.rejected -> Badge(Icons.Rounded.Close, "Rejected", Modifier.align(Alignment.TopEnd).padding(4.dp), tint = Color(0xFFFF5A5F))
-            else -> Row(
-                Modifier.align(Alignment.TopEnd).padding(4.dp)
-                    .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(3.dp)).padding(horizontal = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.Flag, "Picked", tint = Color(0xFF3DDC84), modifier = Modifier.size(14.dp))
-                // Rounds survived beyond the first.
-                if (mark.level > 1) Text("${mark.level}", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF3DDC84))
-            }
+            else -> Badge(Icons.Rounded.Check, "Picked", Modifier.align(Alignment.TopEnd).padding(4.dp), tint = Color(0xFF3DDC84))
         }
     }
 }

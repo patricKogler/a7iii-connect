@@ -104,7 +104,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-/** What a swipe decided: keep (on to the next round), reject/drop, or "skip for now". */
+/** What a swipe decided: pick, reject, or "skip for now". */
 internal enum class Verdict { PICK, REJECT, SKIP }
 
 internal val PickGreen = Color(0xFF3DDC84)
@@ -118,15 +118,15 @@ private const val MAX_ZOOM = 8f
 private class Step(val pos: Int, val previous: List<Pair<Shot, Mark?>>)
 
 /**
- * Tinder-style culling, one round at a time. Round 1 sorts unreviewed shots into picks and
- * rejects; each later round deals the survivors of the one before, and right keeps a shot going
- * while left leaves it at its level. Bursts and near-duplicates come as one "pick the best" stack.
+ * Tinder-style culling: right picks, left rejects, up skips. Usually deals the shots still to
+ * review; dealt picks again, it narrows them down. Bursts and near-duplicates come as one
+ * "pick the best" stack.
  * Double-tap or pinch to check focus; while zoomed in a drag pans instead of deciding.
  */
 @Composable
 fun CullScreen(
     shots: List<Shot>,
-    round: Int,
+    title: String,
     marks: Map<String, Mark>,
     onMark: (Shot, Mark?) -> Unit,
     rejectedCount: Int,
@@ -150,8 +150,8 @@ fun CullScreen(
     var chosen by remember { mutableIntStateOf(0) }
 
     fun markFor(v: Verdict): Mark = when (v) {
-        Verdict.PICK -> Mark(round)
-        Verdict.REJECT -> if (round == 1) Mark.REJECTED else Mark(round - 1, settled = true)
+        Verdict.PICK -> Mark.PICK
+        Verdict.REJECT -> Mark.REJECT
         Verdict.SKIP -> error("skip leaves the mark alone")
     }
 
@@ -179,13 +179,12 @@ fun CullScreen(
 
     val items = deck
     val top = items?.getOrNull(pos)
-    val rejectLabel = if (round == 1) "REJECT" else "DROP"
 
     Column(Modifier.fillMaxSize().background(Color.Black).statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = Color.White) }
             Column(Modifier.weight(1f)) {
-                Text("Round $round", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                Text(title, color = Color.White, style = MaterialTheme.typography.titleMedium)
                 if (items != null) {
                     Text(
                         if (top != null) "${pos + 1} of ${items.size}" else "Done",
@@ -209,7 +208,6 @@ fun CullScreen(
 
         if (top == null) {
             Summary(
-                round = round,
                 picked = decided.values.count { it == Verdict.PICK },
                 rejected = decided.values.count { it == Verdict.REJECT },
                 skipped = decided.values.count { it == Verdict.SKIP },
@@ -241,7 +239,7 @@ fun CullScreen(
                             shot = shot,
                             depth = i - pos,
                             fling = if (i == pos) fling else null,
-                            rejectLabel = rejectLabel,
+                            rejectLabel = "REJECT",
                             onDecided = { record(listOf(shot to it)) },
                         )
                     }
@@ -263,7 +261,7 @@ fun CullScreen(
                     record(top.map { it to if (it == keep) Verdict.PICK else Verdict.REJECT })
                 }
             } else {
-                RoundButton(Icons.Rounded.Close, rejectLabel.lowercase().replaceFirstChar { it.uppercase() }, RejectRed, 64, "cull-reject") { if (fling == null) fling = Verdict.REJECT }
+                RoundButton(Icons.Rounded.Close, "Reject", RejectRed, 64, "cull-reject") { if (fling == null) fling = Verdict.REJECT }
                 RoundButton(Icons.Rounded.ArrowUpward, "Skip", SkipBlue, 48, "cull-skip") { if (fling == null) fling = Verdict.SKIP }
                 RoundButton(Icons.Rounded.Check, "Pick", PickGreen, 64, "cull-pick") { if (fling == null) fling = Verdict.PICK }
             }
@@ -386,7 +384,6 @@ internal fun RoundButton(icon: androidx.compose.ui.graphics.vector.ImageVector, 
 
 @Composable
 private fun Summary(
-    round: Int,
     picked: Int, rejected: Int, skipped: Int, rejectedCount: Int,
     onDeleteRejected: () -> Unit, onBack: () -> Unit, modifier: Modifier,
 ) {
@@ -395,11 +392,11 @@ private fun Summary(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("Round $round done", color = Color.White, style = MaterialTheme.typography.headlineSmall)
+        Text("All done", color = Color.White, style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(12.dp))
         Text(
             listOfNotNull(
-                "$picked kept", if (round == 1) "$rejected rejected" else "$rejected dropped",
+                "$picked picked", "$rejected rejected",
                 if (skipped > 0) "$skipped skipped" else null,
             ).joinToString(" · "),
             color = Color.White.copy(alpha = 0.7f),

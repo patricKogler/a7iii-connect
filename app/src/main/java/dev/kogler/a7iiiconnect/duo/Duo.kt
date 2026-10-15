@@ -71,7 +71,6 @@ object Duo : DuoLink.Listener {
     private var code = ""
     private var searching = false
     private var joinCode: String? = null
-    private var round = 1
 
     // The deck, the same on both phones. The guest's shots point at the received previews.
     var deck by mutableStateOf<List<List<Shot>>>(emptyList()); private set
@@ -124,14 +123,13 @@ object Duo : DuoLink.Listener {
         if (myName.isEmpty()) myName = savedName()
     }
 
-    /** Host: share the cards of culling round [round]. The deck follows with [dealDeck]. */
-    fun host(context: Context, round: Int) {
+    /** Host: cull shots together. The deck follows with [dealDeck]. */
+    fun host(context: Context) {
         init(context)
         if (active) return
         reset()
         active = true
         hosting = true
-        this.round = round
         code = (1..4).map { "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Random.nextInt(32)] }.joinToString("")
         tagUri = "shootback://duo?code=$code"
     }
@@ -141,7 +139,7 @@ object Duo : DuoLink.Listener {
         init(context)
         // A session already running stays as it is.
         if (active) return
-        host(context, 1)
+        host(context)
         battleOnly = true
     }
 
@@ -301,13 +299,12 @@ object Duo : DuoLink.Listener {
     private fun finish() {
         phase = Phase.DONE
         val store = EditStore(app)
-        val rejected = if (round == 1) Mark.REJECTED else Mark(round - 1, settled = true)
         val keep = mutableListOf<Shot>()
         deck.forEachIndexed { i, stack ->
             val o = session.outcome(i) ?: return@forEachIndexed
             stack.forEachIndexed { j, shot ->
                 val picked = o.vote == Choice.Vote.PICK && j == o.keep
-                store.setMark(shot.key, if (picked) Mark(round) else rejected)
+                store.setMark(shot.key, if (picked) Mark.PICK else Mark.REJECT)
                 if (picked) keep += shot
             }
         }
@@ -539,7 +536,7 @@ object Duo : DuoLink.Listener {
         for (stack in deck) {
             items.put(JSONArray().apply { stack.forEach { s -> put(JSONObject().put("n", s.primary.stem).put("t", s.takenMillis)) } })
         }
-        link?.send(JSONObject().put("t", "deck").put("code", code).put("round", round).put("items", items))
+        link?.send(JSONObject().put("t", "deck").put("code", code).put("items", items))
     }
 
     private fun sendPreviews(wanted: List<String>) {
@@ -588,7 +585,6 @@ object Duo : DuoLink.Listener {
 
     private fun onDeck(msg: JSONObject) {
         val items = msg.getJSONArray("items")
-        round = msg.optInt("round", 1)
         val stacks = (0 until items.length()).map { i ->
             val arr = items.getJSONArray(i)
             (0 until arr.length()).map { j ->

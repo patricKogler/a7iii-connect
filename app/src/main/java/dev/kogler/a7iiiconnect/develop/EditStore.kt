@@ -7,24 +7,23 @@ import dev.kogler.a7iiiconnect.develop.engine.Preset
 import dev.kogler.a7iiiconnect.develop.engine.Settings
 import java.io.File
 
-/**
- * Where a shot stands after culling. Shots with no mark are still to review.
- * [level] -1 is rejected, 1 is a first-round pick, and each later round a shot survives adds one.
- * [settled] means the shot was shown in round level + 1 and stayed behind, so that round is done
- * with it.
- */
-data class Mark(val level: Int, val settled: Boolean = false) {
-    val rejected get() = level < 0
-    val picked get() = level >= 1
+/** Where a shot stands after culling: picked or rejected. Shots with no mark are still to review. */
+enum class Mark {
+    PICK, REJECT;
+
+    val rejected get() = this == REJECT
+    val picked get() = this == PICK
 
     companion object {
-        val REJECTED = Mark(-1)
+        /** Reads a mark as [EditStore] stores it; null when there is nothing to read. */
+        fun parse(v: String?): Mark? = when (v) {
+            "PICK" -> PICK
+            "REJECT" -> REJECT
+            // 0.15 to 0.21 kept culling rounds: -1 rejected, 1 and up a pick that many rounds deep.
+            else -> v?.toIntOrNull()?.let { if (it < 0) REJECT else if (it >= 1) PICK else null }
+        }
     }
 }
-
-/** True when [round] still has to show this shot: unmarked for round 1, an unsettled survivor after. */
-fun Mark?.dueIn(round: Int): Boolean =
-    if (round == 1) this == null else this != null && level == round - 1 && !settled
 
 /**
  * Edits are kept beside the app, never written into the original file (non-destructive, like
@@ -97,18 +96,12 @@ class EditStore(context: Context, folder: String = "develop") {
     }
 
     private fun writeMarks(m: Map<String, Mark>) =
-        markFile.writeText(m.entries.joinToString("") { "${it.key}\t${it.value.level}\t${if (it.value.settled) 1 else 0}\n" })
+        markFile.writeText(m.entries.joinToString("") { "${it.key}\t${it.value}\n" })
 
     private fun markMap(): MutableMap<String, Mark> = markCache ?: runCatching {
         markFile.readLines().mapNotNull { line ->
             val parts = line.split('\t')
-            val mark = when (val v = parts.getOrNull(1)) {
-                // 0.14 wrote PICK / REJECT.
-                "PICK" -> Mark(1)
-                "REJECT" -> Mark.REJECTED
-                else -> Mark(v?.toIntOrNull() ?: return@mapNotNull null, parts.getOrNull(2) == "1")
-            }
-            parts[0] to mark
+            parts[0] to (Mark.parse(parts.getOrNull(1)) ?: return@mapNotNull null)
         }.toMap(mutableMapOf())
     }.getOrDefault(mutableMapOf()).also { markCache = it }
 

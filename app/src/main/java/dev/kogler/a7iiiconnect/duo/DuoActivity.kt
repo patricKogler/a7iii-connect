@@ -52,7 +52,7 @@ class DuoActivity : ComponentActivity() {
         val battle = intent.getStringExtra(EXTRA_BATTLE)
         if (savedInstanceState == null || !Duo.active) {
             if (battle != null) startBattle(battle)
-            else if (keys != null && !keys.isEmpty()) startHosting(intent.getIntExtra(EXTRA_ROUND, 1), keys.toSet())
+            else if (keys != null && !keys.isEmpty()) startHosting(keys.toSet())
             else Duo.join(this, codeOf(intent))
         }
         permissions.launch(neededPermissions())
@@ -68,8 +68,8 @@ class DuoActivity : ComponentActivity() {
         }
     }
 
-    private fun startHosting(round: Int, keys: Set<String>) {
-        Duo.host(this, round)
+    private fun startHosting(keys: Set<String>) {
+        Duo.host(this)
         lifecycleScope.launch {
             val stacks = withContext(Dispatchers.IO) {
                 val shots = Library.shots(Library.load(this@DuoActivity)).filter { it.key in keys }
@@ -168,15 +168,13 @@ class DuoActivity : ComponentActivity() {
 
     companion object {
         private const val EXTRA_KEYS = "keys"
-        private const val EXTRA_ROUND = "round"
         private const val EXTRA_BATTLE = "battle"
         private const val APK_TYPE = "application/vnd.android.package-archive"
 
-        /** Host [keys] (shots due in culling round [round]); with no keys, join another phone. */
-        fun intent(context: Context, round: Int = 1, keys: List<String> = emptyList()) =
+        /** Host [keys] (the shots to cull together); with no keys, join another phone. */
+        fun intent(context: Context, keys: List<String> = emptyList()) =
             Intent(context, DuoActivity::class.java).apply {
                 if (keys.isNotEmpty()) {
-                    putExtra(EXTRA_ROUND, round)
                     putStringArrayListExtra(EXTRA_KEYS, ArrayList(keys))
                 }
             }
