@@ -323,7 +323,7 @@ object Photos {
             for (tag in EXIF_TAGS) src.getAttribute(tag)?.let { dst.setAttribute(tag, it) }
             // Pixels are written upright.
             dst.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
-            dst.setAttribute(ExifInterface.TAG_SOFTWARE, "A7III Connect")
+            dst.setAttribute(ExifInterface.TAG_SOFTWARE, "Shootback")
             dst.setAttribute(
                 ExifInterface.TAG_DATETIME,
                 SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(System.currentTimeMillis()),

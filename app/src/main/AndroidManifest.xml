@@ -29,16 +29,21 @@
         tools:targetApi="33" />
 
     <application
-        android:label="A7III Connect"
+        android:label="Shootback"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
         android:largeHeap="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Material.NoActionBar"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
+            android:name=".develop.DevelopActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:windowSoftInputMode="adjustResize">
+            android:theme="@android:style/Theme.Material.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -55,10 +60,6 @@
             android:exported="false"
             android:screenOrientation="fullUser"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
-            android:theme="@android:style/Theme.Material.NoActionBar" />
-        <activity
-            android:name=".develop.DevelopActivity"
-            android:exported="false"
             android:theme="@android:style/Theme.Material.NoActionBar" />
         <service
             android:name=".SyncService"

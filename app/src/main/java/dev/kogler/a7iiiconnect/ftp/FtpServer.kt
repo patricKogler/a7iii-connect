@@ -68,7 +68,7 @@ class FtpServer(
             log("FTP: $peer connected")
             try {
                 control.soTimeout = 5 * 60_000
-                reply("220 A7III Connect ready")
+                reply("220 Shootback ready")
                 while (true) {
                     val line = reader.readLine() ?: break
                     val space = line.indexOf(' ')
