@@ -1,6 +1,11 @@
 package dev.kogler.a7iiiconnect.develop
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -69,45 +74,71 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 private enum class Filter(val label: String) {
-    ALL("All"), TO_REVIEW("To review"), PICKS("Picks"), EDITED("Edited"), REJECTED("Rejected")
+    ALL("All"), TO_REVIEW("To review"), PICKS("Picks"), BEST("Best"), EDITED("Edited"), REJECTED("Rejected")
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun LibraryScreen(
     shots: List<Shot>,
     edited: Set<String>,
-    flags: Map<String, Flag>,
+    marks: Map<String, Mark>,
     exported: Set<String>,
     onOpen: (Shot) -> Unit,
-    onCull: (List<Shot>) -> Unit,
+    onCull: (round: Int, shots: List<Shot>) -> Unit,
     onDeleteRejected: () -> Unit,
     onBack: () -> Unit,
 ) {
     var filter by rememberSaveable { mutableStateOf(Filter.ALL) }
+    // Days picked by long-pressing their headers; Review then covers just those.
+    var selectedDays by remember { mutableStateOf(emptySet<Long>()) }
+    val bestLevel = shots.maxOfOrNull { marks[it.key]?.level ?: 0 } ?: 0
     val shown = when (filter) {
         Filter.ALL -> shots
-        Filter.TO_REVIEW -> shots.filter { it.key !in flags }
-        Filter.PICKS -> shots.filter { flags[it.key] == Flag.PICK }
+        Filter.TO_REVIEW -> shots.filter { it.key !in marks }
+        Filter.PICKS -> shots.filter { marks[it.key]?.picked == true }
+        Filter.BEST -> if (bestLevel < 1) emptyList() else shots.filter { marks[it.key]?.level == bestLevel }
         Filter.EDITED -> shots.filter { it.key in edited }
-        Filter.REJECTED -> shots.filter { flags[it.key] == Flag.REJECT }
+        Filter.REJECTED -> shots.filter { marks[it.key]?.rejected == true }
     }
-    val unreviewed = shots.filter { it.key !in flags }
-    val rejected = shots.count { flags[it.key] == Flag.REJECT }
-    val days = remember(shown) { shown.groupBy { dayOf(it.takenMillis) } }
+    val rejected = shots.count { marks[it.key]?.rejected == true }
+    val days = shown.groupBy { dayOf(it.takenMillis) }
+    val scope = if (selectedDays.isEmpty()) shots else shots.filter { dayOf(it.takenMillis) in selectedDays }
+    // Every round that still has shots to show, with how many.
+    val rounds = (1..(bestLevel + 1).coerceAtLeast(1)).mapNotNull { r ->
+        scope.filter { marks[it.key].dueIn(r) }.takeIf { it.isNotEmpty() }?.let { r to it }
+    }
+    var roundMenu by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Photos") },
+                title = { Text(if (selectedDays.isEmpty()) "Photos" else "${selectedDays.size} ${if (selectedDays.size == 1) "day" else "days"} selected") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back") }
+                    if (selectedDays.isEmpty()) {
+                        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back") }
+                    } else {
+                        IconButton(onClick = { selectedDays = emptySet() }) { Icon(Icons.Rounded.Close, "Clear selection") }
+                    }
                 },
                 actions = {
-                    if (unreviewed.isNotEmpty()) {
-                        TextButton(onClick = { onCull(cullOrder(unreviewed)) }, modifier = Modifier.testTag("review-all")) {
-                            Icon(Icons.Rounded.Swipe, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Review ${unreviewed.size}")
+                    if (rounds.isNotEmpty()) {
+                        Box {
+                            TextButton(
+                                onClick = { if (rounds.size == 1) onCull(rounds[0].first, rounds[0].second) else roundMenu = true },
+                                modifier = Modifier.testTag("review"),
+                            ) {
+                                Icon(Icons.Rounded.Swipe, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (rounds.size == 1) "Review ${rounds[0].second.size}" else "Review")
+                            }
+                            DropdownMenu(expanded = roundMenu, onDismissRequest = { roundMenu = false }) {
+                                for ((r, due) in rounds) {
+                                    DropdownMenuItem(
+                                        text = { Text(if (r == 1) "Round 1 · ${due.size} to sort" else "Round $r · ${due.size} picks") },
+                                        onClick = { roundMenu = false; onCull(r, due) },
+                                    )
+                                }
+                            }
                         }
                     }
                 },
@@ -120,6 +151,7 @@ fun LibraryScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 for (f in Filter.entries) {
+                    if (f == Filter.BEST && bestLevel < 2) continue
                     FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.label) })
                 }
             }
@@ -151,8 +183,15 @@ fun LibraryScreen(
                 ) {
                     for ((day, dayShots) in days) {
                         item(key = "day-$day", span = { GridItemSpan(maxLineSpan) }) {
-                            val toReview = dayShots.filter { it.key !in flags }
-                            DayHeader(day, dayShots.size, toReview.size) { onCull(cullOrder(toReview)) }
+                            val toggle = { selectedDays = if (day in selectedDays) selectedDays - day else selectedDays + day }
+                            DayHeader(
+                                day, dayShots.size, dayShots.count { it.key !in marks },
+                                selected = day in selectedDays,
+                                modifier = Modifier.combinedClickable(
+                                    onClick = { if (selectedDays.isNotEmpty()) toggle() },
+                                    onLongClick = toggle,
+                                ),
+                            )
                         }
                         items(dayShots, key = { it.key }) { shot ->
                             // The JPEG twin's system thumbnail is cached and quick; it looks like the RAW's preview.
@@ -166,7 +205,7 @@ fun LibraryScreen(
                                 },
                                 edited = shot.key in edited,
                                 exported = Photos.exportName(shot.primary).lowercase() in exported,
-                                flag = flags[shot.key],
+                                mark = marks[shot.key],
                             )
                         }
                     }
@@ -177,11 +216,14 @@ fun LibraryScreen(
 }
 
 @Composable
-private fun DayHeader(day: Long, count: Int, toReview: Int, onReview: () -> Unit) {
+private fun DayHeader(day: Long, count: Int, toReview: Int, selected: Boolean, modifier: Modifier) {
     Row(
-        Modifier.fillMaxWidth().padding(start = 8.dp, top = 12.dp, bottom = 4.dp),
+        modifier.fillMaxWidth().padding(start = 8.dp, top = 12.dp, bottom = 4.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (selected) {
+            Icon(Icons.Rounded.CheckCircle, "Selected", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 8.dp).size(22.dp))
+        }
         Column(Modifier.weight(1f)) {
             Text(dayLabel(day), style = MaterialTheme.typography.titleSmall)
             Text(
@@ -190,12 +232,11 @@ private fun DayHeader(day: Long, count: Int, toReview: Int, onReview: () -> Unit
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (toReview > 0) TextButton(onClick = onReview) { Text("Review") }
     }
 }
 
 /** Start of the local day, as millis. */
-private fun dayOf(millis: Long): Long = Calendar.getInstance().apply {
+internal fun dayOf(millis: Long): Long = Calendar.getInstance().apply {
     timeInMillis = millis
     set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
 }.timeInMillis
@@ -213,11 +254,6 @@ private fun dayLabel(day: Long): String {
     }
 }
 
-/** Culling order: newest day first, and within a day in the order the shots were taken. */
-private fun cullOrder(shots: List<Shot>): List<Shot> =
-    shots.groupBy { dayOf(it.takenMillis) }.toSortedMap(compareByDescending { it })
-        .values.flatMap { day -> day.sortedWith(compareBy<Shot> { it.takenMillis }.thenBy { it.primary.name }) }
-
 @Composable
 fun Thumb(
     photo: LibraryPhoto,
@@ -225,7 +261,7 @@ fun Thumb(
     label: String? = null,
     edited: Boolean = false,
     exported: Boolean = false,
-    flag: Flag? = null,
+    mark: Mark? = null,
 ) {
     val context = LocalContext.current
     val bitmap by produceState<ImageBitmap?>(Photos.cachedThumbnail(photo)?.asImageBitmap(), photo.id) {
@@ -235,7 +271,7 @@ fun Thumb(
         bitmap?.let {
             Image(
                 it, photo.name, contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().alpha(if (flag == Flag.REJECT) 0.35f else 1f),
+                modifier = Modifier.fillMaxSize().alpha(if (mark?.rejected == true) 0.35f else 1f),
             )
         }
         Row(
@@ -256,10 +292,18 @@ fun Thumb(
             if (edited) Badge(Icons.Rounded.Tune, "Edited")
             if (exported) Badge(Icons.Rounded.IosShare, "Exported")
         }
-        when (flag) {
-            Flag.PICK -> Badge(Icons.Rounded.Flag, "Picked", Modifier.align(Alignment.TopEnd).padding(4.dp), tint = Color(0xFF3DDC84))
-            Flag.REJECT -> Badge(Icons.Rounded.Close, "Rejected", Modifier.align(Alignment.TopEnd).padding(4.dp), tint = Color(0xFFFF5A5F))
-            null -> {}
+        when {
+            mark == null -> {}
+            mark.rejected -> Badge(Icons.Rounded.Close, "Rejected", Modifier.align(Alignment.TopEnd).padding(4.dp), tint = Color(0xFFFF5A5F))
+            else -> Row(
+                Modifier.align(Alignment.TopEnd).padding(4.dp)
+                    .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(3.dp)).padding(horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.Flag, "Picked", tint = Color(0xFF3DDC84), modifier = Modifier.size(14.dp))
+                // Rounds survived beyond the first.
+                if (mark.level > 1) Text("${mark.level}", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF3DDC84))
+            }
         }
     }
 }

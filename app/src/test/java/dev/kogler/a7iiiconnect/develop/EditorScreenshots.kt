@@ -118,15 +118,16 @@ class EditorScreenshots {
         val file = File(context.cacheDir, "DSC09412.JPG")
         writeLandscape(file)
         val day = 1_760_000_000_000L
-        // Twelve shots over two days; the even ones come as RAW+JPEG pairs (the RAW is a stand-in).
+        // Twelve shots five minutes apart over two days; the even ones come as RAW+JPEG pairs (the
+        // RAW is a stand-in). One extra frame a second after DSC09515 makes a burst.
         val photos = (0 until 12).flatMap { i ->
-            val t = day - (if (i < 7) 0L else 86_400_000L) - i * 60_000L
+            val t = day - (if (i < 7) 0L else 86_400_000L) - i * 300_000L
             val jpeg = LibraryPhoto(100L + i, Uri.fromFile(file), "DSC095${10 + i}.JPG", "image/jpeg", t)
             if (i % 2 == 0) listOf(jpeg.copy(id = 200L + i, name = jpeg.stem + ".ARW", mime = "image/x-sony-arw"), jpeg) else listOf(jpeg)
-        }
+        } + LibraryPhoto(300L, Uri.fromFile(file), "DSC09530.JPG", "image/jpeg", day - 5 * 300_000L + 1_000L)
         val shots = Library.shots(photos)
-        check(shots.size == 12) { "pairing made ${shots.size} shots" }
-        val flags = mapOf(shots[1].key to Flag.PICK, shots[2].key to Flag.REJECT, shots[4].key to Flag.PICK)
+        check(shots.size == 13) { "pairing made ${shots.size} shots" }
+        val marks = mapOf(shots[1].key to Mark(2), shots[3].key to Mark.REJECTED, shots[5].key to Mark(1))
 
         var screen by mutableStateOf("library")
         compose.mainClock.autoAdvance = false
@@ -134,14 +135,14 @@ class EditorScreenshots {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 if (screen == "library") {
                     LibraryScreen(
-                        shots = shots, edited = setOf(shots[0].key), flags = flags,
+                        shots = shots, edited = setOf(shots[0].key), marks = marks,
                         exported = setOf(Photos.exportName(shots[0].primary).lowercase()),
-                        onOpen = {}, onCull = {}, onDeleteRejected = {}, onBack = {},
+                        onOpen = {}, onCull = { _, _ -> }, onDeleteRejected = {}, onBack = {},
                     )
                 } else {
                     // JPEG-only shots, so the cards load without a real ARW.
                     CullScreen(
-                        deck = shots.filter { it.raw == null }, flags = emptyMap(), onFlag = { _, _ -> },
+                        shots = shots.filter { it.raw == null }, round = 1, marks = emptyMap(), onMark = { _, _ -> },
                         rejectedCount = 1, onDeleteRejected = {}, onBack = {},
                     )
                 }
@@ -151,14 +152,30 @@ class EditorScreenshots {
         shot("20-library")
 
         screen = "cull"
+        repeat(40) { step() }
+        shot("21-cull-stack")
+        compose.onNodeWithTag("cull-pick").performClick()
         repeat(30) { step() }
-        shot("21-cull")
+        shot("22-cull")
         compose.onNodeWithTag("cull-card").performTouchInput { down(center); moveBy(Offset(width * 0.32f, 20f)) }
         repeat(4) { step() }
-        shot("22-cull-pick")
+        shot("23-cull-pick")
         compose.onNodeWithTag("cull-card").performTouchInput { moveBy(Offset(-width * 0.64f, 0f)) }
         repeat(4) { step() }
-        shot("23-cull-reject")
+        shot("24-cull-reject")
+    }
+
+    @Test
+    fun similarStacks() {
+        val context: Context = RuntimeEnvironment.getApplication()
+        val file = File(context.cacheDir, "DSC09412.JPG")
+        writeLandscape(file)
+        val t = 1_760_000_000_000L
+        fun at(n: Int, at: Long) = Shot(null, LibraryPhoto(n.toLong(), Uri.fromFile(file), "DSC0$n.JPG", "image/jpeg", at))
+        // A burst, a look-alike 30 s later, then the same scene 10 minutes on (too late to stack).
+        val shots = listOf(at(1, t), at(2, t + 500), at(3, t + 30_000), at(4, t + 600_000))
+        val stacks = Similar.stacks(context, shots)
+        check(stacks.map { s -> s.map { it.primary.id } } == listOf(listOf(1L, 2L, 3L), listOf(4L))) { "stacks: $stacks" }
     }
 
     private fun tool(name: String) {
