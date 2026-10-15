@@ -2,9 +2,14 @@ probe rect	ffff0000
 probe shader-const	ff00ff00
 probe shader-texture	ff0000ff
 probe shader-f16	ffffff00
+probe u-float	ff000000
+probe u-float3	ff000000
+probe u-2nd	ff000000
+probe u-array	ff4080bf
+probe u-shader+f	ff000000
 case	meanAbs	p99	max
 # stage scene	ff0c0f18
-# stage lin	ffffffff
+# stage lin	ff000000
 # stage tone0.12	ff7c7c7c
 # stage lut-raw	ffffffff
 # stage row0	ff808080
@@ -20,11 +25,11 @@ raw-local	60.17	217	255
 raw-color	66.66	204	226
 # raw-mono gpu center ff000000, cpu ff2d2d2d
 raw-mono	44.84	183	211
-# raw-curves gpu center ff0000ff, cpu ff2a2d78
-raw-curves	92.42	246	255
+# raw-curves gpu center ff000000, cpu ff2a2d78
+raw-curves	62.25	237	248
 # raw-effects gpu center ff000000, cpu ff33407b
 raw-effects	57.71	210	238
-# raw-grain gpu center ff363636, cpu ff26336f
-raw-grain	48.71	159	197
-# jpeg-mixed gpu center ff000000, cpu ff565a86
-jpeg-mixed	98.03	195	232
+# raw-grain gpu center ff000000, cpu ff26336f
+raw-grain	62.35	213	251
+# jpeg-mixed gpu center ff363636, cpu ff565a86
+jpeg-mixed	52.97	195	232
