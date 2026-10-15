@@ -124,6 +124,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -487,6 +488,7 @@ fun EditorScreen(
     }
 
     Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
+        val landscape = LocalConfiguration.current.let { it.screenWidthDp > it.screenHeightDp }
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             // Top bar
             Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -532,8 +534,8 @@ fun EditorScreen(
             }
             exportProgress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth()) }
 
-            // Photo
-            Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(0.dp))) {
+            // Photo and panel: stacked in portrait, side by side in landscape.
+            val photoArea: @Composable (Modifier) -> Unit = { m -> Box(m.clip(RoundedCornerShape(0.dp))) {
                 val r = rendered
                 val shown: PhotoLayer? = if (showBefore) before?.let { BitmapLayer(it) } ?: r?.layer
                 else r?.layer ?: placeholder?.let { BitmapLayer(it) }
@@ -635,16 +637,12 @@ fun EditorScreen(
                         )
                     }
                 }
-            }
+            } }
 
-            // The filmstrip only shows with no panel open, so editing gets the room.
-            if (!cropMode && tool == null) Filmstrip(photos, index, onSelect = { go(it) })
-
-            // Adjustment panel
-            val o = opened
+            val panelArea: @Composable (Modifier) -> Unit = { m -> val o = opened
             if (tool != null) CompositionLocalProvider(LocalAdjusting provides dragging) {
                 Column(
-                    Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState())
+                    m.verticalScroll(rememberScrollState())
                         .padding(horizontal = 16.dp, vertical = 4.dp),
                 ) {
                     val ctl = Controls(
@@ -673,6 +671,19 @@ fun EditorScreen(
                         else -> {}
                     }
                 }
+            } }
+
+            if (landscape) {
+                Row(Modifier.weight(1f).fillMaxWidth()) {
+                    photoArea(Modifier.weight(1f).fillMaxHeight())
+                    panelArea(Modifier.width(360.dp).fillMaxHeight())
+                }
+                if (!cropMode && tool == null) Filmstrip(photos, index, onSelect = { go(it) })
+            } else {
+                photoArea(Modifier.weight(1f).fillMaxWidth())
+                // The filmstrip only shows with no panel open, so editing gets the room.
+                if (!cropMode && tool == null) Filmstrip(photos, index, onSelect = { go(it) })
+                panelArea(Modifier.fillMaxWidth().heightIn(max = 320.dp))
             }
 
             // Tool strip: every tool fits on screen; a dot marks the ones with edits.
