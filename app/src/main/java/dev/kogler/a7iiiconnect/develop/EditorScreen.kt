@@ -1,6 +1,12 @@
 package dev.kogler.a7iiiconnect.develop
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import androidx.activity.compose.BackHandler
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
@@ -24,6 +30,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -66,6 +73,8 @@ import androidx.compose.material.icons.outlined.Transform
 import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material.icons.rounded.Compare
 import androidx.compose.material.icons.rounded.Flip
+import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.RotateRight
 import androidx.compose.material.icons.rounded.Share
@@ -91,6 +100,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -120,10 +130,12 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -300,6 +312,13 @@ fun EditorScreen(
     var swipeKey by remember { mutableStateOf(P.EXPOSURE.key) }
     var swipeAxis by remember { mutableIntStateOf(0) }
     val swipeState = remember { SwipeState() }
+    var fullscreen by remember { mutableStateOf(false) }
+    // Full screen's controls: hidden until the photo is tapped, then hidden again after a while.
+    var chrome by remember { mutableStateOf(false) }
+    var chromePing by remember { mutableIntStateOf(0) }
+    LaunchedEffect(fullscreen, chrome, chromePing) {
+        if (fullscreen && chrome) { delay(3500); chrome = false }
+    }
     val haptics = LocalHapticFeedback.current
     val density = LocalDensity.current
     val snackbar = remember { SnackbarHostState() }
@@ -418,11 +437,25 @@ fun EditorScreen(
         }
     }
 
+    // Full screen: just the photo (with swipe mode, edits still work), system bars hidden too.
+    val view = LocalView.current
+    DisposableEffect(fullscreen) {
+        val window = view.context.findActivity()?.window
+        val bars = window?.let { WindowCompat.getInsetsController(it, view) }
+        if (fullscreen) {
+            bars?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            bars?.hide(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose { bars?.show(WindowInsetsCompat.Type.systemBars()) }
+    }
+    BackHandler(enabled = fullscreen) { fullscreen = false }
+
     // Swipe mode (Snapseed): up/down on the photo picks a slider, left/right changes it.
     val swipeList = swipeParams(tool)
     val swipeStep = with(density) { 36.dp.toPx() }
     val swipe = if (swipeMode && swipeList.isNotEmpty() && opened != null && !showBefore) SwipeAdjust(
         onStart = { horizontal ->
+            chrome = false
             val i = swipeList.indexOfFirst { it.key == swipeKey }.coerceAtLeast(0)
             val p = swipeList[i]
             swipeKey = p.key
@@ -487,9 +520,10 @@ fun EditorScreen(
     }
 
     Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
+        val landscape = LocalConfiguration.current.let { it.screenWidthDp > it.screenHeightDp }
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             // Top bar
-            Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (!fullscreen) Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { store.save(photo, settings); onBack() }) {
                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = Color.White)
                 }
@@ -532,8 +566,13 @@ fun EditorScreen(
             }
             exportProgress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth()) }
 
-            // Photo
-            Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(0.dp))) {
+            // Photo and panel: stacked in portrait, side by side in landscape.
+            val photoArea: @Composable (Modifier) -> Unit = { m -> Box(
+                m.clip(RoundedCornerShape(0.dp)).pointerInput(Unit) {
+                    // Any touch keeps full screen's controls up a little longer.
+                    awaitEachGesture { awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial); chromePing++ }
+                },
+            ) {
                 val r = rendered
                 val shown: PhotoLayer? = if (showBefore) before?.let { BitmapLayer(it) } ?: r?.layer
                 else r?.layer ?: placeholder?.let { BitmapLayer(it) }
@@ -556,6 +595,7 @@ fun EditorScreen(
                         onSplit = { splitAt = it },
                         swipe = swipe,
                         onHold = { showBefore = it },
+                        onTap = { if (fullscreen) chrome = !chrome },
                         onViewport = { viewport = it },
                     )
                 }
@@ -565,7 +605,7 @@ fun EditorScreen(
                 loadError?.let {
                     Text("Can't open this photo: $it", color = Color.White, modifier = Modifier.align(Alignment.Center).padding(24.dp))
                 }
-                if (!cropMode && !split) r?.histogram?.let { Histogram(it, Modifier.align(Alignment.TopEnd).padding(8.dp).size(120.dp, 56.dp)) }
+                if (!cropMode && !split && (!fullscreen || chrome)) r?.histogram?.let { Histogram(it, Modifier.align(Alignment.TopEnd).padding(8.dp).size(120.dp, 56.dp)) }
                 if (split && !cropMode && !showBefore) {
                     // Tap "Before" to compare against just this panel's edits.
                     val panel = tool?.takeIf { t -> t.groups.any { it !in FRAMING } }
@@ -610,13 +650,42 @@ fun EditorScreen(
                             .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
                     )
                 }
-                if (!cropMode) {
+                if (!cropMode && (!fullscreen || chrome)) {
+                    // Full screen: the tool icons pick which sliders swipe mode cycles through.
+                    if (fullscreen) {
+                        Row(
+                            Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)
+                                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(24.dp)).padding(horizontal = 4.dp),
+                        ) {
+                            for (t in Tool.entries.filter { it != Tool.CROP && it != Tool.PRESETS }) {
+                                val sel = t == tool || (tool == null && t == Tool.LIGHT)
+                                val c = if (sel) MaterialTheme.colorScheme.primary else Color.White
+                                Box(
+                                    Modifier.size(48.dp).clip(CircleShape).clickable { tool = t; chromePing++ },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(t.icon, t.label, tint = c)
+                                    if (t.groups.any { !settings.isDefault(it) }) ChangedDot(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 10.dp))
+                                }
+                            }
+                        }
+                    }
+                    val lift = if (fullscreen) 56.dp else 0.dp
                     // Thumb-reach controls along the bottom of the photo.
-                    Row(Modifier.align(Alignment.BottomStart).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.align(Alignment.BottomStart).padding(8.dp).padding(bottom = lift), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OverlayButton(Icons.AutoMirrored.Rounded.Undo, "Undo", enabled = history.canUndo) { undo() }
                         OverlayButton(Icons.AutoMirrored.Rounded.Redo, "Redo", enabled = history.canRedo) { redo() }
                     }
-                    Row(Modifier.align(Alignment.BottomEnd).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.align(Alignment.BottomEnd).padding(8.dp).padding(bottom = lift), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OverlayButton(
+                            if (fullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                            if (fullscreen) "Exit full screen" else "Full screen",
+                            modifier = Modifier.testTag("fullscreen"),
+                        ) {
+                            fullscreen = !fullscreen
+                            chrome = false
+                            if (fullscreen) scope.launch { snackbar.showSnackbar("Tap the photo to show the controls") }
+                        }
                         OverlayButton(Icons.Outlined.Swipe, "Swipe on the photo to adjust", selected = swipeMode) {
                             swipeMode = !swipeMode
                             store.swipeAdjust = swipeMode
@@ -635,16 +704,12 @@ fun EditorScreen(
                         )
                     }
                 }
-            }
+            } }
 
-            // The filmstrip only shows with no panel open, so editing gets the room.
-            if (!cropMode && tool == null) Filmstrip(photos, index, onSelect = { go(it) })
-
-            // Adjustment panel
-            val o = opened
+            val panelArea: @Composable (Modifier) -> Unit = { m -> val o = opened
             if (tool != null) CompositionLocalProvider(LocalAdjusting provides dragging) {
                 Column(
-                    Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState())
+                    m.verticalScroll(rememberScrollState())
                         .padding(horizontal = 16.dp, vertical = 4.dp),
                 ) {
                     val ctl = Controls(
@@ -673,10 +738,37 @@ fun EditorScreen(
                         else -> {}
                     }
                 }
+            } }
+
+            if (fullscreen) {
+                photoArea(Modifier.weight(1f).fillMaxWidth())
+            } else if (landscape) {
+                Row(Modifier.weight(1f).fillMaxWidth()) {
+                    photoArea(Modifier.weight(1f).fillMaxHeight())
+                    panelArea(Modifier.width(360.dp).fillMaxHeight())
+                }
+                if (!cropMode && tool == null) Filmstrip(photos, index, onSelect = { go(it) })
+            } else if (tool == null || cropMode) {
+                photoArea(Modifier.weight(1f).fillMaxWidth())
+                // The filmstrip only shows with no panel open, so editing gets the room.
+                if (!cropMode && tool == null) Filmstrip(photos, index, onSelect = { go(it) })
+                panelArea(Modifier.fillMaxWidth().heightIn(max = 320.dp))
+            } else {
+                // The photo area is only as tall as the photo (no black bars), and the panel gets
+                // the rest, so a landscape shot leaves room for more sliders.
+                val layer = rendered?.layer ?: placeholder?.let { BitmapLayer(it) }
+                BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                    val fit = layer?.let { maxWidth * (it.height.toFloat() / it.width) } ?: maxHeight
+                    val photoHeight = minOf(fit, maxHeight - 320.dp).coerceAtLeast(maxHeight * 0.35f)
+                    Column(Modifier.fillMaxSize()) {
+                        photoArea(Modifier.fillMaxWidth().height(photoHeight))
+                        panelArea(Modifier.fillMaxWidth().weight(1f))
+                    }
+                }
             }
 
             // Tool strip: every tool fits on screen; a dot marks the ones with edits.
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 2.dp)) {
+            if (!fullscreen) Row(Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 2.dp)) {
                 for (t in Tool.entries) {
                     val selected = tool == t
                     val changed = t.groups.any { !settings.isDefault(it) }
@@ -739,25 +831,28 @@ private fun geometryKey(o: OpenedPhoto, s: Settings, crop: Boolean) = listOf(
 
 /**
  * Guides are slow to build (a few hundred ms), so keep the last one while only non-guide sliders
- * move. Exposure doesn't change it (see Look.guide); while white balance is being dragged the
- * previous one is close enough.
+ * move. Exposure doesn't change it (see Look.guide); while any slider (white balance, geometry,
+ * lens) is being dragged the previous one is close enough.
  */
 private class GuideCache {
     private var geoKey: Any? = null
     private var colorKey: Any? = null
+    private var cropMode: Boolean? = null
     private var guide: Guide? = null
     private var bitmap: Bitmap? = null
 
     @Synchronized
-    fun clear() { geoKey = null; colorKey = null; guide = null; bitmap = null }
+    fun clear() { geoKey = null; colorKey = null; cropMode = null; guide = null; bitmap = null }
 
     @Synchronized
     fun get(o: OpenedPhoto, look: Look, s: Settings, crop: Boolean, allowStale: Boolean = false): Guide? {
         val gk = geometryKey(o, s, crop)
         val ck = listOf(s.profile, s.temperature, s.tint)
-        if (gk == geoKey && guide != null && (ck == colorKey || allowStale)) return guide
+        // While a slider moves, any recent guide will do (the shader samples it by position, so
+        // a slightly different geometry only blurs the local tone briefly); it's rebuilt on release.
+        if (guide != null && ((gk == geoKey && ck == colorKey) || (allowStale && crop == cropMode))) return guide
         val g = look.guide(o.preview.image, o.geometry(s, crop)) ?: return null
-        geoKey = gk; colorKey = ck; guide = g; bitmap = null
+        geoKey = gk; colorKey = ck; cropMode = crop; guide = g; bitmap = null
         return g
     }
 
@@ -860,6 +955,7 @@ private fun ZoomableImage(
     onSplit: (Float) -> Unit,
     swipe: SwipeAdjust?,
     onHold: (Boolean) -> Unit,
+    onTap: () -> Unit,
     onViewport: (Viewport?) -> Unit,
 ) {
     var scale by remember { mutableFloatStateOf(1f) }
@@ -868,6 +964,7 @@ private fun ZoomableImage(
     val report by rememberUpdatedState(onViewport)
     val img by rememberUpdatedState(layer)
     val adjust by rememberUpdatedState(swipe)
+    val tapped by rememberUpdatedState(onTap)
     val split by rememberUpdatedState(splitAt)
     val splitChanged by rememberUpdatedState(onSplit)
 
@@ -945,6 +1042,7 @@ private fun ZoomableImage(
                     onDoubleTap = { if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 4f },
                     onLongPress = { onHold(true) },
                     onPress = { tryAwaitRelease(); onHold(false) },
+                    onTap = { tapped() },
                 )
             },
     ) {
@@ -1005,6 +1103,12 @@ private fun ZoomableImage(
             )
         }
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 /** Swipe mode's gesture state, kept across one gesture's callbacks. */
@@ -1838,7 +1942,8 @@ private fun plain(v: Float, decimals: Int) = if (decimals == 0) "${v.roundToInt(
 
 /**
  * A Lightroom-style slider row. Drag the slider (slower as your finger moves away from it), tap
- * the value to type one, double-tap or long-press the label to reset. A dot marks a change.
+ * the value to type one, double-tap the slider or double-tap/long-press the label to reset. A dot
+ * marks a change.
  */
 @Composable
 private fun AdjustSlider(
@@ -1885,6 +1990,7 @@ private fun AdjustSlider(
             value = value, range = range, default = default, track = track,
             onChange = onChange, onDone = onDone,
             onActive = { active = it }, onSpeed = { speed = it },
+            onDoubleTap = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); resetNow() },
         )
     }
     if (typing) {

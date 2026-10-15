@@ -9,6 +9,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.geometry.Offset
@@ -41,29 +42,7 @@ class EditorScreenshots {
 
     @Test
     fun editorPanels() {
-        val context: Context = RuntimeEnvironment.getApplication()
-        val file = File(context.cacheDir, "DSC09412.JPG")
-        writeLandscape(file)
-        val photos = (1L..6L).map { LibraryPhoto(it, Uri.fromFile(file), "DSC0941$it.JPG", "image/jpeg", 0L) }
-        val store = EditStore(context)
-        store.save(
-            photos[0],
-            Settings().with(
-                P.EXPOSURE to 0.25f, P.CONTRAST to 12f, P.HIGHLIGHTS to -45f, P.SHADOWS to 35f,
-                P.WHITES to 8f, P.BLACKS to -12f, P.VIBRANCE to 18f, P.CLARITY to 12f, P.DEHAZE to 8f,
-                P.VIGNETTE to -18f, P.GRADE_HUE[0] to 210f, P.GRADE_SAT[0] to 15f,
-                P.GRADE_HUE[2] to 40f, P.GRADE_SAT[2] to 18f,
-            ),
-        )
-
-        gpuPreviewEnabled = false
-        compose.mainClock.autoAdvance = false
-        compose.setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
-                EditorScreen(photos = photos, startIndex = 0, store = store, onBack = {}, onPhotoChanged = {})
-            }
-        }
-        awaitRender()
+        openEditor()
         shot("01-light")
 
         compose.onNodeWithText("Curve").performClick(); settle()
@@ -89,6 +68,48 @@ class EditorScreenshots {
         tool("LIGHT")
         compose.onNodeWithTag("compare").performClick()
         awaitRender(); shot("13-split")
+
+        compose.onNodeWithTag("compare").performClick()
+        compose.onNodeWithTag("fullscreen").performClick()
+        awaitRender(); shot("15-fullscreen")
+        // A tap on the photo brings the controls back (after the double-tap timeout).
+        compose.onRoot().performTouchInput { click(center) }
+        settle(); settle()
+        shot("16-fullscreen-controls")
+    }
+
+    /** The phone turned sideways: the panel sits beside the photo. */
+    @Test
+    @Config(qualifiers = "w914dp-h411dp-land-xxhdpi")
+    fun landscape() {
+        openEditor()
+        shot("14-landscape")
+    }
+
+    private fun openEditor() {
+        val context: Context = RuntimeEnvironment.getApplication()
+        val file = File(context.cacheDir, "DSC09412.JPG")
+        writeLandscape(file)
+        val photos = (1L..6L).map { LibraryPhoto(it, Uri.fromFile(file), "DSC0941$it.JPG", "image/jpeg", 0L) }
+        val store = EditStore(context)
+        store.save(
+            photos[0],
+            Settings().with(
+                P.EXPOSURE to 0.25f, P.CONTRAST to 12f, P.HIGHLIGHTS to -45f, P.SHADOWS to 35f,
+                P.WHITES to 8f, P.BLACKS to -12f, P.VIBRANCE to 18f, P.CLARITY to 12f, P.DEHAZE to 8f,
+                P.VIGNETTE to -18f, P.GRADE_HUE[0] to 210f, P.GRADE_SAT[0] to 15f,
+                P.GRADE_HUE[2] to 40f, P.GRADE_SAT[2] to 18f,
+            ),
+        )
+
+        gpuPreviewEnabled = false
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            MaterialTheme(colorScheme = darkColorScheme()) {
+                EditorScreen(photos = photos, startIndex = 0, store = store, onBack = {}, onPhotoChanged = {})
+            }
+        }
+        awaitRender()
     }
 
     @Test
