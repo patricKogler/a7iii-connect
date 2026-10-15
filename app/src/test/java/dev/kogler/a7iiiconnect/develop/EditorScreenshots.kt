@@ -17,6 +17,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.github.takahirom.roborazzi.captureRoboImage
+import dev.kogler.a7iiiconnect.Phase
+import dev.kogler.a7iiiconnect.SyncStatus
 import dev.kogler.a7iiiconnect.develop.engine.P
 import dev.kogler.a7iiiconnect.develop.engine.Settings
 import org.junit.Rule
@@ -130,6 +132,7 @@ class EditorScreenshots {
         val marks = mapOf(shots[1].key to Mark(2), shots[3].key to Mark.REJECTED, shots[5].key to Mark(1))
 
         var screen by mutableStateOf("library")
+        var transfer by mutableStateOf(SyncStatus())
         compose.mainClock.autoAdvance = false
         compose.setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
@@ -137,7 +140,8 @@ class EditorScreenshots {
                     LibraryScreen(
                         shots = shots, edited = setOf(shots[0].key), marks = marks,
                         exported = setOf(Photos.exportName(shots[0].primary).lowercase()),
-                        onOpen = {}, onCull = { _, _ -> }, onDeleteRejected = {}, onBack = {},
+                        onOpen = {}, onCull = { _, _ -> }, onDeleteRejected = {},
+                        transfer = transfer, onCamera = {},
                     )
                 } else {
                     // JPEG-only shots, so the cards load without a real ARW.
@@ -150,6 +154,10 @@ class EditorScreenshots {
         }
         repeat(20) { step() }
         shot("20-library")
+        transfer = SyncStatus(running = true, phase = Phase.COPYING, done = 7, total = 23)
+        repeat(10) { step() }
+        shot("20b-library-transfer")
+        transfer = SyncStatus()
 
         screen = "cull"
         repeat(40) { step() }

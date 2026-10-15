@@ -33,7 +33,7 @@ class CameraScreenshots {
         password = "abcd1234",
         smallCopies = false,
         nfcAvailable = true,
-        version = "0.15.0",
+        version = "0.16.0",
         gps = GpsStatus(phase = GpsPhase.LINKED, accuracyMeters = 4f),
         gpsEnabled = true,
         gpsPaired = true,

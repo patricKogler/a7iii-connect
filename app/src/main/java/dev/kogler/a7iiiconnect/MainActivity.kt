@@ -1,6 +1,8 @@
 package dev.kogler.a7iiiconnect
 
 import android.Manifest
+import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.nfc.NfcAdapter
@@ -13,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.activity.result.contract.ActivityResultContracts
+import dev.kogler.a7iiiconnect.develop.DevelopActivity
 import dev.kogler.a7iiiconnect.ftp.FtpService
 import dev.kogler.a7iiiconnect.ftp.FtpState
 import dev.kogler.a7iiiconnect.ftp.FtpStatus
@@ -110,12 +113,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         store = Store(this)
         refreshStore()
-        if (store.gpsEnabled && store.gpsCameraAddress.isNotBlank() &&
-            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
-            checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        ) {
-            GpsService.start(this)
-        }
         val nfcAvailable = NfcAdapter.getDefaultAdapter(this) != null
         val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "?"
 
@@ -165,16 +162,6 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
-
-        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
-        }
-        if (savedInstanceState == null) handleNfc(intent)
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        handleNfc(intent)
     }
 
     override fun onStart() {
@@ -218,7 +205,17 @@ class MainActivity : ComponentActivity() {
         status = s
     }
 
-    private fun handleNfc(intent: Intent?) {
-        if (NfcPairing.isNfcIntent(intent)) CameraTouch.handleIntent(this, intent)
+    companion object {
+        fun intent(context: Context) = Intent(context, MainActivity::class.java)
+
+        /** For notifications: the Camera screen, with Photos behind it so Back lands there. */
+        fun open(context: Context): PendingIntent = PendingIntent.getActivities(
+            context, 0,
+            arrayOf(
+                Intent(context, DevelopActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                intent(context),
+            ),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 }

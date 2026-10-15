@@ -248,7 +248,7 @@ class SyncService : Service() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         nm.notify(DONE_NOTIFICATION_ID, Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_menu_gallery)
-            .setContentTitle("A7III Connect")
+            .setContentTitle("Shootback")
             .setContentText(message)
             .setContentIntent(openApp())
             .setAutoCancel(true)
@@ -263,7 +263,7 @@ class SyncService : Service() {
         )
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("A7III Connect")
+            .setContentTitle("Shootback")
             .setContentText(text)
             .setContentIntent(openApp())
             .setOngoing(true)
@@ -273,8 +273,9 @@ class SyncService : Service() {
             .build()
     }
 
+    /** Photos, where the new shots land and the transfer shows as a strip. */
     private fun openApp() = PendingIntent.getActivity(
-        this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
+        this, 0, Intent(this, dev.kogler.a7iiiconnect.develop.DevelopActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
     )
 
     private fun acquireLocks() {
