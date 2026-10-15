@@ -142,7 +142,9 @@ fun DuoScreen(onExit: () -> Unit, onShareApp: () -> Unit, onInstall: (File) -> U
             when {
                 Duo.ended -> Ended(onExit)
                 !Duo.connected && Duo.phase == Phase.LOBBY -> Lobby(onClose = leave, onShareApp = onShareApp)
-                Duo.phase == Phase.LOBBY -> Centered { Spinner("Connected to ${Duo.partnerName}. Getting the photos ready…") }
+                Duo.phase == Phase.LOBBY -> Centered {
+                    Spinner(if (Duo.battleOnly) "Connected to ${Duo.partnerName}. Getting the photo ready…" else "Connected to ${Duo.partnerName}. Getting the photos ready…")
+                }
                 Duo.phase == Phase.CULL -> Deck(onClose = leave)
                 Duo.phase == Phase.REVEAL -> Reveal(onClose = leave)
                 Duo.phase == Phase.DEBATE -> Debate(onClose = leave)
@@ -151,6 +153,7 @@ fun DuoScreen(onExit: () -> Unit, onShareApp: () -> Unit, onInstall: (File) -> U
                 Duo.phase == Phase.BATTLE_EDIT -> BattleEdit(onClose = leave)
                 Duo.phase == Phase.BATTLE_VOTE -> BattleVote(renders, onClose = leave)
                 Duo.phase == Phase.BATTLE_RESULT -> BattleResult(renders, onClose = leave)
+                Duo.phase == Phase.BATTLE_OVER -> BattleOver(onClose = onExit)
             }
         }
         MatchBurst()
@@ -177,7 +180,7 @@ fun DuoScreen(onExit: () -> Unit, onShareApp: () -> Unit, onInstall: (File) -> U
         AlertDialog(
             onDismissRequest = { confirmLeave = false },
             title = { Text("Leave Together?") },
-            text = { Text(if (Duo.phase.ordinal < Phase.DONE.ordinal) "The votes so far are lost for both of you." else "This ends the session for ${Duo.partnerName} too.") },
+            text = { Text(if (Duo.phase.ordinal < Phase.DONE.ordinal && !Duo.battleOnly) "The votes so far are lost for both of you." else "This ends the session for ${Duo.partnerName} too.") },
             confirmButton = { TextButton(onClick = { confirmLeave = false; onExit() }) { Text("Leave") } },
             dismissButton = { TextButton(onClick = { confirmLeave = false }) { Text("Stay") } },
         )
@@ -284,13 +287,18 @@ private fun Lobby(onClose: () -> Unit, onShareApp: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            if (hosting) "Cull together" else "Join",
+            when {
+                hosting && Duo.battleOnly -> "Edit battle"
+                hosting -> "Cull together"
+                else -> "Join"
+            },
             color = Color.White, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold,
         )
         Spacer(Modifier.height(6.dp))
         Text(
             when {
                 !hosting -> "Go through someone's photos with them"
+                Duo.battleOnly -> "You both edit the same photo, then vote blind"
                 Duo.deck.isEmpty() -> "Getting the photos ready… ${(Duo.preparing * 100).toInt()}%"
                 else -> "${Duo.deck.sumOf { it.size }} shots ready to share"
             },
@@ -672,6 +680,31 @@ private fun Done(onClose: () -> Unit) {
             Spacer(Modifier.height(12.dp))
             OutlinedButton(onClick = onClose) { Text("Finish") }
         }
+    }
+}
+
+/** Battle only: after the result. Same photo again, or done. */
+@Composable
+private fun BattleOver(onClose: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(Icons.Rounded.Brush, null, tint = Gold, modifier = Modifier.size(56.dp))
+        Spacer(Modifier.height(12.dp))
+        Text("Good battle!", color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Black)
+        Spacer(Modifier.height(32.dp))
+        if (Duo.hosting) {
+            Button(
+                onClick = { Duo.rematch() },
+                colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Color.Black),
+            ) { Text("Rematch", fontWeight = FontWeight.Bold) }
+        } else {
+            Text("${Duo.partnerName} can start a rematch", color = Color.White.copy(alpha = 0.6f))
+        }
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(onClick = onClose) { Text("Finish") }
     }
 }
 
