@@ -1,26 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- GoShoot: camera body with an orange lens, centred in the 72dp safe zone of the 108dp canvas. -->
+<!-- Shootback: a red hanko seal reading 写 ("photo"), tilted like a hand stamp, inside the 66dp safe zone. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M38,38 L44,32 L64,32 L70,38 L76,38 C79.3,38 82,40.7 82,44 L82,70 C82,73.3 79.3,76 76,76 L32,76 C28.7,76 26,73.3 26,70 L26,44 C26,40.7 28.7,38 32,38 Z" />
-    <path
-        android:fillColor="#1C1B1F"
-        android:pathData="M40,57 a14,14 0 1,0 28,0 a14,14 0 1,0 -28,0 Z" />
-    <path
-        android:fillColor="#E8590C"
-        android:pathData="M43,57 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0 Z" />
-    <path
-        android:fillColor="#1C1B1F"
-        android:pathData="M48,57 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M48.7,53.5 a1.8,1.8 0 1,0 3.6,0 a1.8,1.8 0 1,0 -3.6,0 Z" />
-    <path
-        android:fillColor="#E8590C"
-        android:pathData="M71.5,45 a2.5,2.5 0 1,0 5.0,0 a2.5,2.5 0 1,0 -5.0,0 Z" />
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="-4">
+        <path
+            android:fillColor="#B3202A"
+            android:pathData="M38,32 L70,32 Q76,32 76,38 L76,70 Q76,76 70,76 L38,76 Q32,76 32,70 L32,38 Q32,32 38,32 Z" />
+        <path
+            android:fillColor="#F3EEE3"
+            android:strokeColor="#F3EEE3"
+            android:strokeWidth="1.4"
+            android:strokeLineJoin="round"
+            android:pathData="M60.06 59.13Q59.97 60.12 60.06 61.1Q58.23 61.01 56.4 61.01H43.87Q42.04 61.01 40.21 61.1Q40.3 60.12 40.21 59.13Q42.04 59.22 43.87 59.22H56.4Q58.23 59.22 60.06 59.13ZM65.3 47.97Q65.18 48.96 65.3 49.95Q63.47 49.86 61.64 49.86H48.63L48.21 54.18H64.64V64.94Q64.64 66.08 63.71 66.89Q62.39 68.03 58.95 68Q59.31 66.47 58.23 65.33Q59.22 65.45 60.61 65.47Q62 65.48 62.23 65.3Q62.45 65.12 62.45 64.43V55.98H45.85L46.57 48.36Q46.78 46.15 46.87 43.93Q48.06 44.17 49.29 44.14Q48.99 46.09 48.81 48.06H61.64Q63.47 48.06 65.3 47.97ZM67.79 40V46.86H65.57V41.89H42.49Q42.49 44.05 42.49 46.86H40.3V40Z" />
+    </group>
 </vector>
