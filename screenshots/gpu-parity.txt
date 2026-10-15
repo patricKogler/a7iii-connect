@@ -3,12 +3,12 @@ probe eval-swizzle	error: 1: cannot swizzle value of type 'shader' | 1 error
 probe eval-helper	error: 1: cannot swizzle value of type 'shader' | error: 1: call to undefined function 'f'
 probe sample	ok
 case	meanAbs	p99	max
-raw-default	FAILED	IllegalArgumentException: error: 58: cannot swizzle value of type 'shader' | error: 65: cannot swizzle value of type 'shader' | error: 69: cannot swizzle value of type 'shader' | error: 145: call to undefined function 'lin' | error: 146: call to undefined function 'lin' | error: 160: call to undefined function 'lin' | 6 errors | 
-raw-light	FAILED	IllegalArgumentException: error: 58: cannot swizzle value of type 'shader' | error: 65: cannot swizzle value of type 'shader' | error: 69: cannot swizzle value of type 'shader' | error: 145: call to undefined function 'lin' | error: 146: call to undefined function 'lin' | error: 160: call to undefined function 'lin' | 6 errors | 
-raw-local	FAILED	IllegalArgumentException: error: 58: cannot swizzle value of type 'shader' | error: 65: cannot swizzle value of type 'shader' | error: 69: cannot swizzle value of type 'shader' | error: 145: call to undefined function 'lin' | error: 146: call to undefined function 'lin' | error: 160: call to undefined function 'lin' | 6 errors | 
-raw-color	FAILED	IllegalArgumentException: error: 58: cannot swizzle value of type 'shader' | error: 65: cannot swizzle value of type 'shader' | error: 69: cannot swizzle value of type 'shader' | error: 145: call to undefined function 'lin' | error: 146: call to undefined function 'lin' | error: 160: call to undefined function 'lin' | 6 errors | 
-raw-mono	FAILED	IllegalArgumentException: error: 58: cannot swizzle value of type 'shader' | error: 65: cannot swizzle value of type 'shader' | error: 69: cannot swizzle value of type 'shader' | error: 145: call to undefined function 'lin' | error: 146: call to undefined function 'lin' | error: 160: call to undefined function 'lin' | 6 errors | 
-raw-curves	FAILED	IllegalArgumentException: error: 58: cannot swizzle value of type 'shader' | error: 65: cannot swizzle value of type 'shader' | error: 69: cannot swizzle value of type 'shader' | error: 145: call to undefined function 'lin' | error: 146: call to undefined function 'lin' | error: 160: call to undefined function 'lin' | 6 errors | 
-raw-effects	FAILED	IllegalArgumentException: error: 58: cannot swizzle value of type 'shader' | error: 65: cannot swizzle value of type 'shader' | error: 69: cannot swizzle value of type 'shader' | error: 145: call to undefined function 'lin' | error: 146: call to undefined function 'lin' | error: 160: call to undefined function 'lin' | 6 errors | 
-raw-grain	FAILED	IllegalArgumentException: error: 58: cannot swizzle value of type 'shader' | error: 65: cannot swizzle value of type 'shader' | error: 69: cannot swizzle value of type 'shader' | error: 145: call to undefined function 'lin' | error: 146: call to undefined function 'lin' | error: 160: call to undefined function 'lin' | 6 errors | 
-jpeg-mixed	FAILED	IllegalArgumentException: error: 58: cannot swizzle value of type 'shader' | error: 65: cannot swizzle value of type 'shader' | error: 69: cannot swizzle value of type 'shader' | error: 145: call to undefined function 'lin' | error: 146: call to undefined function 'lin' | error: 160: call to undefined function 'lin' | 6 errors | 
+raw-default	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
+raw-light	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
+raw-local	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
+raw-color	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
+raw-mono	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
+raw-curves	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
+raw-effects	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
+raw-grain	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
+jpeg-mixed	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
