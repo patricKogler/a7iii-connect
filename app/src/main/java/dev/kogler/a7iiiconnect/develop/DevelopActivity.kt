@@ -1,6 +1,8 @@
 package dev.kogler.a7iiiconnect.develop
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.os.Bundle
 import android.provider.MediaStore
@@ -11,21 +13,27 @@ import kotlinx.coroutines.launch
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
+import dev.kogler.a7iiiconnect.CameraTouch
+import dev.kogler.a7iiiconnect.MainActivity
+import dev.kogler.a7iiiconnect.SyncState
+import dev.kogler.a7iiiconnect.SyncStatus
+import dev.kogler.a7iiiconnect.ftp.FtpState
+import dev.kogler.a7iiiconnect.ftp.FtpStatus
+import dev.kogler.a7iiiconnect.gps.GpsService
+import dev.kogler.a7iiiconnect.ui.AppTheme
 import dev.kogler.a7iiiconnect.duo.DuoActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Photos: a library of shots grouped by day, a swipe deck for culling, and a Lightroom-style
- * loupe editor. Always dark, like Lightroom.
+ * Photos, the app's start screen: a library of shots grouped by day, a swipe deck for culling,
+ * and a Lightroom-style loupe editor. The camera button opens the Camera screen
+ * ([MainActivity]); transfers show as a strip on top. Always dark, like Lightroom.
  */
 class DevelopActivity : ComponentActivity() {
 
@@ -38,7 +46,20 @@ class DevelopActivity : ComponentActivity() {
     /** The culling round and the keys of the shots dealt into it, while the deck is open. */
     private var culling by mutableStateOf<Pair<Int, List<String>>?>(null)
     private var deleting = emptyList<Shot>()
+    private var loaded = false
     private lateinit var store: EditStore
+    private var transfer by mutableStateOf(SyncStatus())
+    private val transferListener: (SyncStatus) -> Unit = { s ->
+        // New shots land as they're copied; show them in the library straight away.
+        val landed = s.done != transfer.done || (transfer.running && !s.running)
+        transfer = s
+        if (landed) reloadUnlessEditing()
+    }
+    private var ftpReceived = -1
+    private val ftpListener: (FtpStatus) -> Unit = { s ->
+        if (ftpReceived >= 0 && s.received != ftpReceived) reloadUnlessEditing()
+        ftpReceived = s.received
+    }
 
     private val deleteRequest = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
@@ -50,16 +71,20 @@ class DevelopActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
+        enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         super.onCreate(savedInstanceState)
         store = EditStore(this)
+        GpsService.resumeIfEnabled(this)
         editing = savedInstanceState?.getLong(KEY_EDITING, -1L)?.takeIf { it >= 0 }
             ?: intent.getLongExtra(EXTRA_PHOTO_ID, -1L).takeIf { it >= 0 }
         culling = savedInstanceState?.getStringArrayList(KEY_CULLING)?.let { savedInstanceState.getInt(KEY_ROUND, 1) to it }
+        if (savedInstanceState == null) CameraTouch.handleIntent(this, intent)
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
 
         setContent {
-            MaterialTheme(colorScheme = dynamicDarkColorScheme(LocalContext.current)) {
-                LaunchedEffect(Unit) { reload() }
+            AppTheme {
                 val current = editing
                 val index = shots.indexOfFirst { current != null && it.contains(current) }
                 val deck = culling
@@ -96,17 +121,47 @@ class DevelopActivity : ComponentActivity() {
                         onCull = { round, deck -> culling = round to deck.map { it.key } },
                         onTogether = { round, deck -> startActivity(DuoActivity.intent(this, round, deck.map { it.key })) },
                         onDeleteRejected = { deleteRejected() },
-                        onBack = { finish() },
+                        transfer = transfer,
+                        onCamera = { startActivity(MainActivity.intent(this)) },
                     )
                 }
             }
         }
     }
 
-    override fun onRestart() {
-        super.onRestart()
-        // Back from Together, which marks the shots it went through.
-        if (editing == null) lifecycleScope.launch { reload() }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        CameraTouch.handleIntent(this, intent)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        SyncState.observe(transferListener)
+        FtpState.observe(ftpListener)
+        // Photos may have arrived while we were in the background.
+        reloadUnlessEditing()
+    }
+
+    override fun onStop() {
+        SyncState.remove(transferListener)
+        FtpState.remove(ftpListener)
+        ftpReceived = -1
+        super.onStop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        CameraTouch.startReading(this)
+    }
+
+    override fun onPause() {
+        CameraTouch.stopReading(this)
+        super.onPause()
+    }
+
+    /** The editor keeps its own place in the list, so new arrivals wait until it closes. */
+    private fun reloadUnlessEditing() {
+        if (editing == null || !loaded) lifecycleScope.launch { reload() }
     }
 
     private fun closeEditor() {
@@ -146,6 +201,7 @@ class DevelopActivity : ComponentActivity() {
             exported = Library.exportedNames(this@DevelopActivity)
         }
         shots = all
+        loaded = true
     }
 
     companion object {

@@ -103,7 +103,7 @@ class FtpService : Service() {
         val stop = PendingIntent.getService(
             this, 3, Intent(this, FtpService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE,
         )
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val open = MainActivity.open(this)
         val s = FtpState.status
         val text = if (s.received == 0) "Waiting for the camera on port $PORT"
         else "${s.received} files received · last ${s.lastFile}"

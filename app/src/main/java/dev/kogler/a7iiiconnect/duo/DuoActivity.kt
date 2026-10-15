@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.nfc.NdefMessage
 import android.nfc.NfcAdapter
+import android.nfc.Tag
 import android.nfc.tech.Ndef
 import android.os.Build
 import android.os.Bundle
@@ -17,13 +18,11 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import dev.kogler.a7iiiconnect.develop.Library
 import dev.kogler.a7iiiconnect.develop.Similar
+import dev.kogler.a7iiiconnect.ui.AppTheme
 import dev.kogler.a7iiiconnect.develop.dayOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -56,7 +55,7 @@ class DuoActivity : ComponentActivity() {
         permissions.launch(neededPermissions())
 
         setContent {
-            MaterialTheme(colorScheme = dynamicDarkColorScheme(LocalContext.current)) {
+            AppTheme {
                 DuoScreen(
                     onExit = { Duo.leave(); finish() },
                     onShareApp = { shareApp() },
@@ -91,7 +90,7 @@ class DuoActivity : ComponentActivity() {
         if (!Duo.hosting) {
             NfcAdapter.getDefaultAdapter(this)?.enableReaderMode(
                 this,
-                { tag -> codeOf(Ndef.get(tag)?.cachedNdefMessage)?.let { c -> runOnUiThread { Duo.join(this, c) } } },
+                { tag -> codeOf(tag)?.let { c -> runOnUiThread { Duo.join(this, c) } } },
                 NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B,
                 null,
             )
@@ -162,6 +161,13 @@ class DuoActivity : ComponentActivity() {
                     putStringArrayListExtra(EXTRA_KEYS, ArrayList(keys))
                 }
             }
+
+        /** Join the phone whose Together tag carried [code]. */
+        fun joinIntent(context: Context, code: String) =
+            Intent(context, DuoActivity::class.java).setData(Uri.parse("shootback://duo?code=$code"))
+
+        /** The session code on a Together tag (another phone hosting), or null for any other tag. */
+        fun codeOf(tag: Tag): String? = runCatching { codeOf(Ndef.get(tag)?.cachedNdefMessage) }.getOrNull()
 
         private fun codeOf(intent: Intent?): String? {
             val data = intent?.data ?: run {

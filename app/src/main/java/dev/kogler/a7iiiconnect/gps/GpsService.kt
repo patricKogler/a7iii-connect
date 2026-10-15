@@ -1,5 +1,6 @@
 package dev.kogler.a7iiiconnect.gps
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
@@ -9,6 +10,7 @@ import android.app.Service
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.location.Location
 import android.location.LocationListener
@@ -165,7 +167,7 @@ class GpsService : Service(), LocationListener {
             .setContentTitle("Camera location")
             .setContentText(text)
             .setOngoing(true)
-            .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE))
+            .setContentIntent(MainActivity.open(this))
             .addAction(Notification.Action.Builder(null, "Turn off", stop).build())
             .build()
     }
@@ -179,6 +181,17 @@ class GpsService : Service(), LocationListener {
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, GpsService::class.java))
+        }
+
+        /** On app start: geotagging was on last time, so link up with the camera again. */
+        fun resumeIfEnabled(context: Context) {
+            val store = Store(context)
+            if (store.gpsEnabled && store.gpsCameraAddress.isNotBlank() &&
+                context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+                context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            ) {
+                start(context)
+            }
         }
 
         fun stop(context: Context) {

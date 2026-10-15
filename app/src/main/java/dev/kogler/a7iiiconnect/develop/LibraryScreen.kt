@@ -27,6 +27,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.PhotoCamera
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Surface
+import dev.kogler.a7iiiconnect.Phase
+import dev.kogler.a7iiiconnect.SyncStatus
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -74,6 +80,42 @@ import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+/** A copy from the camera in progress; tapping it opens the Camera screen. */
+@Composable
+private fun TransferStrip(status: SyncStatus, onClick: () -> Unit) {
+    val text = when (status.phase) {
+        Phase.SEARCHING -> "Looking for the camera"
+        Phase.READING -> "Checking which photos are new"
+        Phase.COPYING -> if (status.total > 0) "Copying ${status.done} of ${status.total}" else "Copying"
+        else -> status.message
+    }
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        shape = RoundedCornerShape(16.dp),
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp).testTag("transfer"),
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Download, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(text, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+            }
+            Spacer(Modifier.size(8.dp))
+            if (status.phase == Phase.COPYING && status.total > 0) {
+                LinearProgressIndicator(
+                    progress = { status.done.toFloat() / status.total },
+                    modifier = Modifier.fillMaxWidth(),
+                    drawStopIndicator = {},
+                )
+            } else {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
 private enum class Filter(val label: String) {
     ALL("All"), TO_REVIEW("To review"), PICKS("Picks"), BEST("Best"), EDITED("Edited"), REJECTED("Rejected")
 }
@@ -89,7 +131,8 @@ fun LibraryScreen(
     onCull: (round: Int, shots: List<Shot>) -> Unit,
     onTogether: (round: Int, shots: List<Shot>) -> Unit,
     onDeleteRejected: () -> Unit,
-    onBack: () -> Unit,
+    transfer: SyncStatus,
+    onCamera: () -> Unit,
 ) {
     var filter by rememberSaveable { mutableStateOf(Filter.ALL) }
     // Days picked by long-pressing their headers; Review then covers just those.
@@ -116,9 +159,7 @@ fun LibraryScreen(
             TopAppBar(
                 title = { Text(if (selectedDays.isEmpty()) "Photos" else "${selectedDays.size} ${if (selectedDays.size == 1) "day" else "days"} selected") },
                 navigationIcon = {
-                    if (selectedDays.isEmpty()) {
-                        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back") }
-                    } else {
+                    if (selectedDays.isNotEmpty()) {
                         IconButton(onClick = { selectedDays = emptySet() }) { Icon(Icons.Rounded.Close, "Clear selection") }
                     }
                 },
@@ -150,11 +191,15 @@ fun LibraryScreen(
                             }
                         }
                     }
+                    IconButton(onClick = onCamera, modifier = Modifier.testTag("camera")) {
+                        Icon(Icons.Rounded.PhotoCamera, "Camera")
+                    }
                 },
             )
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
+            if (transfer.running) TransferStrip(transfer, onCamera)
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -172,7 +217,11 @@ fun LibraryScreen(
                 ) { Text("Delete $rejected rejected (RAW and JPEG)") }
             }
             if (shown.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(
+                    Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
                     Text(
                         when {
                             shots.isEmpty() -> "Photos from the camera will show up here"
@@ -181,6 +230,14 @@ fun LibraryScreen(
                         },
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (shots.isEmpty() && !transfer.running) {
+                        Spacer(Modifier.size(16.dp))
+                        Button(onClick = onCamera) {
+                            Icon(Icons.Rounded.PhotoCamera, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Get photos from the camera")
+                        }
+                    }
                 }
             } else {
                 LazyVerticalGrid(
