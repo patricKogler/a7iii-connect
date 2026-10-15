@@ -514,6 +514,29 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         }
     }
 
+    /** The flat parameter array the Rust engine reads; the layout is `mod idx` in native/src/render.rs. */
+    fun nativeParams(): FloatArray {
+        val p = FloatArray(87)
+        p[0] = noise; p[1] = noiseDetail; p[2] = colorNoise; p[3] = dehaze
+        p[4] = shadows; p[5] = highlights; p[6] = clarity; p[7] = texture
+        p[8] = if (needsGuide) 1f else 0f; p[9] = ev; p[10] = if (mono) 1f else 0f
+        p[11] = sat; p[12] = vib; p[13] = if (hasMixer) 1f else 0f
+        for (k in 0..7) { p[14 + k] = mixHue[k]; p[22 + k] = mixSat[k]; p[30 + k] = mixLum[k]; p[38 + k] = bandCenters[k] }
+        p[46] = if (hasGrading) 1f else 0f
+        for (z in 0..3) { for (c in 0..2) p[47 + z * 3 + c] = gradeOffset[z][c]; p[59 + z] = gradeLum[z] }
+        p[63] = blending; p[64] = balance; p[65] = defringe
+        p[66] = vignette; p[67] = vigMid; p[68] = vigFeather; p[69] = vigRound; p[70] = vigHighlights
+        p[71] = sharpen; p[72] = sharpenRadius; p[73] = sharpenDetail; p[74] = sharpenMasking
+        p[75] = grain; p[76] = grainSize; p[77] = grainRough
+        for (i in 0..8) p[78 + i] = matrix[i]
+        return p
+    }
+
+    internal val toneTable: FloatArray get() = tone
+
+    /** The red, green and blue point curves back to back (3 x 1024), or null when flat. */
+    internal fun nativeCurves(): FloatArray? = rgbCurves?.let { c -> FloatArray(3 * 1024) { c[it / 1024][it % 1024] } }
+
     /** Everything the GPU preview shader needs for these settings at render [scale]. */
     fun shaderParams(scale: Double): ShaderParams = ShaderParams(
         matrix = matrix.copyOf(), tone = tone, curves = rgbCurves, ev = ev,

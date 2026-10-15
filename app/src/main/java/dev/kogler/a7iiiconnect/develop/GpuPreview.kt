@@ -24,7 +24,7 @@ import java.nio.ShortBuffer
  */
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 internal class GpuPreview {
-    private val shader = RuntimeShader(AGSL)
+    private val shader = compile()
     private val paint = Paint().apply { shader = this@GpuPreview.shader }
 
     var width = 0
@@ -109,6 +109,19 @@ internal class GpuPreview {
     }
 
     companion object {
+        /**
+         * Child shaders are sampled with `s.eval(p)` on Android 13+; older Skia builds (such as
+         * the one Robolectric ships) only know `sample(s, p)`, so fall back to that spelling.
+         */
+        private fun compile(): RuntimeShader {
+            val call = Regex("""EVAL\((\w+), """)
+            return try {
+                RuntimeShader(call.replace(AGSL) { "${it.groupValues[1]}.eval(" })
+            } catch (e: IllegalArgumentException) {
+                RuntimeShader(call.replace(AGSL) { "sample(${it.groupValues[1]}, " })
+            }
+        }
+
         /** Same transfer function as the window, so Skia passes our values through untouched. */
         private val SPACE: ColorSpace = ColorSpace.get(ColorSpace.Named.EXTENDED_SRGB)
 
@@ -213,18 +226,18 @@ float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
 float logv(float v) { return log2(max(v, 0.00001)); }
 
 float3 lin(float2 p) {
-    float3 c = scene.eval(p).rgb;
+    float3 c = EVAL(scene, p).rgb;
     return max(float3(dot(row0, c), dot(row1, c), dot(row2, c)), float3(0.0));
 }
 
 float tone(float x) {
     if (x <= 0.0) return 0.0;
     float t = min(sqrt(x / LUT_MAX) * LUT_SIZE, LUT_SIZE);
-    return toneLut.eval(float2(t + 0.5, 0.5)).r;
+    return EVAL(toneLut, float2(t + 0.5, 0.5)).r;
 }
 
 float curve(float v, float row) {
-    return curves.eval(float2(clamp(v, 0.0, 1.0) * 1023.0 + 0.5, row + 0.5)).r;
+    return EVAL(curves, float2(clamp(v, 0.0, 1.0) * 1023.0 + 0.5, row + 0.5)).r;
 }
 
 float hueOf(float3 c, float mx, float ch) {
@@ -321,7 +334,7 @@ half4 main(float2 p) {
     float med = 0.0;
     float hazeRatio = 0.0;
     if (hasGuide > 0.0) {
-        float3 g = guide.eval(p * guideScale).rgb;
+        float3 g = EVAL(guide, p * guideScale).rgb;
         base = g.r * 40.0 - 20.0 + ev;
         med = g.g * 40.0 - 20.0 + ev;
         hazeRatio = g.b * 2.0;

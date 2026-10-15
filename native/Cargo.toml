@@ -1,0 +1,20 @@
+[package]
+name = "develop"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The develop engine's hot loops (full-size demosaic and the export render) in Rust, called from
+# Kotlin over JNI. The Kotlin engine stays the reference and the fallback.
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+jni-sys = "0.3"
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

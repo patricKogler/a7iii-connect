@@ -30,6 +30,7 @@ class FullImage(
         /** Full MHC demosaic of the whole active area. */
         fun demosaic(raw: RawImage, progress: (Float) -> Unit = {}): FullImage {
             val img = FullImage(raw.width, raw.height)
+            if (nativeDemosaic(raw, 0, 0, raw.width, raw.height, img, progress)) return img
             val band = 128
             val buf = LinearImage(raw.width, band)
             var y = 0
@@ -46,6 +47,7 @@ class FullImage(
         /** Full MHC demosaic of sensor rows [y0, y1) and columns [x0, x1) only (sharp zoom). */
         fun demosaic(raw: RawImage, x0: Int, y0: Int, x1: Int, y1: Int): FullImage {
             val img = FullImage(x1 - x0, y1 - y0, x0, y0, raw.width, raw.height)
+            if (nativeDemosaic(raw, x0, y0, x1, y1, img) {}) return img
             val band = 128
             val buf = LinearImage(raw.width, band)
             var y = y0
@@ -56,6 +58,26 @@ class FullImage(
                 y = e
             }
             return img
+        }
+
+        /** The Rust demosaic, in bands for [progress]; false when it isn't available. */
+        private fun nativeDemosaic(raw: RawImage, x0: Int, y0: Int, x1: Int, y1: Int, img: FullImage, progress: (Float) -> Unit): Boolean {
+            if (!Native.available) return false
+            val info = raw.info
+            val scale = FloatArray(3) { c -> info.asShot[c] / (info.white - info.black[c]).toFloat() }
+            val band = 512
+            var y = y0
+            while (y < y1) {
+                val e = minOf(y1, y + band)
+                val ok = Native.demosaic(
+                    raw.data, raw.rawWidth, raw.cfa, raw.left, raw.top, raw.width, raw.height,
+                    info.black, scale, x0, y, x1, e, img.data, (y - y0) * img.width * 3,
+                )
+                if (!ok) return false
+                y = e
+                progress((y - y0).toFloat() / (y1 - y0))
+            }
+            return true
         }
 
         /** From 8-bit sRGB pixels (a JPEG), one band at a time. */
@@ -94,6 +116,44 @@ class FullSampler(
     override val originX = region?.x0 ?: 0
     override val originY = region?.y0 ?: 0
 
+    /** The geometry's map every [GRID_STEP] output pixels, for the Rust render. */
+    private val grid: Pair<FloatArray, FloatArray?> by lazy {
+        val nx = (width - 1) / GRID_STEP + 2
+        val ny = (height - 1) / GRID_STEP + 2
+        val map = FloatArray(nx * ny * 6)
+        val vig = if (geom.hasVignetteCorrection) FloatArray(nx * ny) else null
+        parallelRows(ny) { j ->
+            val m = DoubleArray(6)
+            val oy = (originY + j * GRID_STEP + 0.5) / scale
+            for (i in 0 until nx) {
+                geom.map((originX + i * GRID_STEP + 0.5) / scale, oy, m)
+                val n = j * nx + i
+                for (k in 0..5) map[n * 6 + k] = m[k].toFloat()
+                if (vig != null) vig[n] = geom.vignetteGain(m[2], m[3])
+            }
+        }
+        map to vig
+    }
+
+    /** Renders rows [y0, y1) with the Rust engine into [out]; false when it isn't available. */
+    fun renderNative(look: Look, guide: Guide?, out: IntArray, y0: Int, y1: Int): Boolean {
+        if (!Native.available) return false
+        val (map, vig) = grid
+        val nx = (width - 1) / GRID_STEP + 2
+        val ny = (height - 1) / GRID_STEP + 2
+        return Native.render(
+            look.nativeParams(), look.toneTable, look.nativeCurves(),
+            guide?.let { intArrayOf(it.width, it.height) }, guide?.base, guide?.medium, guide?.dark, guide?.air,
+            img.data,
+            doubleArrayOf(img.width.toDouble(), img.height.toDouble(), img.left.toDouble(), img.top.toDouble(),
+                img.sensorWidth.toDouble(), img.sensorHeight.toDouble(), orientation.toDouble()),
+            map, floatArrayOf(originX.toFloat(), originY.toFloat(), nx.toFloat(), ny.toFloat(), GRID_STEP.toFloat()), vig,
+            doubleArrayOf(width.toDouble(), height.toDouble(), frameWidth.toDouble(), frameHeight.toDouble(),
+                originX.toDouble(), originY.toDouble(), scale),
+            y0, y1, out,
+        )
+    }
+
     override fun fill(y0: Int, rows: Int, out: LinearImage) {
         val vig = geom.hasVignetteCorrection
         parallelRows(rows) { i ->
@@ -112,6 +172,10 @@ class FullSampler(
                 }
             }
         }
+    }
+
+    private companion object {
+        const val GRID_STEP = 8
     }
 
     /** Channel [c] at upright position (ux, uy), bilinear, black outside the photo. */
@@ -188,7 +252,7 @@ fun renderBands(look: Look, sampler: Sampler, guide: Guide?, band: Int = 128, si
     var y = 0
     while (y < sampler.height) {
         val y1 = minOf(sampler.height, y + band)
-        look.render(sampler, guide, px, y, y1)
+        if (!(sampler is FullSampler && sampler.renderNative(look, guide, px, y, y1))) look.render(sampler, guide, px, y, y1)
         sink(y, y1 - y, px)
         y = y1
     }
