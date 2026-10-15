@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -48,8 +49,10 @@ class DuoActivity : ComponentActivity() {
         Duo.init(this)
 
         val keys = intent.getStringArrayListExtra(EXTRA_KEYS)
+        val battle = intent.getStringExtra(EXTRA_BATTLE)
         if (savedInstanceState == null || !Duo.active) {
-            if (keys != null && !keys.isEmpty()) startHosting(intent.getIntExtra(EXTRA_ROUND, 1), keys.toSet())
+            if (battle != null) startBattle(battle)
+            else if (keys != null && !keys.isEmpty()) startHosting(intent.getIntExtra(EXTRA_ROUND, 1), keys.toSet())
             else Duo.join(this, codeOf(intent))
         }
         permissions.launch(neededPermissions())
@@ -75,6 +78,21 @@ class DuoActivity : ComponentActivity() {
                     .sortedByDescending { dayOf(it.first().takenMillis) }
             }
             Duo.dealDeck(stacks)
+        }
+    }
+
+    private fun startBattle(key: String) {
+        Duo.hostBattle(this)
+        lifecycleScope.launch {
+            val shot = withContext(Dispatchers.IO) {
+                Library.shots(Library.load(this@DuoActivity)).firstOrNull { it.key == key }
+            }
+            if (shot == null) {
+                Toast.makeText(this@DuoActivity, "That photo is gone", Toast.LENGTH_SHORT).show()
+                Duo.leave(); finish()
+            } else {
+                Duo.chooseBattleShot(shot)
+            }
         }
     }
 
@@ -151,6 +169,7 @@ class DuoActivity : ComponentActivity() {
     companion object {
         private const val EXTRA_KEYS = "keys"
         private const val EXTRA_ROUND = "round"
+        private const val EXTRA_BATTLE = "battle"
         private const val APK_TYPE = "application/vnd.android.package-archive"
 
         /** Host [keys] (shots due in culling round [round]); with no keys, join another phone. */
@@ -161,6 +180,10 @@ class DuoActivity : ComponentActivity() {
                     putStringArrayListExtra(EXTRA_KEYS, ArrayList(keys))
                 }
             }
+
+        /** An edit battle over the shot with [key], without culling first. */
+        fun battleIntent(context: Context, key: String) =
+            Intent(context, DuoActivity::class.java).putExtra(EXTRA_BATTLE, key)
 
         /** Join the phone whose Together tag carried [code]. */
         fun joinIntent(context: Context, code: String) =

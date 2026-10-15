@@ -221,6 +221,20 @@ object Photos {
         return LinearImage.fromArgb(px, bmp.width, bmp.height)
     }
 
+    /**
+     * [settings] rendered from the opened preview (longer edge up to [maxEdge], at most
+     * [PREVIEW_EDGE]): quick, since the RAW is already demosaiced. For showing, not for export.
+     */
+    fun renderPreview(opened: OpenedPhoto, settings: Settings, maxEdge: Int): Bitmap {
+        val geom = opened.geometry(settings)
+        val look = Look(opened.preview, settings)
+        val guide = look.guide(opened.preview.image, geom)
+        val sampler = ImageSampler(opened.preview.image, geom, maxEdge)
+        val bitmap = Bitmap.createBitmap(sampler.width, sampler.height, Bitmap.Config.ARGB_8888)
+        renderBands(look, sampler, guide) { y, rows, px -> bitmap.setPixels(px, 0, sampler.width, 0, y, sampler.width, rows) }
+        return bitmap
+    }
+
     /** [settings] rendered at the export size of [options] (the whole photo, upright). */
     fun render(context: Context, opened: OpenedPhoto, settings: Settings, options: ExportOptions, progress: (Float) -> Unit = {}): Bitmap {
         val photo = opened.photo

@@ -40,7 +40,7 @@ import kotlin.random.Random
  * Compose state and only changes on the main thread.
  */
 object Duo : DuoLink.Listener {
-    enum class Phase { LOBBY, CULL, REVEAL, DEBATE, DONE, BATTLE_PICK, BATTLE_EDIT, BATTLE_VOTE, BATTLE_RESULT }
+    enum class Phase { LOBBY, CULL, REVEAL, DEBATE, DONE, BATTLE_PICK, BATTLE_EDIT, BATTLE_VOTE, BATTLE_RESULT, BATTLE_OVER }
 
     private const val PROTOCOL = 1
     private const val PREVIEW_EDGE = 2560
@@ -107,6 +107,10 @@ object Duo : DuoLink.Listener {
     /** Shown left/first: the host's edit when true. Each phone shuffles on its own. */
     var hostFirst by mutableStateOf(true); private set
     private var battleShot: Shot? = null
+    /** Just a battle over one photo, started from the editor: no culling before or after. */
+    var battleOnly by mutableStateOf(false); private set
+    /** Host, battle only: the photo, waiting for the other phone to connect. */
+    private var pendingBattle: Shot? = null
 
     val me get() = if (hosting) DuoSession.HOST else DuoSession.GUEST
     val partner get() = 1 - me
@@ -130,6 +134,22 @@ object Duo : DuoLink.Listener {
         this.round = round
         code = (1..4).map { "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Random.nextInt(32)] }.joinToString("")
         tagUri = "shootback://duo?code=$code"
+    }
+
+    /** Host: an edit battle over one photo. The photo itself follows with [chooseBattleShot]. */
+    fun hostBattle(context: Context) {
+        init(context)
+        // A session already running stays as it is.
+        if (active) return
+        host(context, 1)
+        battleOnly = true
+    }
+
+    /** Host, battle only: the photo to fight over. The battle starts as soon as the other phone is here. */
+    fun chooseBattleShot(shot: Shot) {
+        if (!hosting || !battleOnly) return
+        pendingBattle = shot
+        if (connected && phase == Phase.LOBBY) startBattle(shot)
     }
 
     fun reportPreparing(fraction: Float) {
@@ -196,7 +216,7 @@ object Duo : DuoLink.Listener {
         code = ""; joinCode = null; tagUri = null
         deck = emptyList(); preparing = 0f; session = DuoSession(emptyList()); tick = 0; matchCount = 0
         ready = 0; debateItem = null; keepers = 0 to 0; transfer = null; update = null; partnerVersion = 0
-        resetBattle()
+        resetBattle(); battleOnly = false; pendingBattle = null
         if (::app.isInitialized) File(app.filesDir, "duo").deleteRecursively()
     }
 
@@ -246,7 +266,7 @@ object Duo : DuoLink.Listener {
             }
             Phase.BATTLE_RESULT -> {
                 resetBattle()
-                phase = Phase.DONE
+                phase = if (battleOnly) Phase.BATTLE_OVER else Phase.DONE
                 broadcast()
             }
             else -> {}
@@ -318,6 +338,12 @@ object Duo : DuoLink.Listener {
             photo.uri,
         )
         broadcast()
+    }
+
+    /** Host, battle only: same photo again, fresh edits. */
+    fun rematch() {
+        val shot = pendingBattle ?: return
+        if (hosting && phase == Phase.BATTLE_OVER) startBattle(shot)
     }
 
     fun pickBattle() {
@@ -405,6 +431,7 @@ object Duo : DuoLink.Listener {
             sendDeck()
             broadcast()
         }
+        pendingBattle?.let { if (hosting && phase == Phase.LOBBY) startBattle(it) }
     }
 
     override fun onDisconnected() {
@@ -546,6 +573,7 @@ object Duo : DuoLink.Listener {
             .put("mc", matchCount)
             .put("debate", debateItem ?: -1)
             .put("kt", keepers.second)
+            .put("bo", battleOnly)
         if (phase == Phase.BATTLE_VOTE || phase == Phase.BATTLE_RESULT) {
             msg.put("be", JSONArray(battleEdits.map { it ?: "" }))
         }
@@ -584,6 +612,7 @@ object Duo : DuoLink.Listener {
 
     private fun onState(msg: JSONObject) {
         val newPhase = runCatching { Phase.valueOf(msg.getString("phase")) }.getOrDefault(phase)
+        battleOnly = msg.optBoolean("bo")
         session.loadVotes(DuoSession.HOST, msg.optString("hv"))
         session.loadDecisions(msg.optString("dc"))
         tick++
@@ -592,7 +621,7 @@ object Duo : DuoLink.Listener {
         matchCount = mc
         debateItem = msg.optInt("debate", -1).takeIf { it >= 0 }
         keepers = keepers.first to msg.optInt("kt")
-        if (newPhase == Phase.BATTLE_PICK || newPhase == Phase.DONE) {
+        if (newPhase == Phase.BATTLE_PICK || newPhase == Phase.DONE || newPhase == Phase.BATTLE_OVER) {
             if (phase.ordinal >= Phase.BATTLE_PICK.ordinal && newPhase != phase) resetBattle()
         }
         if (newPhase == Phase.BATTLE_EDIT && phase != Phase.BATTLE_EDIT) hostFirst = Random.nextBoolean()
