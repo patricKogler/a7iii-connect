@@ -2,6 +2,11 @@ package dev.kogler.a7iiiconnect.develop
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.HardwareRenderer
+import android.graphics.PixelFormat
+import android.graphics.RenderNode
+import android.hardware.HardwareBuffer
+import android.media.ImageReader
 import dev.kogler.a7iiiconnect.develop.engine.CameraColor
 import dev.kogler.a7iiiconnect.develop.engine.Curve
 import dev.kogler.a7iiiconnect.develop.engine.DevelopSource
@@ -64,17 +69,6 @@ class GpuParityTest {
 
         val outDir = File("build/screenshots").apply { mkdirs() }
         val report = StringBuilder()
-        // Which child-shader syntax this Skia accepts (diagnostics for the report).
-        val probes = listOf(
-            "eval-main" to "uniform shader s; half4 main(float2 p) { return s.eval(p); }",
-            "eval-swizzle" to "uniform shader s; half4 main(float2 p) { return half4(s.eval(p).rgb, 1); }",
-            "eval-helper" to "uniform shader s; half3 f(float2 p) { return s.eval(p).rgb; } half4 main(float2 p) { return half4(f(p), 1); }",
-            "sample" to "uniform shader s; half4 main(float2 p) { return sample(s, p); }",
-        )
-        for ((n, src) in probes) {
-            val r = runCatching { android.graphics.RuntimeShader(src) }
-            report.append("probe $n\t${if (r.isSuccess) "ok" else r.exceptionOrNull()?.message?.lines()?.take(2)?.joinToString(" | ")}\n")
-        }
         report.append("case\tmeanAbs\tp99\tmax\n")
         for ((name, pair) in cases) {
             val (src, s) = pair
@@ -92,8 +86,7 @@ class GpuParityTest {
                 sampler.fill(0, sh, scene)
                 val gpu = GpuPreview()
                 gpu.set(GpuPreview.prepare(GpuPreview.sceneBitmap(scene), guide, guide?.let { GpuPreview.guideBitmap(it) }, look.shaderParams(sampler.scale)))
-                val out = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
-                gpu.draw(Canvas(out), 0f, 0f, sw.toFloat(), sh.toFloat())
+                val out = hardwareDraw(sw, sh) { gpu.draw(it, 0f, 0f, sw.toFloat(), sh.toFloat()) }
                 val g = IntArray(sw * sh)
                 out.getPixels(g, 0, sw, 0, 0, sw, sh)
 
@@ -128,5 +121,27 @@ class GpuParityTest {
         }
         File(outDir, "gpu-parity.txt").writeText(report.toString())
         println(report)
+    }
+
+    /** Shaders only run on a hardware canvas: record into a RenderNode and render it offscreen. */
+    private fun hardwareDraw(w: Int, h: Int, draw: (Canvas) -> Unit): Bitmap {
+        val reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 1, HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or HardwareBuffer.USAGE_GPU_COLOR_OUTPUT)
+        val node = RenderNode("gpu").apply { setPosition(0, 0, w, h) }
+        val c = node.beginRecording()
+        draw(c)
+        node.endRecording()
+        val renderer = HardwareRenderer()
+        try {
+            renderer.setSurface(reader.surface)
+            renderer.setContentRoot(node)
+            renderer.createRenderRequest().setWaitForPresent(true).syncAndDraw()
+            val image = reader.acquireNextImage()
+            val hb = image.hardwareBuffer ?: error("no hardware buffer")
+            val bmp = Bitmap.wrapHardwareBuffer(hb, null)?.copy(Bitmap.Config.ARGB_8888, false) ?: error("can't wrap buffer")
+            hb.close(); image.close()
+            return bmp
+        } finally {
+            renderer.destroy(); reader.close()
+        }
     }
 }

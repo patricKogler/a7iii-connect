@@ -115,6 +115,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -273,9 +274,11 @@ fun EditorScreen(
     // Re-render on every change. On Android 13+ the GPU runs the develop shader, so only geometry
     // changes touch the CPU; otherwise the CPU renders, using the smaller draft while a slider
     // moves. The crop tool shows the whole frame so the crop box can be moved over it.
+    // Shaders only draw on a hardware canvas, so a software-drawn window keeps the CPU render.
+    val hardware = LocalView.current.isHardwareAccelerated
     LaunchedEffect(opened) {
         val o = opened ?: return@LaunchedEffect
-        val gpu = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) runCatching { GpuPreview() }.getOrNull() else null
+        val gpu = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && hardware) runCatching { GpuPreview() }.getOrNull() else null
         val pool = BitmapPool()
         val scenes = if (gpu != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) SceneCache() else null
         var version = 0
