@@ -74,6 +74,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -114,6 +115,7 @@ import dev.kogler.a7iiiconnect.develop.StackCard
 import dev.kogler.a7iiiconnect.develop.SwipeCard
 import dev.kogler.a7iiiconnect.develop.Thumb
 import dev.kogler.a7iiiconnect.develop.Verdict
+import dev.kogler.a7iiiconnect.develop.engine.Settings
 import dev.kogler.a7iiiconnect.duo.Duo.Phase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -140,7 +142,9 @@ fun DuoScreen(onExit: () -> Unit, onShareApp: () -> Unit, onInstall: (File) -> U
             when {
                 Duo.ended -> Ended(onExit)
                 !Duo.connected && Duo.phase == Phase.LOBBY -> Lobby(onClose = leave, onShareApp = onShareApp)
-                Duo.phase == Phase.LOBBY -> Centered { Spinner("Connected to ${Duo.partnerName}. Getting the photos ready…") }
+                Duo.phase == Phase.LOBBY -> Centered {
+                    Spinner(if (Duo.battleOnly) "Connected to ${Duo.partnerName}. Getting the photo ready…" else "Connected to ${Duo.partnerName}. Getting the photos ready…")
+                }
                 Duo.phase == Phase.CULL -> Deck(onClose = leave)
                 Duo.phase == Phase.REVEAL -> Reveal(onClose = leave)
                 Duo.phase == Phase.DEBATE -> Debate(onClose = leave)
@@ -149,6 +153,7 @@ fun DuoScreen(onExit: () -> Unit, onShareApp: () -> Unit, onInstall: (File) -> U
                 Duo.phase == Phase.BATTLE_EDIT -> BattleEdit(onClose = leave)
                 Duo.phase == Phase.BATTLE_VOTE -> BattleVote(renders, onClose = leave)
                 Duo.phase == Phase.BATTLE_RESULT -> BattleResult(renders, onClose = leave)
+                Duo.phase == Phase.BATTLE_OVER -> BattleOver(onClose = onExit)
             }
         }
         MatchBurst()
@@ -175,7 +180,7 @@ fun DuoScreen(onExit: () -> Unit, onShareApp: () -> Unit, onInstall: (File) -> U
         AlertDialog(
             onDismissRequest = { confirmLeave = false },
             title = { Text("Leave Together?") },
-            text = { Text(if (Duo.phase.ordinal < Phase.DONE.ordinal) "The votes so far are lost for both of you." else "This ends the session for ${Duo.partnerName} too.") },
+            text = { Text(if (Duo.phase.ordinal < Phase.DONE.ordinal && !Duo.battleOnly) "The votes so far are lost for both of you." else "This ends the session for ${Duo.partnerName} too.") },
             confirmButton = { TextButton(onClick = { confirmLeave = false; onExit() }) { Text("Leave") } },
             dismissButton = { TextButton(onClick = { confirmLeave = false }) { Text("Stay") } },
         )
@@ -282,13 +287,18 @@ private fun Lobby(onClose: () -> Unit, onShareApp: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            if (hosting) "Cull together" else "Join",
+            when {
+                hosting && Duo.battleOnly -> "Edit battle"
+                hosting -> "Cull together"
+                else -> "Join"
+            },
             color = Color.White, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold,
         )
         Spacer(Modifier.height(6.dp))
         Text(
             when {
                 !hosting -> "Go through someone's photos with them"
+                Duo.battleOnly -> "You both edit the same photo, then vote blind"
                 Duo.deck.isEmpty() -> "Getting the photos ready… ${(Duo.preparing * 100).toInt()}%"
                 else -> "${Duo.deck.sumOf { it.size }} shots ready to share"
             },
@@ -673,6 +683,31 @@ private fun Done(onClose: () -> Unit) {
     }
 }
 
+/** Battle only: after the result. Same photo again, or done. */
+@Composable
+private fun BattleOver(onClose: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(Icons.Rounded.Brush, null, tint = Gold, modifier = Modifier.size(56.dp))
+        Spacer(Modifier.height(12.dp))
+        Text("Good battle!", color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Black)
+        Spacer(Modifier.height(32.dp))
+        if (Duo.hosting) {
+            Button(
+                onClick = { Duo.rematch() },
+                colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Color.Black),
+            ) { Text("Rematch", fontWeight = FontWeight.Bold) }
+        } else {
+            Text("${Duo.partnerName} can start a rematch", color = Color.White.copy(alpha = 0.6f))
+        }
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(onClick = onClose) { Text("Finish") }
+    }
+}
+
 @Composable
 private fun Confetti() {
     val pieces = remember { List(70) { Triple(Random.nextFloat(), Random.nextFloat(), Random.nextInt(5)) } }
@@ -777,36 +812,77 @@ private fun BattleEdit(onClose: () -> Unit) {
     }
 }
 
-/** Both edits rendered on this phone (the RAW and both settings are here), kept for vote and result. */
-private class BattleRenders(val opened: OpenedPhoto, val images: List<ImageBitmap>)
+/**
+ * Both edits rendered on this phone (the RAW and both settings are here), kept for vote and result.
+ * [images] fill in as each edit is known; [error] when the photo couldn't be opened or rendered.
+ */
+private class BattleRenders(val opened: OpenedPhoto?, val images: List<ImageBitmap?>, val error: String?, val retry: () -> Unit) {
+    val ready get() = opened != null && images.all { it != null }
+    val done get() = images.count { it != null }
+}
 
+/**
+ * Opens the RAW as soon as my own edit is locked in (the editor has let go of its copy by then) and
+ * renders each edit the moment it's known, from the opened preview: no second demosaic of the
+ * full RAW, so the vote screen is there right after the second edit arrives.
+ */
 @Composable
 private fun rememberBattleRenders(): BattleRenders? {
     val context = LocalContext.current
-    val photo = Duo.battlePhoto
+    val photo = Duo.battlePhoto ?: return null
     val edits = Duo.battleEdits
-    val ready = photo != null && edits.all { it != null } && Duo.phase.ordinal >= Phase.BATTLE_VOTE.ordinal
-    val renders by produceState<BattleRenders?>(null, photo, edits, ready) {
+    val myEditDone = edits[Duo.me] != null
+    var attempt by remember(photo) { mutableIntStateOf(0) }
+    var error by remember(photo) { mutableStateOf<String?>(null) }
+    val opened by produceState<OpenedPhoto?>(null, photo, myEditDone, attempt) {
         value = null
-        if (!ready || photo == null) return@produceState
-        value = withContext(Dispatchers.Default) {
-            runCatching {
-                val opened = Photos.open(context, photo)
-                val images = listOf(DuoSession.HOST, DuoSession.GUEST).map { owner ->
-                    Photos.render(context, opened, Duo.battleSettings(owner)!!, ExportOptions(maxEdge = 1600)).asImageBitmap()
-                }
-                BattleRenders(opened, images)
-            }.getOrNull()
+        if (!myEditDone) return@produceState
+        error = null
+        value = withContext(Dispatchers.IO) {
+            runCatching { Photos.open(context, photo) }
+                .onFailure { error = "Couldn't open ${photo.name}: ${it.message ?: it.javaClass.simpleName}" }
+                .getOrNull()
         }
     }
-    return renders
+    // Rendered edits by their settings, so a repeated state message doesn't render them again.
+    val rendered = remember(photo) { mutableStateMapOf<String, ImageBitmap>() }
+    LaunchedEffect(opened, edits, attempt) {
+        val o = opened ?: return@LaunchedEffect
+        for (owner in listOf(Duo.me, Duo.partner)) {
+            val text = edits[owner] ?: continue
+            if (text in rendered) continue
+            val img = withContext(Dispatchers.Default) {
+                runCatching { Photos.renderPreview(o, Settings.decode(text), 1600).asImageBitmap() }
+                    .onFailure { error = "Couldn't develop an edit: ${it.message ?: it.javaClass.simpleName}" }
+                    .getOrNull()
+            } ?: return@LaunchedEffect
+            rendered[text] = img
+        }
+    }
+    return BattleRenders(
+        opened,
+        listOf(DuoSession.HOST, DuoSession.GUEST).map { owner -> edits[owner]?.let { rendered[it] } },
+        error,
+        retry = { attempt++ },
+    )
 }
 
 @Composable
 private fun BattleVote(renders: BattleRenders?, onClose: () -> Unit) {
     TopBar("Which one wins?", "Names are hidden until you've both voted", onClose = onClose)
-    if (renders == null) {
-        Centered { Spinner("Developing both edits…") }
+    if (renders == null || !renders.ready) {
+        Centered {
+            val err = renders?.error
+            if (err != null) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(err, color = Color.White.copy(alpha = 0.8f), textAlign = TextAlign.Center)
+                    Spacer(Modifier.height(16.dp))
+                    Button(onClick = renders.retry) { Text("Try again") }
+                }
+            } else {
+                Spinner("Developing both edits… ${renders?.done ?: 0} of 2")
+            }
+        }
         return
     }
     val order = if (Duo.hostFirst) listOf(DuoSession.HOST, DuoSession.GUEST) else listOf(DuoSession.GUEST, DuoSession.HOST)
@@ -820,7 +896,7 @@ private fun BattleVote(renders: BattleRenders?, onClose: () -> Unit) {
                     .background(Color(0xFF1C1C1E))
                     .clickable(enabled = myVote == null) { Duo.battleVote(owner) },
             ) {
-                Image(renders.images[owner], null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                Image(renders.images[owner]!!, null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
                 Text(
                     if (k == 0) "A" else "B",
                     color = Color.Black, fontWeight = FontWeight.Black, fontSize = 20.sp,
@@ -874,16 +950,16 @@ private fun BattleResult(renders: BattleRenders?, onClose: () -> Unit) {
         if (Duo.flipped) Text("The coin has spoken", color = Color.White.copy(alpha = 0.6f))
         else if (Duo.battleVotes.all { it == winner }) Text("You both voted for it", color = Color.White.copy(alpha = 0.6f))
         Spacer(Modifier.height(16.dp))
-        if (renders != null) {
+        if (renders != null && renders.ready) {
             Image(
-                renders.images[winner], null, contentScale = ContentScale.Fit,
+                renders.images[winner]!!, null, contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).border(3.dp, Gold, RoundedCornerShape(16.dp)),
             )
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 for (owner in listOf(DuoSession.HOST, DuoSession.GUEST)) {
                     Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Image(renders.images[owner], null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)))
+                        Image(renders.images[owner]!!, null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)))
                         Text("${name(owner)}'s", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
                     }
                 }
@@ -895,7 +971,7 @@ private fun BattleResult(renders: BattleRenders?, onClose: () -> Unit) {
                     saving = true
                     scope.launch {
                         val ok = withContext(Dispatchers.Default) {
-                            runCatching { Photos.export(context, renders.opened, Duo.battleSettings(winner)!!, ExportOptions(), {}) }.isSuccess
+                            runCatching { Photos.export(context, renders.opened!!, Duo.battleSettings(winner)!!, ExportOptions(), {}) }.isSuccess
                         }
                         Duo.notice = if (ok) "Saved to your phone's pictures" else "Couldn't save the picture"
                         saving = false

@@ -292,6 +292,8 @@ fun EditorScreen(
     store: EditStore,
     onBack: () -> Unit,
     onPhotoChanged: (LibraryPhoto) -> Unit,
+    /** Start an edit battle over the photo on another phone; null hides the option. */
+    onBattle: ((LibraryPhoto) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -596,6 +598,9 @@ fun EditorScreen(
                         )
                         DropdownMenuItem(text = { Text("Create preset…") }, onClick = { menu = false; dialog = "preset" })
                         DropdownMenuItem(text = { Text("Reset all") }, onClick = { menu = false; commit(Settings()) })
+                        if (onBattle != null) {
+                            DropdownMenuItem(text = { Text("Edit battle…") }, onClick = { menu = false; onBattle(photo) })
+                        }
                     }
                 }
             }

@@ -107,6 +107,7 @@ class DevelopActivity : ComponentActivity() {
                             store = store,
                             onBack = { closeEditor() },
                             onPhotoChanged = { editing = it.id },
+                            onBattle = { p -> shots.firstOrNull { it.contains(p.id) }?.let { startActivity(DuoActivity.battleIntent(this, it.key)) } },
                         )
                     }
                     deck != null -> {
