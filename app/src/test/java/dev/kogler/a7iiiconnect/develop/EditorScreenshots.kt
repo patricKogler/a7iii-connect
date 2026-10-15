@@ -140,7 +140,7 @@ class EditorScreenshots {
                     LibraryScreen(
                         shots = shots, edited = setOf(shots[0].key), marks = marks,
                         exported = setOf(Photos.exportName(shots[0].primary).lowercase()),
-                        onOpen = {}, onCull = { _, _ -> }, onDeleteRejected = {},
+                        onOpen = {}, onCull = { _, _ -> }, onTogether = { _, _ -> }, onDeleteRejected = {},
                         transfer = transfer, onCamera = {},
                     )
                 } else {

@@ -64,6 +64,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.IosShare
+import androidx.compose.material.icons.rounded.People
 import androidx.compose.material.icons.rounded.Swipe
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -128,6 +129,7 @@ fun LibraryScreen(
     exported: Set<String>,
     onOpen: (Shot) -> Unit,
     onCull: (round: Int, shots: List<Shot>) -> Unit,
+    onTogether: (round: Int, shots: List<Shot>) -> Unit,
     onDeleteRejected: () -> Unit,
     transfer: SyncStatus,
     onCamera: () -> Unit,
@@ -162,6 +164,13 @@ fun LibraryScreen(
                     }
                 },
                 actions = {
+                    // Together: the first round still open, for the selected days or else the newest
+                    // day with shots in it. Nothing to review: join someone else's photos.
+                    IconButton(onClick = {
+                        val (r, due) = rounds.firstOrNull() ?: (1 to emptyList())
+                        val newest = due.maxOfOrNull { dayOf(it.takenMillis) }
+                        onTogether(r, if (selectedDays.isNotEmpty()) due else due.filter { dayOf(it.takenMillis) == newest })
+                    }) { Icon(Icons.Rounded.People, "Together") }
                     if (rounds.isNotEmpty()) {
                         Box {
                             TextButton(

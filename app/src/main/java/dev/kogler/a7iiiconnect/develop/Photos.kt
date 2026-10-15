@@ -221,11 +221,8 @@ object Photos {
         return LinearImage.fromArgb(px, bmp.width, bmp.height)
     }
 
-    /**
-     * Renders [settings] at the chosen size and saves a JPEG to Pictures/[EXPORT_ALBUM], with the
-     * original's EXIF (date, camera, lens, exposure, GPS). Returns the new file.
-     */
-    fun export(context: Context, opened: OpenedPhoto, settings: Settings, options: ExportOptions, progress: (Float) -> Unit): Uri {
+    /** [settings] rendered at the export size of [options] (the whole photo, upright). */
+    fun render(context: Context, opened: OpenedPhoto, settings: Settings, options: ExportOptions, progress: (Float) -> Unit = {}): Bitmap {
         val photo = opened.photo
         val geom = opened.geometry(settings)
         val look = Look(opened.preview, settings)
@@ -258,6 +255,16 @@ object Photos {
             val k = edge.toFloat() / maxOf(bitmap.width, bitmap.height)
             bitmap = Bitmap.createScaledBitmap(bitmap, (bitmap.width * k).toInt().coerceAtLeast(1), (bitmap.height * k).toInt().coerceAtLeast(1), true)
         }
+        return bitmap
+    }
+
+    /**
+     * Renders [settings] at the chosen size and saves a JPEG to Pictures/[EXPORT_ALBUM], with the
+     * original's EXIF (date, camera, lens, exposure, GPS). Returns the new file.
+     */
+    fun export(context: Context, opened: OpenedPhoto, settings: Settings, options: ExportOptions, progress: (Float) -> Unit): Uri {
+        val photo = opened.photo
+        val bitmap = render(context, opened, settings, options, progress)
 
         val name = exportName(photo)
         val resolver = context.contentResolver
