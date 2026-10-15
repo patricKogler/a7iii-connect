@@ -1,6 +1,12 @@
 package dev.kogler.a7iiiconnect.develop
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import androidx.activity.compose.BackHandler
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
@@ -67,6 +73,8 @@ import androidx.compose.material.icons.outlined.Transform
 import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material.icons.rounded.Compare
 import androidx.compose.material.icons.rounded.Flip
+import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.RotateRight
 import androidx.compose.material.icons.rounded.Share
@@ -92,6 +100,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -302,6 +311,7 @@ fun EditorScreen(
     var swipeKey by remember { mutableStateOf(P.EXPOSURE.key) }
     var swipeAxis by remember { mutableIntStateOf(0) }
     val swipeState = remember { SwipeState() }
+    var fullscreen by remember { mutableStateOf(false) }
     val haptics = LocalHapticFeedback.current
     val density = LocalDensity.current
     val snackbar = remember { SnackbarHostState() }
@@ -420,6 +430,19 @@ fun EditorScreen(
         }
     }
 
+    // Full screen: just the photo (with swipe mode, edits still work), system bars hidden too.
+    val view = LocalView.current
+    DisposableEffect(fullscreen) {
+        val window = view.context.findActivity()?.window
+        val bars = window?.let { WindowCompat.getInsetsController(it, view) }
+        if (fullscreen) {
+            bars?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            bars?.hide(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose { bars?.show(WindowInsetsCompat.Type.systemBars()) }
+    }
+    BackHandler(enabled = fullscreen) { fullscreen = false }
+
     // Swipe mode (Snapseed): up/down on the photo picks a slider, left/right changes it.
     val swipeList = swipeParams(tool)
     val swipeStep = with(density) { 36.dp.toPx() }
@@ -492,7 +515,7 @@ fun EditorScreen(
         val landscape = LocalConfiguration.current.let { it.screenWidthDp > it.screenHeightDp }
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             // Top bar
-            Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (!fullscreen) Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { store.save(photo.id, settings); onBack() }) {
                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = Color.White)
                 }
@@ -620,6 +643,11 @@ fun EditorScreen(
                         OverlayButton(Icons.AutoMirrored.Rounded.Redo, "Redo", enabled = history.canRedo) { redo() }
                     }
                     Row(Modifier.align(Alignment.BottomEnd).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OverlayButton(
+                            if (fullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                            if (fullscreen) "Exit full screen" else "Full screen",
+                            modifier = Modifier.testTag("fullscreen"),
+                        ) { fullscreen = !fullscreen }
                         OverlayButton(Icons.Outlined.Swipe, "Swipe on the photo to adjust", selected = swipeMode) {
                             swipeMode = !swipeMode
                             store.swipeAdjust = swipeMode
@@ -674,7 +702,9 @@ fun EditorScreen(
                 }
             } }
 
-            if (landscape) {
+            if (fullscreen) {
+                photoArea(Modifier.weight(1f).fillMaxWidth())
+            } else if (landscape) {
                 Row(Modifier.weight(1f).fillMaxWidth()) {
                     photoArea(Modifier.weight(1f).fillMaxHeight())
                     panelArea(Modifier.width(360.dp).fillMaxHeight())
@@ -700,7 +730,7 @@ fun EditorScreen(
             }
 
             // Tool strip: every tool fits on screen; a dot marks the ones with edits.
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 2.dp)) {
+            if (!fullscreen) Row(Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 2.dp)) {
                 for (t in Tool.entries) {
                     val selected = tool == t
                     val changed = t.groups.any { !settings.isDefault(it) }
@@ -1032,6 +1062,12 @@ private fun ZoomableImage(
             )
         }
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 /** Swipe mode's gesture state, kept across one gesture's callbacks. */

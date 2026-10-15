@@ -62,6 +62,10 @@ class EditorScreenshots {
         tool("LIGHT")
         compose.onNodeWithTag("compare").performClick()
         awaitRender(); shot("13-split")
+
+        compose.onNodeWithTag("compare").performClick()
+        compose.onNodeWithTag("fullscreen").performClick()
+        awaitRender(); shot("15-fullscreen")
     }
 
     /** The phone turned sideways: the panel sits beside the photo. */
