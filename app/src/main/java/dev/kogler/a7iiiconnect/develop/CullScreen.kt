@@ -261,7 +261,7 @@ fun CullScreen(
                     record(top.map { it to if (it == keep) Verdict.PICK else Verdict.REJECT })
                 }
             } else {
-                RoundButton(Icons.Rounded.Close, rejectLabel.lowercase().replaceFirstChar { it.uppercase() }, RejectRed, 64, "cull-reject") { if (fling == null) fling = Verdict.REJECT }
+                RoundButton(Icons.Rounded.Close, "Reject", RejectRed, 64, "cull-reject") { if (fling == null) fling = Verdict.REJECT }
                 RoundButton(Icons.Rounded.ArrowUpward, "Skip", SkipBlue, 48, "cull-skip") { if (fling == null) fling = Verdict.SKIP }
                 RoundButton(Icons.Rounded.Check, "Pick", PickGreen, 64, "cull-pick") { if (fling == null) fling = Verdict.PICK }
             }

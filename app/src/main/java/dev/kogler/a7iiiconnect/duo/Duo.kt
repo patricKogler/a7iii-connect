@@ -139,7 +139,7 @@ object Duo : DuoLink.Listener {
         init(context)
         // A session already running stays as it is.
         if (active) return
-        host(context, 1)
+        host(context)
         battleOnly = true
     }
 
