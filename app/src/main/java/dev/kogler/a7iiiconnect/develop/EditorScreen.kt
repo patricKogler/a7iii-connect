@@ -278,7 +278,7 @@ fun EditorScreen(
     val hardware = LocalView.current.isHardwareAccelerated
     LaunchedEffect(opened) {
         val o = opened ?: return@LaunchedEffect
-        val gpu = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && hardware) runCatching { GpuPreview() }.getOrNull() else null
+        val gpu = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && hardware && gpuPreviewEnabled) runCatching { GpuPreview() }.getOrNull() else null
         val pool = BitmapPool()
         val scenes = if (gpu != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) SceneCache() else null
         var version = 0
@@ -657,6 +657,10 @@ private fun histogramOf(o: OpenedPhoto, s: Settings, crop: Boolean, guides: Guid
 /** Finished preview renders, so screenshot tests know when the photo is on screen. */
 @Volatile
 internal var renderCount = 0
+
+/** Off in JVM screenshot tests, whose software canvas can't draw shaders. */
+@Volatile
+internal var gpuPreviewEnabled = true
 
 /** Two bitmaps per size, alternated, so the one on screen is never being written. */
 private class BitmapPool {

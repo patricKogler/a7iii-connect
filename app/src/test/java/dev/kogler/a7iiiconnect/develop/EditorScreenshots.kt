@@ -52,6 +52,7 @@ class EditorScreenshots {
             ),
         )
 
+        gpuPreviewEnabled = false
         compose.mainClock.autoAdvance = false
         compose.setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
