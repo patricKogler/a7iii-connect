@@ -88,7 +88,11 @@ class EditorScreenshots {
     }
 
     private fun tool(name: String) {
-        compose.onNodeWithTag("tool-$name").performScrollTo().performClick()
+        // Scrolling the tool strip animates, which never finishes while the clock is paused.
+        compose.mainClock.autoAdvance = true
+        compose.onNodeWithTag("tool-$name").performScrollTo()
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("tool-$name").performClick()
         settle()
     }
 

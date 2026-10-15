@@ -17,6 +17,7 @@ permissions:
 jobs:
   screenshots:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -25,6 +26,7 @@ jobs:
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
       - name: Render
+        timeout-minutes: 15
         run: |
           set -o pipefail
           ./gradlew --no-daemon testDebugUnitTest --tests '*EditorScreenshots*' 2>&1 | tee test.log
@@ -39,7 +41,9 @@ jobs:
           name: screenshots
           path: app/build/screenshots/
       - name: Commit screenshots
+        if: always()
         run: |
+          ls app/build/screenshots/*.png >/dev/null 2>&1 || exit 0
           rm -rf screenshots && mkdir -p screenshots
           cp app/build/screenshots/*.png screenshots/
           git config user.name "github-actions[bot]"
