@@ -24,6 +24,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -679,11 +680,23 @@ fun EditorScreen(
                     panelArea(Modifier.width(360.dp).fillMaxHeight())
                 }
                 if (!cropMode && tool == null) Filmstrip(photos, index, onSelect = { go(it) })
-            } else {
+            } else if (tool == null || cropMode) {
                 photoArea(Modifier.weight(1f).fillMaxWidth())
                 // The filmstrip only shows with no panel open, so editing gets the room.
                 if (!cropMode && tool == null) Filmstrip(photos, index, onSelect = { go(it) })
                 panelArea(Modifier.fillMaxWidth().heightIn(max = 320.dp))
+            } else {
+                // The photo area is only as tall as the photo (no black bars), and the panel gets
+                // the rest, so a landscape shot leaves room for more sliders.
+                val layer = rendered?.layer ?: placeholder?.let { BitmapLayer(it) }
+                BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                    val fit = layer?.let { maxWidth * (it.height.toFloat() / it.width) } ?: maxHeight
+                    val photoHeight = minOf(fit, maxHeight - 320.dp).coerceAtLeast(maxHeight * 0.35f)
+                    Column(Modifier.fillMaxSize()) {
+                        photoArea(Modifier.fillMaxWidth().height(photoHeight))
+                        panelArea(Modifier.fillMaxWidth().weight(1f))
+                    }
+                }
             }
 
             // Tool strip: every tool fits on screen; a dot marks the ones with edits.
