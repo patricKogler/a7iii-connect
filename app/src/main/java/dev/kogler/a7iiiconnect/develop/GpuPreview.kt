@@ -23,8 +23,8 @@ import java.nio.ShortBuffer
  * reduction and defringe are left to the CPU render (sharp zoom and export).
  */
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-internal class GpuPreview {
-    private val shader = compile()
+internal class GpuPreview(source: String = AGSL) {
+    private val shader = compile(source)
     private val paint = Paint().apply { shader = this@GpuPreview.shader }
 
     var width = 0
@@ -113,12 +113,12 @@ internal class GpuPreview {
          * Child shaders are sampled with `s.eval(p)` on Android 13+; older Skia builds (such as
          * the one Robolectric ships) only know `sample(s, p)`, so fall back to that spelling.
          */
-        private fun compile(): RuntimeShader {
+        private fun compile(source: String): RuntimeShader {
             val call = Regex("""EVAL\((\w+), """)
             return try {
-                RuntimeShader(call.replace(AGSL) { "${it.groupValues[1]}.eval(" })
+                RuntimeShader(call.replace(source) { "${it.groupValues[1]}.eval(" })
             } catch (e: IllegalArgumentException) {
-                RuntimeShader(call.replace(AGSL) { "sample(${it.groupValues[1]}, " })
+                RuntimeShader(call.replace(source) { "sample(${it.groupValues[1]}, " })
             }
         }
 
@@ -169,7 +169,7 @@ internal class GpuPreview {
             return bmp
         }
 
-        private const val AGSL = """
+        internal const val AGSL = """
 uniform shader scene;
 uniform shader toneLut;
 uniform shader curves;

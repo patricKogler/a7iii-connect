@@ -110,9 +110,33 @@ class GpuParityTest {
 
                 val scene = LinearImage(sw, sh)
                 sampler.fill(0, sh, scene)
-                val gpu = GpuPreview()
-                gpu.set(GpuPreview.prepare(GpuPreview.sceneBitmap(scene), guide, guide?.let { GpuPreview.guideBitmap(it) }, look.shaderParams(sampler.scale)))
-                val out = hardwareDraw(sw, sh) { gpu.draw(it, 0f, 0f, sw.toFloat(), sh.toFloat()) }
+                val frame = GpuPreview.prepare(GpuPreview.sceneBitmap(scene), guide, guide?.let { GpuPreview.guideBitmap(it) }, look.shaderParams(sampler.scale))
+                fun gpuRender(source: String): Bitmap {
+                    val gpu = GpuPreview(source)
+                    gpu.set(frame)
+                    return hardwareDraw(sw, sh) { gpu.draw(it, 0f, 0f, sw.toFloat(), sh.toFloat()) }
+                }
+                if (name == "raw-default") {
+                    // Stage outputs at the centre pixel, to find where the shader departs from the CPU.
+                    val stages = listOf(
+                        "scene" to ("    float3 c = lin(p);\n" to "    float3 c = lin(p);\n    return half4(half3(clamp(EVAL(scene, p).rgb, 0.0, 1.0)), 1.0);\n"),
+                        "lin" to ("    float3 c = lin(p);\n" to "    float3 c = lin(p);\n    return half4(half3(clamp(c, 0.0, 1.0)), 1.0);\n"),
+                        "tone0.12" to ("    float3 c = lin(p);\n" to "    float3 c = lin(p);\n    return half4(half3(tone(0.12)), 1.0);\n"),
+                        "lut-raw" to ("    float3 c = lin(p);\n" to "    float3 c = lin(p);\n    return half4(EVAL(toneLut, float2(2048.5, 0.5)).rgb, 1.0);\n"),
+                        "row0" to ("    float3 c = lin(p);\n" to "    float3 c = lin(p);\n    return half4(half3(clamp(row0 * 0.5 + 0.5, 0.0, 1.0)), 1.0);\n"),
+                        "toned" to ("    // Tone curve and point curves, into display space.\n" to "    c = float3(tone(c.r), tone(c.g), tone(c.b));\n    return half4(half3(clamp(c, 0.0, 1.0)), 1.0);\n"),
+                    )
+                    for ((stage, rep) in stages) {
+                        val r = runCatching {
+                            val b = gpuRender(GpuPreview.AGSL.replace(rep.first, rep.second))
+                            "%08x".format(b.getPixel(sw / 2, sh / 2))
+                        }
+                        report.append("# stage $stage\t${r.getOrElse { it.message?.lines()?.take(3)?.joinToString(" | ") }}\n")
+                    }
+                    val sc = scene.width / 2 + scene.width * (scene.height / 2)
+                    report.append("# cpu scene ${scene.r[sc]} ${scene.g[sc]} ${scene.b[sc]}, row0 ${look.shaderParams(sampler.scale).matrix.take(3)}, tone(0.12) ${look.shaderParams(sampler.scale).tone[(kotlin.math.sqrt(0.12 / 64.0) * 4096).toInt()]}\n")
+                }
+                val out = gpuRender(GpuPreview.AGSL)
                 val g = IntArray(sw * sh)
                 out.getPixels(g, 0, sw, 0, 0, sw, sh)
                 report.append("# $name gpu center ${"%08x".format(g[(sh / 2) * sw + sw / 2])}, cpu ${"%08x".format(cpu[(sh / 2) * sw + sw / 2])}\n")
@@ -169,7 +193,8 @@ class GpuParityTest {
             val px = IntArray(w * h)
             for (y in 0 until h) for (x in 0 until w) {
                 val o = y * plane.rowStride + x * plane.pixelStride
-                val r = buf.get(o).toInt() and 0xff; val g = buf.get(o + 1).toInt() and 0xff; val b = buf.get(o + 2).toInt() and 0xff
+                // The offscreen surface comes back as BGRA.
+                val b = buf.get(o).toInt() and 0xff; val g = buf.get(o + 1).toInt() and 0xff; val r = buf.get(o + 2).toInt() and 0xff
                 val a = buf.get(o + 3).toInt() and 0xff
                 px[y * w + x] = (a shl 24) or (r shl 16) or (g shl 8) or b
             }
