@@ -40,6 +40,11 @@ class EditStore(context: Context) {
         get() = ExportOptions(prefs.getInt("exportEdge", 0).takeIf { it > 0 }, prefs.getInt("exportQuality", 92))
         set(value) = prefs.edit().putInt("exportEdge", value.maxEdge ?: 0).putInt("exportQuality", value.quality).apply()
 
+    /** Swipe on the photo to pick and change sliders (Snapseed style). */
+    var swipeAdjust: Boolean
+        get() = prefs.getBoolean("swipeAdjust", false)
+        set(value) = prefs.edit().putBoolean("swipeAdjust", value).apply()
+
     private val presetDir = File(dir, "presets").apply { mkdirs() }
 
     fun userPresets(): List<Preset> = presetDir.listFiles()?.sortedBy { it.name.lowercase() }?.mapNotNull { f ->
