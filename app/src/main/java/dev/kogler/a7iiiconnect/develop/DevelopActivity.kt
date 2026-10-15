@@ -10,6 +10,7 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -41,6 +42,13 @@ class DevelopActivity : ComponentActivity() {
     private var edited by mutableStateOf(emptySet<String>())
     private var marks by mutableStateOf(emptyMap<String, Mark>())
     private var exported by mutableStateOf(emptySet<String>())
+    private var meta by mutableStateOf(emptyMap<String, ShotMeta>())
+    private var indexing: kotlinx.coroutines.Job? = null
+    // Filters live here so they survive opening a photo and coming back.
+    private var quickFilter by mutableStateOf(QuickFilter.ALL)
+    private var sheetFilter by mutableStateOf(ShotFilter())
+    private var sheetOpen by mutableStateOf(false)
+    private var saved by mutableStateOf(emptyList<SavedFilter>())
     /** MediaStore id of the photo open in the editor (either file of the shot). */
     private var editing by mutableStateOf<Long?>(null)
     /** The culling round and the keys of the shots dealt into it, while the deck is open. */
@@ -74,6 +82,7 @@ class DevelopActivity : ComponentActivity() {
         enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         super.onCreate(savedInstanceState)
         store = EditStore(this)
+        saved = SavedFilters.load(this)
         GpsService.resumeIfEnabled(this)
         editing = savedInstanceState?.getLong(KEY_EDITING, -1L)?.takeIf { it >= 0 }
             ?: intent.getLongExtra(EXTRA_PHOTO_ID, -1L).takeIf { it >= 0 }
@@ -123,6 +132,22 @@ class DevelopActivity : ComponentActivity() {
                         onDeleteRejected = { deleteRejected() },
                         transfer = transfer,
                         onCamera = { startActivity(MainActivity.intent(this)) },
+                        meta = meta,
+                        filter = quickFilter,
+                        onQuickFilter = { quickFilter = it },
+                        sheetFilter = sheetFilter,
+                        onSheetFilter = { sheetFilter = it },
+                        saved = saved,
+                        onSaveFilter = { name ->
+                            saved = saved.filter { it.name != name } + SavedFilter(name, sheetFilter)
+                            SavedFilters.save(this, saved)
+                        },
+                        onDeleteSaved = { s ->
+                            saved = saved - s
+                            SavedFilters.save(this, saved)
+                        },
+                        sheetOpen = sheetOpen,
+                        onSheetOpen = { sheetOpen = it },
                     )
                 }
             }
@@ -202,6 +227,17 @@ class DevelopActivity : ComponentActivity() {
         }
         shots = all
         loaded = true
+        indexMeta(all)
+    }
+
+    /** Reads the EXIF of shots not indexed yet, in the background, so filters fill in as it goes. */
+    private fun indexMeta(all: List<Shot>) {
+        indexing?.cancel()
+        indexing = lifecycleScope.launch(Dispatchers.IO) {
+            val known = MetaIndex.known(this@DevelopActivity)
+            withContext(Dispatchers.Main) { meta = known }
+            MetaIndex.index(this@DevelopActivity, all, keepGoing = { isActive }) { m -> lifecycleScope.launch { meta = m } }
+        }
     }
 
     companion object {

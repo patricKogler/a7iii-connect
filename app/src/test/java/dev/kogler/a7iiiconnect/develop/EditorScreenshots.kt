@@ -190,6 +190,80 @@ class EditorScreenshots {
     }
 
     @Test
+    fun libraryFilters() {
+        val context: Context = RuntimeEnvironment.getApplication()
+        val file = File(context.cacheDir, "DSC09412.JPG")
+        writeLandscape(file)
+        val day = 1_760_000_000_000L
+        val shots = Library.shots((0 until 12).map { i ->
+            LibraryPhoto(100L + i, Uri.fromFile(file), "DSC096${10 + i}.JPG", "image/jpeg", day - i * 3_600_000L)
+        })
+        val lenses = listOf("FE 24-70mm F2.8 GM", "FE 85mm F1.8", "FE 24-70mm F2.8 GM", "FE 35mm F1.8")
+        val meta = shots.mapIndexed { i, s ->
+            val lens = lenses[i % 4]
+            s.key to ShotMeta(
+                lens = lens,
+                focal = when (lens) { "FE 85mm F1.8" -> 85f; "FE 35mm F1.8" -> 35f; else -> listOf(24f, 35f, 50f, 70f)[i % 4] },
+                aperture = listOf(1.8f, 2.8f, 4f, 8f)[i % 4],
+                exposure = listOf(1.0 / 4000, 1.0 / 250, 1.0 / 60, 2.0)[i % 4],
+                iso = listOf(100, 400, 3200, 6400)[i % 4],
+                bias = listOf(0f, -0.7f, 0.3f, 0f)[i % 4],
+                program = if (i % 3 == 0) 1 else 3,
+                flash = false,
+                portrait = i % 5 == 0,
+                located = i < 6,
+            )
+        }.toMap()
+        val facts = shots.map { ShotFacts(it, meta[it.key]) }
+
+        // The engine: groups narrow each other, values within a group widen it.
+        fun n(f: ShotFilter) = facts.count { f.matches(it) }
+        check(n(ShotFilter()) == 12)
+        check(n(ShotFilter(lenses = setOf("FE 85mm F1.8"))) == 3)
+        check(n(ShotFilter(lenses = setOf("FE 85mm F1.8", "FE 35mm F1.8"))) == 6)
+        check(n(ShotFilter(lenses = setOf("FE 85mm F1.8"), presets = setOf(FilterPreset.WIDE_OPEN))) == 0)
+        check(n(ShotFilter(presets = setOf(FilterPreset.LONG_EXPOSURE))) == 3)
+        check(n(ShotFilter(iso = 400..3200)) == 6)
+        check(n(ShotFilter(located = false, framing = setOf(Framing.PORTRAIT))) == 1) { "located" }
+        val saved = ShotFilter(lenses = setOf("FE 85mm F1.8"), aperture = 1.8f..2.8f, modes = setOf(ShootingMode.MANUAL), exposure = 0.001..0.5)
+        check(SavedFilters.decode(SavedFilters.encode(saved)) == saved) { "saved filter round trip" }
+        check(ShotMeta.decode(meta.values.first().encode().split('\t')) == meta.values.first()) { "meta round trip" }
+
+        var sheetFilter by mutableStateOf(ShotFilter())
+        var sheetOpen by mutableStateOf(false)
+        var savedFilters by mutableStateOf(emptyList<SavedFilter>())
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            MaterialTheme(colorScheme = darkColorScheme()) {
+                LibraryScreen(
+                    shots = shots, edited = emptySet(), marks = emptyMap(), exported = emptySet(),
+                    onOpen = {}, onCull = { _, _ -> }, onTogether = { _, _ -> }, onDeleteRejected = {},
+                    transfer = SyncStatus(), onCamera = {}, meta = meta,
+                    sheetFilter = sheetFilter, onSheetFilter = { sheetFilter = it },
+                    saved = savedFilters, onSaveFilter = { savedFilters = savedFilters + SavedFilter(it, sheetFilter) },
+                    sheetOpen = sheetOpen, onSheetOpen = { sheetOpen = it },
+                )
+            }
+        }
+        repeat(20) { step() }
+        compose.onNodeWithTag("filter").performClick()
+        repeat(20) { step() }
+        shot("30-filter-sheet")
+        compose.onNodeWithText("Low light", substring = true).performClick()
+        compose.onNodeWithTag("more-filters").performClick()
+        repeat(20) { step() }
+        shot("31-filter-more")
+        sheetOpen = false
+        sheetFilter = ShotFilter(lenses = setOf("FE 24-70mm F2.8 GM"), iso = 400..6400)
+        repeat(20) { step() }
+        shot("32-library-filtered")
+        savedFilters = listOf(SavedFilter("Night 85", ShotFilter(lenses = setOf("FE 85mm F1.8"))))
+        sheetFilter = savedFilters[0].filter
+        repeat(20) { step() }
+        shot("33-library-saved-filter")
+    }
+
+    @Test
     fun similarStacks() {
         val context: Context = RuntimeEnvironment.getApplication()
         val file = File(context.cacheDir, "DSC09412.JPG")
