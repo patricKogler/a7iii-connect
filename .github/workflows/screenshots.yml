@@ -29,7 +29,7 @@ jobs:
         timeout-minutes: 15
         run: |
           set -o pipefail
-          ./gradlew --no-daemon testDebugUnitTest --tests '*EditorScreenshots*' 2>&1 | tee test.log
+          ./gradlew --no-daemon testDebugUnitTest --tests '*EditorScreenshots*' --tests '*GpuParityTest*' 2>&1 | tee test.log
       - name: Report errors
         if: failure()
         run: |
@@ -45,7 +45,7 @@ jobs:
         run: |
           ls app/build/screenshots/*.png >/dev/null 2>&1 || exit 0
           rm -rf screenshots && mkdir -p screenshots
-          cp app/build/screenshots/*.png screenshots/
+          cp app/build/screenshots/* screenshots/
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add screenshots

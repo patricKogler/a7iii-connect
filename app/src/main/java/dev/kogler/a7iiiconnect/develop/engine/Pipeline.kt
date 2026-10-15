@@ -282,8 +282,14 @@ class Look(private val source: DevelopSource, private val s: Settings) {
     }
 
     /** Builds the guide this look needs, or null when no large-radius adjustment is active. */
+    /**
+     * The guide is built at exposure 0, so moving Exposure doesn't rebuild it: in log space the
+     * base layers just shift by the exposure, and the haze map scales with it.
+     */
     fun guide(preview: LinearImage, geom: Geometry): Guide? =
-        if (!needsGuide) null else Guide.build(this, ImageSampler(preview, geom, Guide.EDGE))
+        if (!needsGuide) null else Guide.build(Look(source, s.with(P.EXPOSURE, 0f)), ImageSampler(preview, geom, Guide.EDGE))
+
+    private val ev = s[P.EXPOSURE]
 
     /** How far (in output pixels) the small-radius filters reach: the band overlap. */
     fun margin(scale: Double): Int {
@@ -354,8 +360,9 @@ class Look(private val source: DevelopSource, private val s: Settings) {
 
         // --- Dehaze (dark channel prior, with the haze map from the guide) ---
         if (dehaze != 0f && guide != null) {
-            val air = guide.air
-            val amax = maxOf(air[0], maxOf(air[1], air[2]))
+            val gain = exp2(ev)
+            val air = FloatArray(3) { guide.air[it] * gain }
+            val amax = maxOf(guide.air[0], maxOf(guide.air[1], guide.air[2]))
             parallelRows(rows) { j ->
                 val yy = (oy + j + 0.5f) * gy - 0.5f
                 for (x in 0 until w) {
@@ -393,11 +400,11 @@ class Look(private val source: DevelopSource, private val s: Settings) {
                     var d = 0f
                     if (guide != null && needsGuide) {
                         val gxx = (ox + x + 0.5f) * gx - 0.5f
-                        val base = guide.at(guide.base, gxx, yy)
+                        val base = guide.at(guide.base, gxx, yy) + ev
                         if (shadows != 0f) d += shadows * 1.7f / (1 + exp((base - mid + 1.2f) * 1.6f))
                         if (highlights != 0f) d += highlights * 1.7f / (1 + exp(-(base - mid - 0.6f) * 1.6f))
                         if (clarity != 0f) {
-                            val med = guide.at(guide.medium, gxx, yy)
+                            val med = guide.at(guide.medium, gxx, yy) + ev
                             // Midtone weighting keeps clarity off deep shadows and bright highlights.
                             val wMid = exp(-((l - mid) / 3.5f).let { it * it })
                             d += clarity * 0.7f * (l - med).coerceIn(-2f, 2f) * wMid
@@ -506,6 +513,21 @@ class Look(private val source: DevelopSource, private val s: Settings) {
             }
         }
     }
+
+    /** Everything the GPU preview shader needs for these settings at render [scale]. */
+    fun shaderParams(scale: Double): ShaderParams = ShaderParams(
+        matrix = matrix.copyOf(), tone = tone, curves = rgbCurves, ev = ev,
+        shadows = if (needsGuide) shadows else 0f, highlights = if (needsGuide) highlights else 0f,
+        clarity = if (needsGuide) clarity else 0f, dehaze = dehaze,
+        texture = texture * 0.9f * minOf(1f, (scale * 2.5).toFloat().coerceAtLeast(0.4f)), textureRadius = textureRadius(scale),
+        mono = mono, sat = sat, vib = vib, hasMixer = hasMixer, mixHue = mixHue, mixSat = mixSat, mixLum = mixLum,
+        bandCenters = bandCenters, hasGrading = hasGrading, gradeOffset = FloatArray(12) { gradeOffset[it / 3][it % 3] },
+        gradeLum = gradeLum, blending = blending, balance = balance,
+        vignette = vignette, vigMid = vigMid, vigFeather = vigFeather, vigRound = vigRound, vigHighlights = vigHighlights,
+        sharpen = if (sharpen > 0) sharpen * 1.4f * minOf(1f, (scale * 2.5).toFloat().coerceAtLeast(0.3f)) else 0f,
+        sharpenRadius = sharpenRadius(scale), sharpenLimit = 0.02f + 0.25f * sharpenDetail, sharpenMasking = sharpenMasking * 0.06f,
+        grain = grain, grainCell = (1.0 + grainSize * 4.0).toFloat(), grainRough = grainRough, scale = scale.toFloat(),
+    )
 
     /** HSL mixer (or B&W mixer), color grading, vibrance and saturation on one display pixel. */
     private fun color(p: FloatArray) {
@@ -675,6 +697,24 @@ class Look(private val source: DevelopSource, private val s: Settings) {
             val b = hash(x0, y0 + 1) + (hash(x0 + 1, y0 + 1) - hash(x0, y0 + 1)) * sx
             return a + (b - a) * sy
         }
+    }
+}
+
+/** [Look]'s per-pixel parameters, for the GPU preview (see GpuPreview.kt). */
+class ShaderParams(
+    val matrix: FloatArray, val tone: FloatArray, val curves: Array<FloatArray>?, val ev: Float,
+    val shadows: Float, val highlights: Float, val clarity: Float, val dehaze: Float,
+    val texture: Float, val textureRadius: Float,
+    val mono: Boolean, val sat: Float, val vib: Float, val hasMixer: Boolean,
+    val mixHue: FloatArray, val mixSat: FloatArray, val mixLum: FloatArray, val bandCenters: FloatArray,
+    val hasGrading: Boolean, val gradeOffset: FloatArray, val gradeLum: FloatArray, val blending: Float, val balance: Float,
+    val vignette: Float, val vigMid: Float, val vigFeather: Float, val vigRound: Float, val vigHighlights: Float,
+    val sharpen: Float, val sharpenRadius: Float, val sharpenLimit: Float, val sharpenMasking: Float,
+    val grain: Float, val grainCell: Float, val grainRough: Float, val scale: Float,
+) {
+    companion object {
+        const val LUT_SIZE = 4096
+        const val LUT_MAX = 64f
     }
 }
 
