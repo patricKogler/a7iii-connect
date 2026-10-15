@@ -52,8 +52,8 @@ class DevelopActivity : ComponentActivity() {
     private var saved by mutableStateOf(emptyList<SavedFilter>())
     /** MediaStore id of the photo open in the editor (either file of the shot). */
     private var editing by mutableStateOf<Long?>(null)
-    /** The culling round and the keys of the shots dealt into it, while the deck is open. */
-    private var culling by mutableStateOf<Pair<Int, List<String>>?>(null)
+    /** The deck's title and the keys of the shots dealt into it, while it is open. */
+    private var culling by mutableStateOf<Pair<String, List<String>>?>(null)
     private var deleting = emptyList<Shot>()
     private var loaded = false
     private lateinit var store: EditStore
@@ -87,7 +87,7 @@ class DevelopActivity : ComponentActivity() {
         GpsService.resumeIfEnabled(this)
         editing = savedInstanceState?.getLong(KEY_EDITING, -1L)?.takeIf { it >= 0 }
             ?: intent.getLongExtra(EXTRA_PHOTO_ID, -1L).takeIf { it >= 0 }
-        culling = savedInstanceState?.getStringArrayList(KEY_CULLING)?.let { savedInstanceState.getInt(KEY_ROUND, 1) to it }
+        culling = savedInstanceState?.getStringArrayList(KEY_CULLING)?.let { (savedInstanceState.getString(KEY_DECK_TITLE) ?: "Review") to it }
         if (savedInstanceState == null) CameraTouch.handleIntent(this, intent)
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
@@ -115,7 +115,7 @@ class DevelopActivity : ComponentActivity() {
                         val byKey = shots.associateBy { it.key }
                         CullScreen(
                             shots = deck.second.mapNotNull { byKey[it] },
-                            round = deck.first,
+                            title = deck.first,
                             marks = marks,
                             onMark = { shot, mark -> store.setMark(shot.key, mark); marks = store.marks() },
                             rejectedCount = shots.count { marks[it.key]?.rejected == true },
@@ -129,8 +129,8 @@ class DevelopActivity : ComponentActivity() {
                         marks = marks,
                         exported = exported,
                         onOpen = { editing = it.primary.id },
-                        onCull = { round, deck -> culling = round to deck.map { it.key } },
-                        onTogether = { round, deck -> startActivity(DuoActivity.intent(this, round, deck.map { it.key })) },
+                        onCull = { title, deck -> culling = title to deck.map { it.key } },
+                        onTogether = { deck -> startActivity(DuoActivity.intent(this, deck.map { it.key })) },
                         onDeleteRejected = { deleteRejected() },
                         transfer = transfer,
                         onCamera = { startActivity(MainActivity.intent(this)) },
@@ -213,8 +213,8 @@ class DevelopActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putLong(KEY_EDITING, editing ?: -1L)
-        culling?.let { (round, keys) ->
-            outState.putInt(KEY_ROUND, round)
+        culling?.let { (title, keys) ->
+            outState.putString(KEY_DECK_TITLE, title)
             outState.putStringArrayList(KEY_CULLING, ArrayList(keys))
         }
     }
@@ -254,7 +254,7 @@ class DevelopActivity : ComponentActivity() {
         private const val EXTRA_PHOTO_ID = "photo_id"
         private const val KEY_EDITING = "editing"
         private const val KEY_CULLING = "culling"
-        private const val KEY_ROUND = "round"
+        private const val KEY_DECK_TITLE = "deck_title"
 
         fun intent(context: Context, photoId: Long? = null) = Intent(context, DevelopActivity::class.java).apply {
             if (photoId != null) putExtra(EXTRA_PHOTO_ID, photoId)

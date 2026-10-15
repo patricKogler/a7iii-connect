@@ -170,7 +170,7 @@ class EditorScreenshots {
         } + LibraryPhoto(300L, Uri.fromFile(file), "DSC09530.JPG", "image/jpeg", day - 5 * 300_000L + 1_000L)
         val shots = Library.shots(photos)
         check(shots.size == 13) { "pairing made ${shots.size} shots" }
-        val marks = mapOf(shots[1].key to Mark(2), shots[3].key to Mark.REJECTED, shots[5].key to Mark(1))
+        val marks = mapOf(shots[1].key to Mark.PICK, shots[3].key to Mark.REJECT, shots[5].key to Mark.PICK)
 
         var screen by mutableStateOf("library")
         var transfer by mutableStateOf(SyncStatus())
@@ -181,13 +181,13 @@ class EditorScreenshots {
                     LibraryScreen(
                         shots = shots, edited = setOf(shots[0].key), marks = marks,
                         exported = setOf(Photos.exportName(shots[0].primary).lowercase()),
-                        onOpen = {}, onCull = { _, _ -> }, onTogether = { _, _ -> }, onDeleteRejected = {},
+                        onOpen = {}, onCull = { _, _ -> }, onTogether = {}, onDeleteRejected = {},
                         transfer = transfer, onCamera = {},
                     )
                 } else {
                     // JPEG-only shots, so the cards load without a real ARW.
                     CullScreen(
-                        shots = shots.filter { it.raw == null }, round = 1, marks = emptyMap(), onMark = { _, _ -> },
+                        shots = shots.filter { it.raw == null }, title = "Review", marks = emptyMap(), onMark = { _, _ -> },
                         rejectedCount = 1, onDeleteRejected = {}, onBack = {},
                     )
                 }
@@ -266,7 +266,7 @@ class EditorScreenshots {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 LibraryScreen(
                     shots = shots, edited = emptySet(), marks = emptyMap(), exported = emptySet(),
-                    onOpen = {}, onCull = { _, _ -> }, onTogether = { _, _ -> }, onDeleteRejected = {},
+                    onOpen = {}, onCull = { _, _ -> }, onTogether = {}, onDeleteRejected = {},
                     transfer = SyncStatus(), onCamera = {}, meta = meta, places = places,
                     sheetFilter = sheetFilter, onSheetFilter = { sheetFilter = it },
                     saved = savedFilters, onSaveFilter = { savedFilters = savedFilters + SavedFilter(it, sheetFilter) },
