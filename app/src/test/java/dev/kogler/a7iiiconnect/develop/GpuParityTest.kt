@@ -136,9 +136,17 @@ class GpuParityTest {
             renderer.setContentRoot(node)
             renderer.createRenderRequest().setWaitForPresent(true).syncAndDraw()
             val image = reader.acquireNextImage()
-            val hb = image.hardwareBuffer ?: error("no hardware buffer")
-            val bmp = Bitmap.wrapHardwareBuffer(hb, null)?.copy(Bitmap.Config.ARGB_8888, false) ?: error("can't wrap buffer")
-            hb.close(); image.close()
+            val plane = image.planes[0]
+            val buf = plane.buffer
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val px = IntArray(w * h)
+            for (y in 0 until h) for (x in 0 until w) {
+                val o = y * plane.rowStride + x * plane.pixelStride
+                val r = buf.get(o).toInt() and 0xff; val g = buf.get(o + 1).toInt() and 0xff; val b = buf.get(o + 2).toInt() and 0xff
+                px[y * w + x] = (0xff shl 24) or (r shl 16) or (g shl 8) or b
+            }
+            bmp.setPixels(px, 0, w, 0, 0, w, h)
+            image.close()
             return bmp
         } finally {
             renderer.destroy(); reader.close()
