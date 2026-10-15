@@ -130,6 +130,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChanged
@@ -312,6 +313,12 @@ fun EditorScreen(
     var swipeAxis by remember { mutableIntStateOf(0) }
     val swipeState = remember { SwipeState() }
     var fullscreen by remember { mutableStateOf(false) }
+    // Full screen's controls: hidden until the photo is tapped, then hidden again after a while.
+    var chrome by remember { mutableStateOf(false) }
+    var chromePing by remember { mutableIntStateOf(0) }
+    LaunchedEffect(fullscreen, chrome, chromePing) {
+        if (fullscreen && chrome) { delay(3500); chrome = false }
+    }
     val haptics = LocalHapticFeedback.current
     val density = LocalDensity.current
     val snackbar = remember { SnackbarHostState() }
@@ -448,6 +455,7 @@ fun EditorScreen(
     val swipeStep = with(density) { 36.dp.toPx() }
     val swipe = if (swipeMode && swipeList.isNotEmpty() && opened != null && !showBefore) SwipeAdjust(
         onStart = { horizontal ->
+            chrome = false
             val i = swipeList.indexOfFirst { it.key == swipeKey }.coerceAtLeast(0)
             val p = swipeList[i]
             swipeKey = p.key
@@ -559,7 +567,12 @@ fun EditorScreen(
             exportProgress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth()) }
 
             // Photo and panel: stacked in portrait, side by side in landscape.
-            val photoArea: @Composable (Modifier) -> Unit = { m -> Box(m.clip(RoundedCornerShape(0.dp))) {
+            val photoArea: @Composable (Modifier) -> Unit = { m -> Box(
+                m.clip(RoundedCornerShape(0.dp)).pointerInput(Unit) {
+                    // Any touch keeps full screen's controls up a little longer.
+                    awaitEachGesture { awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial); chromePing++ }
+                },
+            ) {
                 val r = rendered
                 val shown: PhotoLayer? = if (showBefore) before?.let { BitmapLayer(it) } ?: r?.layer
                 else r?.layer ?: placeholder?.let { BitmapLayer(it) }
@@ -582,6 +595,7 @@ fun EditorScreen(
                         onSplit = { splitAt = it },
                         swipe = swipe,
                         onHold = { showBefore = it },
+                        onTap = { if (fullscreen) chrome = !chrome },
                         onViewport = { viewport = it },
                     )
                 }
@@ -591,7 +605,7 @@ fun EditorScreen(
                 loadError?.let {
                     Text("Can't open this photo: $it", color = Color.White, modifier = Modifier.align(Alignment.Center).padding(24.dp))
                 }
-                if (!cropMode && !split) r?.histogram?.let { Histogram(it, Modifier.align(Alignment.TopEnd).padding(8.dp).size(120.dp, 56.dp)) }
+                if (!cropMode && !split && (!fullscreen || chrome)) r?.histogram?.let { Histogram(it, Modifier.align(Alignment.TopEnd).padding(8.dp).size(120.dp, 56.dp)) }
                 if (split && !cropMode && !showBefore) {
                     // Tap "Before" to compare against just this panel's edits.
                     val panel = tool?.takeIf { t -> t.groups.any { it !in FRAMING } }
@@ -636,18 +650,42 @@ fun EditorScreen(
                             .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
                     )
                 }
-                if (!cropMode) {
+                if (!cropMode && (!fullscreen || chrome)) {
+                    // Full screen: the tool icons pick which sliders swipe mode cycles through.
+                    if (fullscreen) {
+                        Row(
+                            Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)
+                                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(24.dp)).padding(horizontal = 4.dp),
+                        ) {
+                            for (t in Tool.entries.filter { it != Tool.CROP && it != Tool.PRESETS }) {
+                                val sel = t == tool || (tool == null && t == Tool.LIGHT)
+                                val c = if (sel) MaterialTheme.colorScheme.primary else Color.White
+                                Box(
+                                    Modifier.size(48.dp).clip(CircleShape).clickable { tool = t; chromePing++ },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(t.icon, t.label, tint = c)
+                                    if (t.groups.any { !settings.isDefault(it) }) ChangedDot(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 10.dp))
+                                }
+                            }
+                        }
+                    }
+                    val lift = if (fullscreen) 56.dp else 0.dp
                     // Thumb-reach controls along the bottom of the photo.
-                    Row(Modifier.align(Alignment.BottomStart).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.align(Alignment.BottomStart).padding(8.dp).padding(bottom = lift), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OverlayButton(Icons.AutoMirrored.Rounded.Undo, "Undo", enabled = history.canUndo) { undo() }
                         OverlayButton(Icons.AutoMirrored.Rounded.Redo, "Redo", enabled = history.canRedo) { redo() }
                     }
-                    Row(Modifier.align(Alignment.BottomEnd).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.align(Alignment.BottomEnd).padding(8.dp).padding(bottom = lift), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OverlayButton(
                             if (fullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
                             if (fullscreen) "Exit full screen" else "Full screen",
                             modifier = Modifier.testTag("fullscreen"),
-                        ) { fullscreen = !fullscreen }
+                        ) {
+                            fullscreen = !fullscreen
+                            chrome = false
+                            if (fullscreen) scope.launch { snackbar.showSnackbar("Tap the photo to show the controls") }
+                        }
                         OverlayButton(Icons.Outlined.Swipe, "Swipe on the photo to adjust", selected = swipeMode) {
                             swipeMode = !swipeMode
                             store.swipeAdjust = swipeMode
@@ -917,6 +955,7 @@ private fun ZoomableImage(
     onSplit: (Float) -> Unit,
     swipe: SwipeAdjust?,
     onHold: (Boolean) -> Unit,
+    onTap: () -> Unit,
     onViewport: (Viewport?) -> Unit,
 ) {
     var scale by remember { mutableFloatStateOf(1f) }
@@ -925,6 +964,7 @@ private fun ZoomableImage(
     val report by rememberUpdatedState(onViewport)
     val img by rememberUpdatedState(layer)
     val adjust by rememberUpdatedState(swipe)
+    val tapped by rememberUpdatedState(onTap)
     val split by rememberUpdatedState(splitAt)
     val splitChanged by rememberUpdatedState(onSplit)
 
@@ -1002,6 +1042,7 @@ private fun ZoomableImage(
                     onDoubleTap = { if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 4f },
                     onLongPress = { onHold(true) },
                     onPress = { tryAwaitRelease(); onHold(false) },
+                    onTap = { tapped() },
                 )
             },
     ) {

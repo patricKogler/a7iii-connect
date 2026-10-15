@@ -9,7 +9,9 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import com.github.takahirom.roborazzi.captureRoboImage
 import dev.kogler.a7iiiconnect.develop.engine.P
 import dev.kogler.a7iiiconnect.develop.engine.Settings
@@ -66,6 +68,10 @@ class EditorScreenshots {
         compose.onNodeWithTag("compare").performClick()
         compose.onNodeWithTag("fullscreen").performClick()
         awaitRender(); shot("15-fullscreen")
+        // A tap on the photo brings the controls back (after the double-tap timeout).
+        compose.onRoot().performTouchInput { click(center) }
+        settle(); settle()
+        shot("16-fullscreen-controls")
     }
 
     /** The phone turned sideways: the panel sits beside the photo. */
