@@ -48,8 +48,6 @@ internal class GpuPreview(source: String = AGSL) {
      */
     private fun u(name: String, vararg v: Float) = shader.setFloatUniform(name, v)
 
-    private fun u(name: String, v: FloatArray) = shader.setFloatUniform(name, v)
-
     /** Applies a prepared frame (main thread). */
     fun set(f: Frame) {
         width = f.scene.width
@@ -79,16 +77,16 @@ internal class GpuPreview(source: String = AGSL) {
         u("sat", p.sat)
         u("vib", p.vib)
         u("hasMixer", if (p.hasMixer) 1f else 0f)
-        u("mixHue", p.mixHue)
-        u("mixSat", p.mixSat)
-        u("mixLum", p.mixLum)
+        u("mixHue", *p.mixHue)
+        u("mixSat", *p.mixSat)
+        u("mixLum", *p.mixLum)
         val c = p.bandCenters
-        u("bandC", c)
-        u("bandPrev", FloatArray(8) { (c[it] - c[(it + 7) % 8] + 360f) % 360f })
-        u("bandNext", FloatArray(8) { (c[(it + 1) % 8] - c[it] + 360f) % 360f })
+        u("bandC", *c)
+        u("bandPrev", *FloatArray(8) { (c[it] - c[(it + 7) % 8] + 360f) % 360f })
+        u("bandNext", *FloatArray(8) { (c[(it + 1) % 8] - c[it] + 360f) % 360f })
         u("hasGrading", if (p.hasGrading) 1f else 0f)
-        u("gradeOff", p.gradeOffset)
-        u("gradeLum", p.gradeLum)
+        u("gradeOff", *p.gradeOffset)
+        u("gradeLum", *p.gradeLum)
         u("blending", p.blending)
         u("balance", p.balance)
         u("vignette", p.vignette)
