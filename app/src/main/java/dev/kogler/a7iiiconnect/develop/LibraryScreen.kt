@@ -44,7 +44,6 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -62,6 +61,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.FilterList
+import androidx.compose.material3.InputChip
 import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.IosShare
 import androidx.compose.material.icons.rounded.People
@@ -116,7 +118,7 @@ private fun TransferStrip(status: SyncStatus, onClick: () -> Unit) {
     }
 }
 
-private enum class Filter(val label: String) {
+enum class QuickFilter(val label: String) {
     ALL("All"), TO_REVIEW("To review"), PICKS("Picks"), BEST("Best"), EDITED("Edited"), REJECTED("Rejected")
 }
 
@@ -133,22 +135,37 @@ fun LibraryScreen(
     onDeleteRejected: () -> Unit,
     transfer: SyncStatus,
     onCamera: () -> Unit,
+    meta: Map<String, ShotMeta> = emptyMap(),
+    places: Map<String, String> = emptyMap(),
+    filter: QuickFilter = QuickFilter.ALL,
+    onQuickFilter: (QuickFilter) -> Unit = {},
+    sheetFilter: ShotFilter = ShotFilter(),
+    onSheetFilter: (ShotFilter) -> Unit = {},
+    saved: List<SavedFilter> = emptyList(),
+    onSaveFilter: (String) -> Unit = {},
+    onDeleteSaved: (SavedFilter) -> Unit = {},
+    sheetOpen: Boolean = false,
+    onSheetOpen: (Boolean) -> Unit = {},
 ) {
-    var filter by rememberSaveable { mutableStateOf(Filter.ALL) }
     // Days picked by long-pressing their headers; Review then covers just those.
     var selectedDays by remember { mutableStateOf(emptySet<Long>()) }
     val bestLevel = shots.maxOfOrNull { marks[it.key]?.level ?: 0 } ?: 0
+    val facts = remember(shots, meta, places, edited, exported) {
+        shots.map { ShotFacts(it, meta[it.key], it.key in edited, Photos.exportName(it.primary).lowercase() in exported, places[it.key]) }
+    }
+    // The sheet's metadata filter narrows everything on screen, Review included.
+    val filtered = if (sheetFilter.isEmpty) shots else facts.filter { sheetFilter.matches(it) }.map { it.shot }
     val shown = when (filter) {
-        Filter.ALL -> shots
-        Filter.TO_REVIEW -> shots.filter { it.key !in marks }
-        Filter.PICKS -> shots.filter { marks[it.key]?.picked == true }
-        Filter.BEST -> if (bestLevel < 1) emptyList() else shots.filter { marks[it.key]?.level == bestLevel }
-        Filter.EDITED -> shots.filter { it.key in edited }
-        Filter.REJECTED -> shots.filter { marks[it.key]?.rejected == true }
+        QuickFilter.ALL -> filtered
+        QuickFilter.TO_REVIEW -> filtered.filter { it.key !in marks }
+        QuickFilter.PICKS -> filtered.filter { marks[it.key]?.picked == true }
+        QuickFilter.BEST -> if (bestLevel < 1) emptyList() else filtered.filter { marks[it.key]?.level == bestLevel }
+        QuickFilter.EDITED -> filtered.filter { it.key in edited }
+        QuickFilter.REJECTED -> filtered.filter { marks[it.key]?.rejected == true }
     }
     val rejected = shots.count { marks[it.key]?.rejected == true }
     val days = shown.groupBy { dayOf(it.takenMillis) }
-    val scope = if (selectedDays.isEmpty()) shots else shots.filter { dayOf(it.takenMillis) in selectedDays }
+    val scope = if (selectedDays.isEmpty()) filtered else filtered.filter { dayOf(it.takenMillis) in selectedDays }
     // Every round that still has shots to show, with how many.
     val rounds = (1..(bestLevel + 1).coerceAtLeast(1)).mapNotNull { r ->
         scope.filter { marks[it.key].dueIn(r) }.takeIf { it.isNotEmpty() }?.let { r to it }
@@ -203,13 +220,61 @@ fun LibraryScreen(
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                for (f in Filter.entries) {
-                    if (f == Filter.BEST && bestLevel < 2) continue
-                    FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.label) })
+                val active = sheetFilter.chips().size
+                FilterChip(
+                    selected = active > 0,
+                    onClick = { onSheetOpen(true) },
+                    leadingIcon = { Icon(Icons.Rounded.FilterList, null, Modifier.size(18.dp)) },
+                    label = { Text(if (active > 0) "Filter · $active" else "Filter") },
+                    modifier = Modifier.testTag("filter"),
+                )
+                // Saved filters: tapping one applies it, tapping it again clears it. First, so
+                // they never scroll out of sight.
+                for (s in saved) {
+                    val on = sheetFilter == s.filter
+                    FilterChip(
+                        selected = on,
+                        onClick = { onSheetFilter(if (on) ShotFilter() else s.filter) },
+                        leadingIcon = { Icon(Icons.Rounded.Bookmark, null, Modifier.size(16.dp)) },
+                        label = { Text(s.name) },
+                    )
+                }
+                for (f in QuickFilter.entries) {
+                    if (f == QuickFilter.BEST && bestLevel < 2) continue
+                    FilterChip(selected = filter == f, onClick = { onQuickFilter(f) }, label = { Text(f.label) })
                 }
             }
-            if (filter == Filter.REJECTED && rejected > 0) {
+            // What the sheet filters on, each removable; a saved filter shows as its own chip instead.
+            if (!sheetFilter.isEmpty && saved.none { it.filter == sheetFilter }) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    for ((label, without) in sheetFilter.chips()) {
+                        InputChip(
+                            selected = true,
+                            onClick = { onSheetFilter(without) },
+                            label = { Text(label) },
+                            trailingIcon = { Icon(Icons.Rounded.Close, "Remove $label", Modifier.size(16.dp)) },
+                        )
+                    }
+                }
+            }
+            if (sheetOpen) {
+                val current = saved.find { it.filter == sheetFilter }
+                FilterSheet(
+                    facts = facts,
+                    filter = sheetFilter,
+                    onFilter = onSheetFilter,
+                    onSave = onSaveFilter,
+                    savedName = current?.name,
+                    onDeleteSaved = { current?.let(onDeleteSaved) },
+                    onDismiss = { onSheetOpen(false) },
+                )
+            }
+            if (filter == QuickFilter.REJECTED && rejected > 0) {
                 Button(
                     onClick = onDeleteRejected,
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer),
@@ -225,7 +290,8 @@ fun LibraryScreen(
                     Text(
                         when {
                             shots.isEmpty() -> "Photos from the camera will show up here"
-                            filter == Filter.TO_REVIEW -> "All reviewed"
+                            filter == QuickFilter.TO_REVIEW && sheetFilter.isEmpty -> "All reviewed"
+                            !sheetFilter.isEmpty -> "No photos match these filters"
                             else -> "Nothing here"
                         },
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -293,7 +359,7 @@ private fun DayHeader(day: Long, count: Int, toReview: Int, selected: Boolean, m
         Column(Modifier.weight(1f)) {
             Text(dayLabel(day), style = MaterialTheme.typography.titleSmall)
             Text(
-                if (toReview > 0) "$count shots · $toReview to review" else "$count shots",
+                (if (count == 1) "1 shot" else "$count shots") + if (toReview > 0) " · $toReview to review" else "",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
