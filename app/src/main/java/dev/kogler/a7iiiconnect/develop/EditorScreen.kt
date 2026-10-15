@@ -310,7 +310,7 @@ fun EditorScreen(
     LaunchedEffect(photo.id) {
         opened = null; rendered = null; before = null; compareImage = null; loadError = null; tile = null
         guides.clear()
-        settings = store.load(photo.id)
+        settings = store.load(photo)
         history = History(settings)
         placeholder = Photos.cachedThumbnail(photo)?.asImageBitmap()
         if (photo.isRaw) {
@@ -402,11 +402,11 @@ fun EditorScreen(
     fun commit(s: Settings) {
         settings = s
         history.push(s)
-        store.save(photo.id, s)
+        store.save(photo, s)
     }
 
-    fun undo() { settings = history.undo(); store.save(photo.id, settings) }
-    fun redo() { settings = history.redo(); store.save(photo.id, settings) }
+    fun undo() { settings = history.undo(); store.save(photo, settings) }
+    fun redo() { settings = history.redo(); store.save(photo, settings) }
 
     fun auto() {
         val src = opened?.preview ?: return
@@ -461,7 +461,7 @@ fun EditorScreen(
 
     fun go(i: Int) {
         if (i == index || i !in photos.indices) return
-        store.save(photo.id, settings)
+        store.save(photo, settings)
         index = i
         onPhotoChanged(photos[i])
     }
@@ -490,7 +490,7 @@ fun EditorScreen(
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             // Top bar
             Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { store.save(photo.id, settings); onBack() }) {
+                IconButton(onClick = { store.save(photo, settings); onBack() }) {
                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = Color.White)
                 }
                 Text(
@@ -1799,7 +1799,7 @@ private fun Filmstrip(photos: List<LibraryPhoto>, index: Int, onSelect: (Int) ->
         itemsIndexed(photos, key = { _, p -> p.id }) { i, p ->
             val sel = i == index
             Thumb(
-                p, edited = false, badges = false,
+                p,
                 modifier = Modifier.size(48.dp)
                     .then(if (sel) Modifier.border(2.dp, Color.White, RoundedCornerShape(4.dp)) else Modifier)
                     .clickable { onSelect(i) },

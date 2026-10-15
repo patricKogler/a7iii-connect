@@ -10,6 +10,11 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.github.takahirom.roborazzi.captureRoboImage
 import dev.kogler.a7iiiconnect.develop.engine.P
 import dev.kogler.a7iiiconnect.develop.engine.Settings
@@ -42,7 +47,7 @@ class EditorScreenshots {
         val photos = (1L..6L).map { LibraryPhoto(it, Uri.fromFile(file), "DSC0941$it.JPG", "image/jpeg", 0L) }
         val store = EditStore(context)
         store.save(
-            1L,
+            photos[0],
             Settings().with(
                 P.EXPOSURE to 0.25f, P.CONTRAST to 12f, P.HIGHLIGHTS to -45f, P.SHADOWS to 35f,
                 P.WHITES to 8f, P.BLACKS to -12f, P.VIBRANCE to 18f, P.CLARITY to 12f, P.DEHAZE to 8f,
@@ -84,6 +89,55 @@ class EditorScreenshots {
         tool("LIGHT")
         compose.onNodeWithTag("compare").performClick()
         awaitRender(); shot("13-split")
+    }
+
+    @Test
+    fun libraryAndCulling() {
+        val context: Context = RuntimeEnvironment.getApplication()
+        val file = File(context.cacheDir, "DSC09412.JPG")
+        writeLandscape(file)
+        val day = 1_760_000_000_000L
+        // Twelve shots over two days; the even ones come as RAW+JPEG pairs (the RAW is a stand-in).
+        val photos = (0 until 12).flatMap { i ->
+            val t = day - (if (i < 7) 0L else 86_400_000L) - i * 60_000L
+            val jpeg = LibraryPhoto(100L + i, Uri.fromFile(file), "DSC095${10 + i}.JPG", "image/jpeg", t)
+            if (i % 2 == 0) listOf(jpeg.copy(id = 200L + i, name = jpeg.stem + ".ARW", mime = "image/x-sony-arw"), jpeg) else listOf(jpeg)
+        }
+        val shots = Library.shots(photos)
+        check(shots.size == 12) { "pairing made ${shots.size} shots" }
+        val flags = mapOf(shots[1].key to Flag.PICK, shots[2].key to Flag.REJECT, shots[4].key to Flag.PICK)
+
+        var screen by mutableStateOf("library")
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            MaterialTheme(colorScheme = darkColorScheme()) {
+                if (screen == "library") {
+                    LibraryScreen(
+                        shots = shots, edited = setOf(shots[0].key), flags = flags,
+                        exported = setOf(Photos.exportName(shots[0].primary).lowercase()),
+                        onOpen = {}, onCull = {}, onDeleteRejected = {}, onBack = {},
+                    )
+                } else {
+                    // JPEG-only shots, so the cards load without a real ARW.
+                    CullScreen(
+                        deck = shots.filter { it.raw == null }, flags = emptyMap(), onFlag = { _, _ -> },
+                        rejectedCount = 1, onDeleteRejected = {}, onBack = {},
+                    )
+                }
+            }
+        }
+        repeat(20) { step() }
+        shot("20-library")
+
+        screen = "cull"
+        repeat(30) { step() }
+        shot("21-cull")
+        compose.onNodeWithTag("cull-card").performTouchInput { down(center); moveBy(Offset(width * 0.32f, 20f)) }
+        repeat(4) { step() }
+        shot("22-cull-pick")
+        compose.onNodeWithTag("cull-card").performTouchInput { moveBy(Offset(-width * 0.64f, 0f)) }
+        repeat(4) { step() }
+        shot("23-cull-reject")
     }
 
     private fun tool(name: String) {
