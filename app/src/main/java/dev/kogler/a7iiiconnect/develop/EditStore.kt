@@ -6,8 +6,24 @@ import dev.kogler.a7iiiconnect.develop.engine.Preset
 import dev.kogler.a7iiiconnect.develop.engine.Settings
 import java.io.File
 
-/** Culling verdict for a shot. Unflagged shots are the ones still to review. */
-enum class Flag { PICK, REJECT }
+/**
+ * Where a shot stands after culling. Shots with no mark are still to review.
+ * [level] -1 is rejected, 1 is a first-round pick, and each later round a shot survives adds one.
+ * [settled] means the shot was shown in round level + 1 and stayed behind, so that round is done
+ * with it.
+ */
+data class Mark(val level: Int, val settled: Boolean = false) {
+    val rejected get() = level < 0
+    val picked get() = level >= 1
+
+    companion object {
+        val REJECTED = Mark(-1)
+    }
+}
+
+/** True when [round] still has to show this shot: unmarked for round 1, an unsettled survivor after. */
+fun Mark?.dueIn(round: Int): Boolean =
+    if (round == 1) this == null else this != null && level == round - 1 && !settled
 
 /**
  * Edits are kept beside the app, never written into the original file (non-destructive, like
@@ -17,7 +33,7 @@ enum class Flag { PICK, REJECT }
 class EditStore(context: Context) {
     private val dir = File(context.filesDir, "develop").apply { mkdirs() }
     private val editDir = File(dir, "edits").apply { mkdirs() }
-    private val flagFile = File(dir, "flags.txt")
+    private val markFile = File(dir, "flags.txt")
     private val prefs = context.getSharedPreferences("develop", Context.MODE_PRIVATE)
 
     private fun editFile(photo: LibraryPhoto) = File(editDir, fileName(photo.key) + ".txt")
@@ -48,36 +64,41 @@ class EditStore(context: Context) {
         }
     }
 
-    private var flagCache: MutableMap<String, Flag>? = null
+    private var markCache: MutableMap<String, Mark>? = null
 
-    /** Pick/reject flags by shot key, in one small tab-separated file. */
-    fun flags(): Map<String, Flag> = flagMap().toMap()
+    /** Culling marks by shot key, in one small tab-separated file. */
+    fun marks(): Map<String, Mark> = markMap().toMap()
 
-    fun setFlag(key: String, flag: Flag?) {
-        val m = flagMap()
-        if (flag == null) m.remove(key) else m[key] = flag
-        writeFlags(m)
+    fun setMark(key: String, mark: Mark?) {
+        val m = markMap()
+        if (mark == null) m.remove(key) else m[key] = mark
+        writeMarks(m)
     }
 
-    private fun writeFlags(m: Map<String, Flag>) =
-        flagFile.writeText(m.entries.joinToString("") { "${it.key}\t${it.value.name}\n" })
+    private fun writeMarks(m: Map<String, Mark>) =
+        markFile.writeText(m.entries.joinToString("") { "${it.key}\t${it.value.level}\t${if (it.value.settled) 1 else 0}\n" })
 
-    private fun flagMap(): MutableMap<String, Flag> = flagCache ?: runCatching {
-        flagFile.readLines().mapNotNull { line ->
+    private fun markMap(): MutableMap<String, Mark> = markCache ?: runCatching {
+        markFile.readLines().mapNotNull { line ->
             val parts = line.split('\t')
-            val flag = Flag.entries.firstOrNull { it.name == parts.getOrNull(1) } ?: return@mapNotNull null
-            parts[0] to flag
+            val mark = when (val v = parts.getOrNull(1)) {
+                // 0.14 wrote PICK / REJECT.
+                "PICK" -> Mark(1)
+                "REJECT" -> Mark.REJECTED
+                else -> Mark(v?.toIntOrNull() ?: return@mapNotNull null, parts.getOrNull(2) == "1")
+            }
+            parts[0] to mark
         }.toMap(mutableMapOf())
-    }.getOrDefault(mutableMapOf()).also { flagCache = it }
+    }.getOrDefault(mutableMapOf()).also { markCache = it }
 
-    /** Forgets edits and flags of shots whose files were deleted. */
+    /** Forgets edits and marks of shots whose files were deleted. */
     fun forget(shots: List<Shot>) {
-        val m = flagMap()
+        val m = markMap()
         for (shot in shots) {
             m.remove(shot.key)
             shot.files.forEach { editFile(it).delete() }
         }
-        writeFlags(m)
+        writeMarks(m)
     }
 
     private fun fileName(key: String) = key.replace(Regex("[^A-Za-z0-9._@-]"), "_")
