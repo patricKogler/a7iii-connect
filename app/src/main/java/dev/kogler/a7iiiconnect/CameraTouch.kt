@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.nfc.NfcAdapter
+import dev.kogler.a7iiiconnect.duo.DuoActivity
 
 /**
  * Touching the phone to the camera's N mark saves its Wi-Fi details and starts copying, from
@@ -34,6 +35,11 @@ object CameraTouch {
         NfcAdapter.getDefaultAdapter(activity)?.enableReaderMode(
             activity,
             { tag ->
+                // Another phone hosting Together: join it.
+                DuoActivity.codeOf(tag)?.let { code ->
+                    activity.runOnUiThread { activity.startActivity(DuoActivity.joinIntent(activity, code)) }
+                    return@enableReaderMode
+                }
                 // Other tags (bank cards, the camera's FeliCa side) carry no Wi-Fi details; skip them.
                 NfcPairing.read(tag)?.let { creds -> activity.runOnUiThread { touched(activity, creds) } }
             },

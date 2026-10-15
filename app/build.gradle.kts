@@ -12,8 +12,8 @@ android {
         applicationId = "dev.kogler.a7iiiconnect"
         minSdk = 31
         targetSdk = 35
-        versionCode = 31
-        versionName = "0.17.0"
+        versionCode = 32
+        versionName = "0.18.0"
     }
 
     // CI decodes the KEYSTORE_B64 secret to a file, so every build has the same signature and
@@ -72,6 +72,10 @@ dependencies {
     implementation("androidx.compose.animation:animation")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+    // Together: phone-to-phone link (Bluetooth to find, Wi-Fi Direct to send).
+    implementation("com.google.android.gms:play-services-nearby:19.3.0")
+    // Nearby brings an old Fragment along; activity-result APIs need 1.3+ (release lint enforces it).
+    implementation("androidx.fragment:fragment:1.8.5")
     // Subject masks: on-device subject segmentation (the model ships with Google Play services).
     implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
     implementation("com.google.android.gms:play-services-base:18.5.0")

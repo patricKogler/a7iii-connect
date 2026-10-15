@@ -105,11 +105,11 @@ import kotlin.math.max
 import kotlin.math.min
 
 /** What a swipe decided: keep (on to the next round), reject/drop, or "skip for now". */
-private enum class Verdict { PICK, REJECT, SKIP }
+internal enum class Verdict { PICK, REJECT, SKIP }
 
-private val PickGreen = Color(0xFF3DDC84)
-private val RejectRed = Color(0xFFFF5A5F)
-private val SkipBlue = Color(0xFF8AB4F8)
+internal val PickGreen = Color(0xFF3DDC84)
+internal val RejectRed = Color(0xFFFF5A5F)
+internal val SkipBlue = Color(0xFF8AB4F8)
 
 private const val CULL_EDGE = 2048
 private const val MAX_ZOOM = 8f
@@ -276,7 +276,7 @@ fun CullScreen(
  * strip to flip between them; zoom stays where it is, so focus can be compared frame to frame.
  */
 @Composable
-private fun StackCard(stack: List<Shot>, chosen: Int, onChoose: (Int) -> Unit, onSplit: () -> Unit) {
+internal fun StackCard(stack: List<Shot>, chosen: Int, onChoose: (Int) -> Unit, onSplit: (() -> Unit)?) {
     val haptics = LocalHapticFeedback.current
     var scale by remember(stack) { mutableFloatStateOf(1f) }
     var pan by remember(stack) { mutableStateOf(Offset.Zero) }
@@ -296,7 +296,7 @@ private fun StackCard(stack: List<Shot>, chosen: Int, onChoose: (Int) -> Unit, o
                 Text("${stack.size} similar shots", color = Color.White, fontWeight = FontWeight.SemiBold)
                 Text("Pick the best one", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
             }
-            TextButton(onClick = onSplit) { Text("Not similar") }
+            if (onSplit != null) TextButton(onClick = onSplit) { Text("Not similar") }
         }
         Box(
             Modifier
@@ -374,7 +374,7 @@ private fun StackCard(stack: List<Shot>, chosen: Int, onChoose: (Int) -> Unit, o
 }
 
 @Composable
-private fun RoundButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, color: Color, size: Int, tag: String, onClick: () -> Unit) {
+internal fun RoundButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, color: Color, size: Int, tag: String, onClick: () -> Unit) {
     FilledIconButton(
         onClick = onClick,
         colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(alpha = 0.08f), contentColor = color),
@@ -421,7 +421,9 @@ private fun Summary(
  * tilts, shows a stamp, and flies off once let go past the threshold (or when [fling] is set).
  */
 @Composable
-private fun SwipeCard(shot: Shot, depth: Int, fling: Verdict?, rejectLabel: String, onDecided: (Verdict) -> Unit) {
+internal fun SwipeCard(
+    shot: Shot, depth: Int, fling: Verdict?, rejectLabel: String, onDecided: (Verdict) -> Unit, skipLabel: String = "SKIP",
+) {
     val haptics = LocalHapticFeedback.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
@@ -562,7 +564,7 @@ private fun SwipeCard(shot: Shot, depth: Int, fling: Verdict?, rejectLabel: Stri
             CardInfo(shot, Modifier.align(Alignment.BottomStart).alpha(if (scale > 1.01f) 0f else 1f))
             if (progressX > 0f) Stamp("PICK", PickGreen, -14f, Modifier.align(Alignment.TopStart).alpha(progressX))
             if (progressX < 0f) Stamp(rejectLabel, RejectRed, 14f, Modifier.align(Alignment.TopEnd).alpha(-progressX))
-            if (progressUp > 0f) Stamp("SKIP", SkipBlue, 0f, Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp).alpha(progressUp))
+            if (progressUp > 0f) Stamp(skipLabel, SkipBlue, 0f, Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp).alpha(progressUp))
         }
     }
 }

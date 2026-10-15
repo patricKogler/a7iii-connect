@@ -26,6 +26,7 @@ import dev.kogler.a7iiiconnect.ftp.FtpState
 import dev.kogler.a7iiiconnect.ftp.FtpStatus
 import dev.kogler.a7iiiconnect.gps.GpsService
 import dev.kogler.a7iiiconnect.ui.AppTheme
+import dev.kogler.a7iiiconnect.duo.DuoActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -118,6 +119,7 @@ class DevelopActivity : ComponentActivity() {
                         exported = exported,
                         onOpen = { editing = it.primary.id },
                         onCull = { round, deck -> culling = round to deck.map { it.key } },
+                        onTogether = { round, deck -> startActivity(DuoActivity.intent(this, round, deck.map { it.key })) },
                         onDeleteRejected = { deleteRejected() },
                         transfer = transfer,
                         onCamera = { startActivity(MainActivity.intent(this)) },
