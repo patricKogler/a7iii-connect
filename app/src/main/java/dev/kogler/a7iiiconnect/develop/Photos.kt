@@ -1,5 +1,6 @@
 package dev.kogler.a7iiiconnect.develop
 
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
@@ -71,7 +72,8 @@ object Photos {
         thumbs.get(photo.id)?.let { return it }
         val bmp = runCatching {
             if (photo.isRaw) embeddedPreview(context, photo.uri, 400)
-            else context.contentResolver.loadThumbnail(photo.uri, Size(400, 400), null)
+            else runCatching { context.contentResolver.loadThumbnail(photo.uri, Size(400, 400), null) }
+                .getOrElse { decodeJpeg(context, photo.uri, 400) }
         }.getOrNull() ?: return null
         thumbs.put(photo.id, bmp)
         return bmp
@@ -94,6 +96,59 @@ object Photos {
         }
         return null
     }
+
+    /**
+     * The picture for the culling deck: the JPEG twin when there is one (full detail for zooming),
+     * otherwise the camera's preview inside the RAW. Upright, longer edge about [maxEdge].
+     */
+    fun cullImage(context: Context, shot: Shot, maxEdge: Int): Bitmap? = runCatching {
+        shot.jpeg?.let { decodeJpeg(context, it.uri, maxEdge) } ?: shot.raw?.let { embeddedPreview(context, it.uri, maxEdge) }
+    }.getOrNull()
+
+    /** Upright JPEG, subsampled so its longer edge is at least [maxEdge] (or the full size). */
+    private fun decodeJpeg(context: Context, uri: Uri, maxEdge: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it, null, bounds) }
+        val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, maxEdge) }
+        val bmp = context.contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it, null, opts) } ?: return null
+        return rotate(bmp, exifOrientation(context, uri))
+    }
+
+    /**
+     * A sharp piece of a JPEG for checking focus: [area] is the visible part of the upright photo
+     * (fractions 0..1), decoded at about [screenWidth] pixels across. Null for unusual orientations.
+     */
+    fun jpegRegion(context: Context, uri: Uri, area: android.graphics.RectF, screenWidth: Int): Bitmap? = runCatching {
+        val orientation = exifOrientation(context, uri)
+        context.contentResolver.openInputStream(uri)!!.use { input ->
+            val decoder = android.graphics.BitmapRegionDecoder.newInstance(input) ?: return@runCatching null
+            try {
+                val fw = decoder.width.toFloat()
+                val fh = decoder.height.toFloat()
+                // The visible upright area, in the file's own (unrotated) pixel grid.
+                val (x0, x1, y0, y1) = when (orientation) {
+                    ExifInterface.ORIENTATION_NORMAL, ExifInterface.ORIENTATION_UNDEFINED ->
+                        listOf(area.left, area.right, area.top, area.bottom)
+                    ExifInterface.ORIENTATION_ROTATE_180 -> listOf(1 - area.right, 1 - area.left, 1 - area.bottom, 1 - area.top)
+                    ExifInterface.ORIENTATION_ROTATE_90 -> listOf(area.top, area.bottom, 1 - area.right, 1 - area.left)
+                    ExifInterface.ORIENTATION_ROTATE_270 -> listOf(1 - area.bottom, 1 - area.top, area.left, area.right)
+                    else -> return@runCatching null
+                }
+                val rect = android.graphics.Rect(
+                    (x0 * fw).toInt().coerceIn(0, decoder.width - 1), (y0 * fh).toInt().coerceIn(0, decoder.height - 1),
+                    (x1 * fw).toInt().coerceIn(1, decoder.width), (y1 * fh).toInt().coerceIn(1, decoder.height),
+                )
+                if (rect.width() <= 0 || rect.height() <= 0) return@runCatching null
+                val across = if (orientation == ExifInterface.ORIENTATION_ROTATE_90 || orientation == ExifInterface.ORIENTATION_ROTATE_270) rect.height() else rect.width()
+                var sample = 1
+                while (across / (sample * 2) >= screenWidth) sample *= 2
+                val bmp = decoder.decodeRegion(rect, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return@runCatching null
+                rotate(bmp, orientation)
+            } finally {
+                decoder.recycle()
+            }
+        }
+    }.getOrNull()
 
     /** Decodes a photo for editing. Raw: half-size demosaic; JPEG: subsampled decode. */
     fun open(context: Context, photo: LibraryPhoto): OpenedPhoto {
@@ -204,8 +259,22 @@ object Photos {
             bitmap = Bitmap.createScaledBitmap(bitmap, (bitmap.width * k).toInt().coerceAtLeast(1), (bitmap.height * k).toInt().coerceAtLeast(1), true)
         }
 
-        val name = photo.name.substringBeforeLast('.') + "-edit.jpg"
+        val name = exportName(photo)
         val resolver = context.contentResolver
+        // Re-exporting replaces the earlier export instead of adding "(1)", "(2)" copies.
+        previousExport(context, photo)?.let { old ->
+            val replaced = runCatching {
+                resolver.openOutputStream(old, "wt")!!.use { bitmap.compress(Bitmap.CompressFormat.JPEG, options.quality, it) }
+            }.isSuccess
+            if (replaced) {
+                bitmap.recycle()
+                progress(0.97f)
+                runCatching { copyExif(context, photo.uri, old) }
+                progress(1f)
+                return old
+            }
+            // Not ours to overwrite (made before a reinstall): save a new one beside it.
+        }
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, name)
             put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
@@ -227,6 +296,25 @@ object Photos {
         progress(1f)
         return uri
     }
+
+    fun exportName(photo: LibraryPhoto) = photo.stem + "-edit.jpg"
+
+    /** This photo's earlier export: same name, taken within a day (not a DSC01234 from another cycle). */
+    private fun previousExport(context: Context, photo: LibraryPhoto): Uri? = runCatching {
+        context.contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATE_TAKEN),
+            "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Images.Media.DISPLAY_NAME} = ?",
+            arrayOf("${Environment.DIRECTORY_PICTURES}/$EXPORT_ALBUM%", exportName(photo)), null,
+        )?.use { c ->
+            while (c.moveToNext()) {
+                if (c.isNull(1) || kotlin.math.abs(c.getLong(1) - photo.takenMillis) < 24 * 3600_000L) {
+                    return@runCatching ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0))
+                }
+            }
+            null
+        }
+    }.getOrNull()
 
     private fun copyExif(context: Context, from: Uri, to: Uri) {
         val src = context.contentResolver.openInputStream(from)!!.use { ExifInterface(it) }

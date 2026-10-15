@@ -6,24 +6,81 @@ import dev.kogler.a7iiiconnect.develop.engine.Preset
 import dev.kogler.a7iiiconnect.develop.engine.Settings
 import java.io.File
 
+/** Culling verdict for a shot. Unflagged shots are the ones still to review. */
+enum class Flag { PICK, REJECT }
+
 /**
  * Edits are kept beside the app, never written into the original file (non-destructive, like
- * Lightroom). One small text file per photo, keyed by its MediaStore id.
+ * Lightroom). One small text file per photo, named after its [LibraryPhoto.key], so edits follow
+ * the file rather than its MediaStore row (and come back with Android's app-data backup).
  */
 class EditStore(context: Context) {
     private val dir = File(context.filesDir, "develop").apply { mkdirs() }
+    private val editDir = File(dir, "edits").apply { mkdirs() }
+    private val flagFile = File(dir, "flags.txt")
     private val prefs = context.getSharedPreferences("develop", Context.MODE_PRIVATE)
 
-    fun load(id: Long): Settings =
-        runCatching { Settings.decode(File(dir, "$id.txt").readText()) }.getOrDefault(Settings())
+    private fun editFile(photo: LibraryPhoto) = File(editDir, fileName(photo.key) + ".txt")
 
-    fun save(id: Long, settings: Settings) {
-        val f = File(dir, "$id.txt")
+    fun load(photo: LibraryPhoto): Settings =
+        runCatching { Settings.decode(editFile(photo).readText()) }.getOrDefault(Settings())
+
+    fun save(photo: LibraryPhoto, settings: Settings) {
+        val f = editFile(photo)
         if (settings.isDefault) f.delete() else f.writeText(settings.encode())
     }
 
-    fun editedIds(): Set<Long> =
-        dir.listFiles()?.mapNotNull { it.name.removeSuffix(".txt").toLongOrNull() }?.toSet() ?: emptySet()
+    /** Keys of the photos with edits. */
+    fun editedKeys(photos: List<LibraryPhoto>): Set<String> {
+        val names = editDir.list()?.toSet() ?: emptySet()
+        return photos.filter { fileName(it.key) + ".txt" in names }.map { it.key }.toSet()
+    }
+
+    /** Edits from before 0.14 were named by MediaStore id; renames them to the photo's key. */
+    fun migrate(photos: List<LibraryPhoto>) {
+        val old = dir.listFiles { f -> f.isFile && f.name.removeSuffix(".txt").toLongOrNull() != null } ?: return
+        if (old.isEmpty()) return
+        val byId = photos.associateBy { it.id }
+        for (f in old) {
+            val photo = byId[f.name.removeSuffix(".txt").toLong()] ?: continue
+            val target = editFile(photo)
+            if (!target.exists()) f.renameTo(target) else f.delete()
+        }
+    }
+
+    private var flagCache: MutableMap<String, Flag>? = null
+
+    /** Pick/reject flags by shot key, in one small tab-separated file. */
+    fun flags(): Map<String, Flag> = flagMap().toMap()
+
+    fun setFlag(key: String, flag: Flag?) {
+        val m = flagMap()
+        if (flag == null) m.remove(key) else m[key] = flag
+        writeFlags(m)
+    }
+
+    private fun writeFlags(m: Map<String, Flag>) =
+        flagFile.writeText(m.entries.joinToString("") { "${it.key}\t${it.value.name}\n" })
+
+    private fun flagMap(): MutableMap<String, Flag> = flagCache ?: runCatching {
+        flagFile.readLines().mapNotNull { line ->
+            val parts = line.split('\t')
+            val flag = Flag.entries.firstOrNull { it.name == parts.getOrNull(1) } ?: return@mapNotNull null
+            parts[0] to flag
+        }.toMap(mutableMapOf())
+    }.getOrDefault(mutableMapOf()).also { flagCache = it }
+
+    /** Forgets edits and flags of shots whose files were deleted. */
+    fun forget(shots: List<Shot>) {
+        val m = flagMap()
+        for (shot in shots) {
+            m.remove(shot.key)
+            shot.files.forEach { editFile(it).delete() }
+        }
+        writeFlags(m)
+    }
+
+    private fun fileName(key: String) = key.replace(Regex("[^A-Za-z0-9._@-]"), "_")
 
     /** "Copy settings": survives leaving the editor, like Lightroom's clipboard. */
     var clipboard: Settings?
