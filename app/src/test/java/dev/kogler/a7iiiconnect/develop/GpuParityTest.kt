@@ -69,6 +69,32 @@ class GpuParityTest {
 
         val outDir = File("build/screenshots").apply { mkdirs() }
         val report = StringBuilder()
+        // Controls: does the offscreen hardware path draw at all, and do shaders and textures reach it?
+        fun probe(name: String, draw: (Canvas) -> Unit) {
+            val r = runCatching {
+                val b = hardwareDraw(4, 4, draw)
+                "%08x".format(b.getPixel(1, 1))
+            }
+            report.append("probe $name\t${r.getOrElse { "${it.javaClass.simpleName}: ${it.message}" }}\n")
+        }
+        probe("rect") { it.drawColor(0xffff0000.toInt()) }
+        probe("shader-const") { c ->
+            val sh = android.graphics.RuntimeShader("half4 main(float2 p) { return half4(0, 1, 0, 1); }")
+            c.drawRect(0f, 0f, 4f, 4f, android.graphics.Paint().apply { shader = sh })
+        }
+        probe("shader-texture") { c ->
+            val tex = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888).apply { eraseColor(0xff0000ff.toInt()) }
+            val sh = android.graphics.RuntimeShader("uniform shader s; half4 main(float2 p) { return sample(s, p); }")
+            sh.setInputShader("s", android.graphics.BitmapShader(tex, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP))
+            c.drawRect(0f, 0f, 4f, 4f, android.graphics.Paint().apply { shader = sh })
+        }
+        probe("shader-f16") { c ->
+            val tex = Bitmap.createBitmap(4, 4, Bitmap.Config.RGBA_F16, true, android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.EXTENDED_SRGB))
+            tex.eraseColor(0xffffff00.toInt())
+            val sh = android.graphics.RuntimeShader("uniform shader s; half4 main(float2 p) { return sample(s, p); }")
+            sh.setInputShader("s", android.graphics.BitmapShader(tex, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP))
+            c.drawRect(0f, 0f, 4f, 4f, android.graphics.Paint().apply { shader = sh })
+        }
         report.append("case\tmeanAbs\tp99\tmax\n")
         for ((name, pair) in cases) {
             val (src, s) = pair
@@ -89,6 +115,7 @@ class GpuParityTest {
                 val out = hardwareDraw(sw, sh) { gpu.draw(it, 0f, 0f, sw.toFloat(), sh.toFloat()) }
                 val g = IntArray(sw * sh)
                 out.getPixels(g, 0, sw, 0, 0, sw, sh)
+                report.append("# $name gpu center ${"%08x".format(g[(sh / 2) * sw + sw / 2])}, cpu ${"%08x".format(cpu[(sh / 2) * sw + sw / 2])}\n")
 
                 val diffs = IntArray(sw * sh * 3)
                 var sum = 0L
@@ -143,7 +170,8 @@ class GpuParityTest {
             for (y in 0 until h) for (x in 0 until w) {
                 val o = y * plane.rowStride + x * plane.pixelStride
                 val r = buf.get(o).toInt() and 0xff; val g = buf.get(o + 1).toInt() and 0xff; val b = buf.get(o + 2).toInt() and 0xff
-                px[y * w + x] = (0xff shl 24) or (r shl 16) or (g shl 8) or b
+                val a = buf.get(o + 3).toInt() and 0xff
+                px[y * w + x] = (a shl 24) or (r shl 16) or (g shl 8) or b
             }
             bmp.setPixels(px, 0, w, 0, 0, w, h)
             image.close()
