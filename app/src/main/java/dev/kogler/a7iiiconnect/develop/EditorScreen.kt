@@ -110,6 +110,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -324,7 +325,8 @@ fun EditorScreen(
     var swipeKey by remember { mutableStateOf(P.EXPOSURE.key) }
     var swipeAxis by remember { mutableIntStateOf(0) }
     val swipeState = remember { SwipeState() }
-    var fullscreen by remember { mutableStateOf(false) }
+    // Saved, so full screen survives anything that rebuilds the screen.
+    var fullscreen by rememberSaveable { mutableStateOf(false) }
     // Full screen's controls: hidden until the photo is tapped, then hidden again after a while.
     var chrome by remember { mutableStateOf(false) }
     var chromePing by remember { mutableIntStateOf(0) }
@@ -468,8 +470,10 @@ fun EditorScreen(
     }
 
     // Full screen: just the photo (with swipe mode, edits still work), system bars hidden too.
+    // Keyed on the orientation too, so the bars stay hidden after the phone turns.
     val view = LocalView.current
-    DisposableEffect(fullscreen) {
+    val orientation = LocalConfiguration.current.orientation
+    DisposableEffect(fullscreen, orientation) {
         val window = view.context.findActivity()?.window
         val bars = window?.let { WindowCompat.getInsetsController(it, view) }
         if (fullscreen) {
@@ -630,6 +634,7 @@ fun EditorScreen(
                         overlay = maskOverlay && !dragging,
                         onChange = { settings = it; dragging = true },
                         onDone = { dragging = false; commit(settings) },
+                        onTap = { if (fullscreen) chrome = !chrome },
                     )
                 } else {
                     ZoomableImage(
@@ -697,13 +702,13 @@ fun EditorScreen(
                     )
                 }
                 if (!cropMode && (!fullscreen || chrome)) {
-                    // Full screen: the tool icons pick which sliders swipe mode cycles through.
+                    // Full screen: the tool icons pick which sliders swipe mode cycles through (Masks shows the mask handles).
                     if (fullscreen) {
                         Row(
                             Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)
                                 .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(24.dp)).padding(horizontal = 4.dp),
                         ) {
-                            for (t in Tool.entries.filter { it != Tool.CROP && it != Tool.PRESETS && it != Tool.MASKS }) {
+                            for (t in Tool.entries.filter { it != Tool.CROP && it != Tool.PRESETS }) {
                                 val sel = t == tool || (tool == null && t == Tool.LIGHT)
                                 val c = if (sel) MaterialTheme.colorScheme.primary else Color.White
                                 Box(

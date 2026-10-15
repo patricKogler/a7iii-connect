@@ -3,6 +3,7 @@ package dev.kogler.a7iiiconnect.develop
 import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -121,12 +122,14 @@ internal fun MaskView(
     overlay: Boolean,
     onChange: (Settings) -> Unit,
     onDone: () -> Unit,
+    onTap: () -> Unit = {},
 ) {
     var box by remember { mutableStateOf(Size.Zero) }
     var handleDrag by remember { mutableStateOf(false) }
     val s by rememberUpdatedState(settings)
     val change by rememberUpdatedState(onChange)
     val done by rememberUpdatedState(onDone)
+    val tap by rememberUpdatedState(onTap)
     val touch = with(LocalDensity.current) { 32.dp.toPx() }
     val mask = settings.masks.getOrNull(selected)
     val geom = opened.geometry(settings)
@@ -141,6 +144,8 @@ internal fun MaskView(
     Box(
         Modifier.fillMaxSize().testTag("mask-view")
             .onSizeChanged { box = Size(it.width.toFloat(), it.height.toFloat()) }
+            // A tap (not a drag) shows or hides full screen's controls, as on the plain photo.
+            .pointerInput(Unit) { detectTapGestures(onTap = { tap() }) }
             .pointerInput(selected, mask?.kind, layer.width, layer.height) {
                 var handle = MaskHandle.MOVE
                 var start: Mask? = null
