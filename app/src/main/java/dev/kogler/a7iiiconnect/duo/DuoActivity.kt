@@ -72,10 +72,10 @@ class DuoActivity : ComponentActivity() {
             val stacks = withContext(Dispatchers.IO) {
                 val shots = Library.shots(Library.load(this@DuoActivity)).filter { it.key in keys }
                 // Like the culling deck: newest day first, each day in the order it was shot.
-                Similar.stacks(this@DuoActivity, shots) { Duo.setPreparing(it) }
+                Similar.stacks(this@DuoActivity, shots) { Duo.reportPreparing(it) }
                     .sortedByDescending { dayOf(it.first().takenMillis) }
             }
-            Duo.setDeck(stacks)
+            Duo.dealDeck(stacks)
         }
     }
 

@@ -120,7 +120,7 @@ object Duo : DuoLink.Listener {
         if (myName.isEmpty()) myName = savedName()
     }
 
-    /** Host: share the cards of culling round [round]. The deck follows with [setDeck]. */
+    /** Host: share the cards of culling round [round]. The deck follows with [dealDeck]. */
     fun host(context: Context, round: Int) {
         init(context)
         if (active) return
@@ -132,12 +132,12 @@ object Duo : DuoLink.Listener {
         tagUri = "shootback://duo?code=$code"
     }
 
-    fun setPreparing(fraction: Float) {
+    fun reportPreparing(fraction: Float) {
         preparing = fraction
     }
 
     /** Host: the cards, similar shots already stacked. */
-    fun setDeck(stacks: List<List<Shot>>) {
+    fun dealDeck(stacks: List<List<Shot>>) {
         if (!hosting) return
         deck = stacks
         session = DuoSession(stacks.map { it.size })
