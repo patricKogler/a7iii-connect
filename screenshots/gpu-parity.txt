@@ -1,10 +1,23 @@
+probe rect	ff0000ff
+probe shader-const	ff00ff00
+probe shader-texture	ffff0000
+probe shader-f16	ff00ffff
 case	meanAbs	p99	max
-raw-default	62.10	213	238
-raw-light	158.94	255	255
-raw-local	52.68	199	237
+# raw-default gpu center ffffffff, cpu ff33407b
+raw-default	136.73	255	255
+# raw-light gpu center ff000000, cpu ff475aab
+raw-light	80.12	216	255
+# raw-local gpu center ff000000, cpu ff2c3a7a
+raw-local	60.17	217	255
+# raw-color gpu center ff110200, cpu ff424c7a
 raw-color	71.31	198	219
-raw-mono	44.84	183	211
-raw-curves	62.25	237	248
+# raw-mono gpu center ffffffff, cpu ff2d2d2d
+raw-mono	200.62	255	255
+# raw-curves gpu center ff1f1f1f, cpu ff2a2d78
+raw-curves	44.97	206	217
+# raw-effects gpu center ff000000, cpu ff33407b
 raw-effects	57.71	210	238
+# raw-grain gpu center ff000000, cpu ff26336f
 raw-grain	62.35	213	251
+# jpeg-mixed gpu center ff000000, cpu ff565a86
 jpeg-mixed	98.03	195	232
