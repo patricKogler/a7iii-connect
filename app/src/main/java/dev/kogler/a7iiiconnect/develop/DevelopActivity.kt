@@ -19,6 +19,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import dev.kogler.a7iiiconnect.duo.DuoActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -93,12 +94,19 @@ class DevelopActivity : ComponentActivity() {
                         exported = exported,
                         onOpen = { editing = it.primary.id },
                         onCull = { round, deck -> culling = round to deck.map { it.key } },
+                        onTogether = { round, deck -> startActivity(DuoActivity.intent(this, round, deck.map { it.key })) },
                         onDeleteRejected = { deleteRejected() },
                         onBack = { finish() },
                     )
                 }
             }
         }
+    }
+
+    override fun onRestart() {
+        super.onRestart()
+        // Back from Together, which marks the shots it went through.
+        if (editing == null) lifecycleScope.launch { reload() }
     }
 
     private fun closeEditor() {

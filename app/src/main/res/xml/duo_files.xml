@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- The app's own APK, shared to another phone. -->
+    <cache-path name="share" path="share/" />
+    <!-- An update the other phone sent over. -->
+    <files-path name="duo" path="duo/" />
+</paths>

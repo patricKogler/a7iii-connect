@@ -29,9 +29,10 @@ fun Mark?.dueIn(round: Int): Boolean =
  * Edits are kept beside the app, never written into the original file (non-destructive, like
  * Lightroom). One small text file per photo, named after its [LibraryPhoto.key], so edits follow
  * the file rather than its MediaStore row (and come back with Android's app-data backup).
+ * Another [folder] keeps a separate set, as the edit battle does.
  */
-class EditStore(context: Context) {
-    private val dir = File(context.filesDir, "develop").apply { mkdirs() }
+class EditStore(context: Context, folder: String = "develop") {
+    private val dir = File(context.filesDir, folder).apply { mkdirs() }
     private val editDir = File(dir, "edits").apply { mkdirs() }
     private val markFile = File(dir, "flags.txt")
     private val prefs = context.getSharedPreferences("develop", Context.MODE_PRIVATE)

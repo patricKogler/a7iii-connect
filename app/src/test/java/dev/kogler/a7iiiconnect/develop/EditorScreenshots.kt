@@ -137,7 +137,7 @@ class EditorScreenshots {
                     LibraryScreen(
                         shots = shots, edited = setOf(shots[0].key), marks = marks,
                         exported = setOf(Photos.exportName(shots[0].primary).lowercase()),
-                        onOpen = {}, onCull = { _, _ -> }, onDeleteRejected = {}, onBack = {},
+                        onOpen = {}, onCull = { _, _ -> }, onTogether = { _, _ -> }, onDeleteRejected = {}, onBack = {},
                     )
                 } else {
                     // JPEG-only shots, so the cards load without a real ARW.
