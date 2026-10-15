@@ -5,7 +5,10 @@ import android.graphics.Bitmap
 import android.net.Uri
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -97,6 +100,26 @@ class EditorScreenshots {
         shot("18-masks-radial")
         compose.onNodeWithTag("add-mask-linear").performClick(); awaitRender()
         shot("19-masks-new")
+
+        // Full screen keeps the mask handles, and a tap still brings the controls back.
+        compose.onNodeWithTag("fullscreen").performClick(); settle()
+        compose.onNodeWithContentDescription("Exit full screen").assertDoesNotExist()
+        compose.onRoot().performTouchInput { click(center) }
+        settle()
+        compose.onNodeWithContentDescription("Exit full screen").assertExists()
+        compose.onNodeWithContentDescription("Masks").assertExists()
+        shot("20-masks-fullscreen")
+    }
+
+    /** Full screen stays on when the screen is rebuilt, as when the phone turns. */
+    @Test
+    fun fullscreenSurvivesRestore() {
+        val restore = StateRestorationTester(compose)
+        openEditor(setContent = { restore.setContent(it) })
+        compose.onNodeWithTag("fullscreen").performClick(); settle()
+        restore.emulateSavedInstanceStateRestore()
+        settle()
+        compose.onNodeWithTag("tool-LIGHT").assertDoesNotExist()
     }
 
     /** The phone turned sideways: the panel sits beside the photo. */
@@ -112,7 +135,7 @@ class EditorScreenshots {
         P.WHITES to 8f, P.BLACKS to -12f, P.VIBRANCE to 18f, P.CLARITY to 12f, P.DEHAZE to 8f,
         P.VIGNETTE to -18f, P.GRADE_HUE[0] to 210f, P.GRADE_SAT[0] to 15f,
         P.GRADE_HUE[2] to 40f, P.GRADE_SAT[2] to 18f,
-    )) {
+    ), setContent: (@Composable () -> Unit) -> Unit = { compose.setContent(it) }) {
         val context: Context = RuntimeEnvironment.getApplication()
         val file = File(context.cacheDir, "DSC09412.JPG")
         writeLandscape(file)
@@ -122,7 +145,7 @@ class EditorScreenshots {
 
         gpuPreviewEnabled = false
         compose.mainClock.autoAdvance = false
-        compose.setContent {
+        setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 EditorScreen(photos = photos, startIndex = 0, store = store, onBack = {}, onPhotoChanged = {})
             }
