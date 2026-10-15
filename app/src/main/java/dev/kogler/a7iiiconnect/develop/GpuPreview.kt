@@ -322,7 +322,13 @@ float3 colorize(float3 c) {
 float lumAt(float2 p) { return logv(luma(lin(p))); }
 float displayLum(float2 p) { return tone(luma(lin(p))); }
 
-float hash(float2 q) { return fract(sin(dot(q, float2(127.1, 311.7))) * 43758.5453) * 2.0 - 1.0; }
+// Sine-free hash on small (wrapped) cell coordinates: sin() of large arguments loses precision
+// on phone GPUs, which showed up as diagonal stripes in the grain.
+float hash(float2 q) {
+    float3 p3 = fract(float3(mod(q.xyx, 1024.0)) * float3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z) * 2.0 - 1.0;
+}
 
 float valueNoise(float2 q) {
     float2 i = floor(q);
