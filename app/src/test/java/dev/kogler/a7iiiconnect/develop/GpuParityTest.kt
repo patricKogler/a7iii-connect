@@ -13,7 +13,10 @@ import dev.kogler.a7iiiconnect.develop.engine.DevelopSource
 import dev.kogler.a7iiiconnect.develop.engine.Geometry
 import dev.kogler.a7iiiconnect.develop.engine.ImageSampler
 import dev.kogler.a7iiiconnect.develop.engine.LinearImage
+import dev.kogler.a7iiiconnect.develop.engine.LocalP
 import dev.kogler.a7iiiconnect.develop.engine.Look
+import dev.kogler.a7iiiconnect.develop.engine.Mask
+import dev.kogler.a7iiiconnect.develop.engine.MaskImage
 import dev.kogler.a7iiiconnect.develop.engine.P
 import dev.kogler.a7iiiconnect.develop.engine.Profile
 import dev.kogler.a7iiiconnect.develop.engine.Settings
@@ -47,6 +50,11 @@ class GpuParityTest {
         for (i in rawImg.r.indices) { rawImg.r[i] *= 0.45f; rawImg.g[i] *= 0.5f; rawImg.b[i] *= 0.4f }
         val raw = DevelopSource(rawImg, CameraColor.forCamera("ILCE-7M3"), floatArrayOf(2.1f, 1f, 1.55f), true)
         val jpeg = DevelopSource(jpegImg, CameraColor.SRGB, floatArrayOf(1f, 1f, 1f), false)
+        // A stand-in subject: the trees on the left shore.
+        raw.maps.subject = MaskImage(90, 60, FloatArray(90 * 60) { i ->
+            val x = i % 90; val y = i / 90
+            if (x in 4..14 && y in 32..52) 1f else 0f
+        })
 
         val cases = listOf(
             "raw-default" to (raw to Settings()),
@@ -65,6 +73,17 @@ class GpuParityTest {
             "raw-effects" to (raw to Settings().with(P.VIGNETTE to -50f, P.VIGNETTE_ROUNDNESS to 30f, P.SHARPEN to 80f, P.SHARPEN_MASKING to 30f)),
             "raw-grain" to (raw to Settings().with(P.GRAIN to 50f)),
             "jpeg-mixed" to (jpeg to Settings().with(P.EXPOSURE to -0.3f, P.SHADOWS to 40f, P.VIBRANCE to 25f, P.VIGNETTE to 30f)),
+            "mask-linear" to (raw to Settings().copy(masks = listOf(
+                Mask.linear().with(LocalP.EXPOSURE, -1f).with(LocalP.TEMP, -30f).with(LocalP.DEHAZE, 40f).with(LocalP.CONTRAST, 25f),
+            ))),
+            "mask-radial" to (raw to Settings().with(P.CLARITY to 10f).copy(masks = listOf(
+                Mask.radial(1.5f).copy(x0 = 0.68f, y0 = 0.5f, angle = 25f).with(LocalP.EXPOSURE, 0.6f).with(LocalP.SATURATION, 40f).with(LocalP.TINT, 20f),
+                Mask.radial(1.5f).copy(invert = true, feather = 80f).with(LocalP.EXPOSURE, -0.8f).with(LocalP.CLARITY, 30f),
+            ))),
+            "mask-subject" to (raw to Settings().copy(masks = listOf(
+                Mask.subject().with(LocalP.SHADOWS, 70f).with(LocalP.EXPOSURE, 1f),
+                Mask.linear().copy(excludeSubject = true).with(LocalP.HIGHLIGHTS, -60f),
+            ))),
         )
 
         val outDir = File("build/screenshots").apply { mkdirs() }
@@ -84,7 +103,11 @@ class GpuParityTest {
 
                 val scene = LinearImage(sw, sh)
                 sampler.fill(0, sh, scene)
-                val frame = GpuPreview.prepare(GpuPreview.sceneBitmap(scene), guide, guide?.let { GpuPreview.guideBitmap(it) }, look.shaderParams(sampler.scale))
+                val params = look.shaderParams(sampler.scale)
+                val frame = GpuPreview.prepare(
+                    GpuPreview.sceneBitmap(scene), guide, guide?.let { GpuPreview.guideBitmap(it) }, params,
+                    GpuPreview.coordsBitmap(geom, sampler.scale, sw, sh), params.subject?.let { GpuPreview.subjectBitmap(it) },
+                )
                 fun gpuRender(source: String): Bitmap {
                     val gpu = GpuPreview(source)
                     gpu.set(frame)

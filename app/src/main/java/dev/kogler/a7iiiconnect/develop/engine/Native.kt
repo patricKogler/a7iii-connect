@@ -27,6 +27,7 @@ object Native {
         params: FloatArray, tone: FloatArray, curves: FloatArray?,
         guideSize: IntArray?, base: FloatArray?, medium: FloatArray?, dark: FloatArray?, air: FloatArray?,
         src: ShortArray, srcInfo: DoubleArray, grid: FloatArray, gridInfo: FloatArray, vig: FloatArray?,
-        frame: DoubleArray, y0: Int, y1: Int, out: IntArray,
+        frame: DoubleArray, masks: FloatArray?, subjectSize: IntArray?, subject: FloatArray?,
+        y0: Int, y1: Int, out: IntArray,
     ): Boolean
 }

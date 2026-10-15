@@ -139,6 +139,8 @@ class FullSampler(
     fun renderNative(look: Look, guide: Guide?, out: IntArray, y0: Int, y1: Int): Boolean {
         if (!Native.available) return false
         val (map, vig) = grid
+        val masks = look.nativeMasks()
+        val subject = if (masks != null) look.subjectMap else null
         val nx = (width - 1) / GRID_STEP + 2
         val ny = (height - 1) / GRID_STEP + 2
         return Native.render(
@@ -150,11 +152,12 @@ class FullSampler(
             map, floatArrayOf(originX.toFloat(), originY.toFloat(), nx.toFloat(), ny.toFloat(), GRID_STEP.toFloat()), vig,
             doubleArrayOf(width.toDouble(), height.toDouble(), frameWidth.toDouble(), frameHeight.toDouble(),
                 originX.toDouble(), originY.toDouble(), scale),
+            masks, subject?.let { intArrayOf(it.width, it.height) }, subject?.data,
             y0, y1, out,
         )
     }
 
-    override fun fill(y0: Int, rows: Int, out: LinearImage) {
+    override fun fill(y0: Int, rows: Int, out: LinearImage, uv: FloatArray?) {
         val vig = geom.hasVignetteCorrection
         parallelRows(rows) { i ->
             val y = (originY + y0 + i).coerceIn(0, frameHeight - 1)
@@ -163,6 +166,7 @@ class FullSampler(
             val oy = (y + 0.5) / scale
             for (x in 0 until width) {
                 geom.map((originX + x + 0.5) / scale, oy, m)
+                if (uv != null) { uv[(o + x) * 2] = m[2].toFloat(); uv[(o + x) * 2 + 1] = m[3].toFloat() }
                 out.r[o + x] = sample(0, m[0], m[1])
                 out.g[o + x] = sample(1, m[2], m[3])
                 out.b[o + x] = sample(2, m[4], m[5])

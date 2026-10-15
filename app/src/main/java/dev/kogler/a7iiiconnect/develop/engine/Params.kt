@@ -178,6 +178,8 @@ data class Settings(
     val profile: Profile = Profile.COLOR,
     /** Point curves: master, red, green, blue. */
     val curves: List<Curve> = List(4) { Curve() },
+    /** Local adjustments, applied in this order on top of the global sliders. */
+    val masks: List<Mask> = emptyList(),
 ) {
     operator fun get(p: Param): Float = values[p.key] ?: p.default
     fun on(p: Param) = get(p) >= 0.5f
@@ -199,6 +201,8 @@ data class Settings(
 
     fun withCurve(channel: Int, curve: Curve) = copy(curves = curves.toMutableList().also { it[channel] = curve })
 
+    fun withMask(index: Int, mask: Mask) = copy(masks = masks.toMutableList().also { it[index] = mask })
+
     fun reset(group: Group): Settings = copy(
         values = values.filterKeys { P.byKey[it]?.group != group },
         profile = if (group == Group.LIGHT) Profile.COLOR else profile,
@@ -209,10 +213,11 @@ data class Settings(
     fun pasteFrom(from: Settings, groups: Set<Group>): Settings {
         val kept = values.filterKeys { P.byKey[it]?.group !in groups }
         val taken = from.values.filterKeys { P.byKey[it]?.group in groups }
-        return Settings(
-            kept + taken,
-            if (Group.LIGHT in groups) from.profile else profile,
-            if (Group.CURVE in groups) from.curves else curves,
+        // Masks belong to one photo's content, so they stay with it.
+        return copy(
+            values = kept + taken,
+            profile = if (Group.LIGHT in groups) from.profile else profile,
+            curves = if (Group.CURVE in groups) from.curves else curves,
         )
     }
 
@@ -226,6 +231,7 @@ data class Settings(
         append("profile=${profile.name}\n")
         for ((k, v) in values.toSortedMap()) append("$k=$v\n")
         curves.forEachIndexed { i, c -> if (!c.isIdentity) append("curve.$i=${c.encode()}\n") }
+        masks.forEachIndexed { i, m -> append("mask.$i=${m.encode()}\n") }
     }
 
     companion object {
@@ -233,6 +239,7 @@ data class Settings(
             var profile = Profile.COLOR
             val values = HashMap<String, Float>()
             val curves = MutableList(4) { Curve() }
+            val masks = sortedMapOf<Int, Mask>()
             for (line in text.lineSequence()) {
                 val i = line.indexOf('=')
                 if (i <= 0) continue
@@ -241,6 +248,7 @@ data class Settings(
                 when {
                     k == "profile" -> profile = Profile.entries.firstOrNull { it.name == v } ?: Profile.COLOR
                     k.startsWith("curve.") && k.length == 7 -> k[6].digitToIntOrNull()?.takeIf { it in 0..3 }?.let { curves[it] = Curve.decode(v) }
+                    k.startsWith("mask.") -> k.removePrefix("mask.").toIntOrNull()?.let { i -> Mask.decode(v)?.let { masks[i] = it } }
                     else -> {
                         val p = P.byKey[k] ?: continue
                         val f = v.toFloatOrNull() ?: continue
@@ -248,7 +256,7 @@ data class Settings(
                     }
                 }
             }
-            return Settings(values, profile, curves)
+            return Settings(values, profile, curves, masks.values.toList())
         }
     }
 }

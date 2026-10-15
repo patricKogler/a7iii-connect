@@ -21,8 +21,11 @@ interface Sampler {
     val height: Int
     /** Output pixels per full-size source pixel (1 for a full-size export). */
     val scale: Double
-    /** Fills [rows] output rows starting at [y0] (rows outside the image are clamped). */
-    fun fill(y0: Int, rows: Int, out: LinearImage)
+    /**
+     * Fills [rows] output rows starting at [y0] (rows outside the image are clamped). With [uv],
+     * also each pixel's position in the full-size upright source (x, y pairs), for masks.
+     */
+    fun fill(y0: Int, rows: Int, out: LinearImage, uv: FloatArray? = null)
 
     /**
      * Where this render sits in the whole (cropped) photo at the same scale: a zoomed-in tile
@@ -55,12 +58,13 @@ class ImageSampler(
     override val originY = region?.y0 ?: 0
     private val direct = region == null && geom.isIdentity && width == src.width && height == src.height
 
-    override fun fill(y0: Int, rows: Int, out: LinearImage) {
+    override fun fill(y0: Int, rows: Int, out: LinearImage, uv: FloatArray?) {
         val toSrc = src.width / geom.srcW
         val vig = geom.hasVignetteCorrection
         parallelRows(rows) { i ->
             val y = (originY + y0 + i).coerceIn(0, frameHeight - 1)
             val o = i * width
+            if (uv != null) sourcePositions(geom, scale, originX, y, width, uv, o)
             if (direct) {
                 System.arraycopy(src.r, y * width, out.r, o, width)
                 System.arraycopy(src.g, y * width, out.g, o, width)
@@ -92,6 +96,16 @@ class ImageSampler(
         val a = c[y0 * w + x0] + (c[y0 * w + x1] - c[y0 * w + x0]) * fx
         val b = c[y1 * w + x0] + (c[y1 * w + x1] - c[y1 * w + x0]) * fx
         return a + (b - a) * fy
+    }
+}
+
+/** Source positions (full-size upright pixels) of output row [y], [width] pixels, into [uv] at pixel [o]. */
+internal fun sourcePositions(geom: Geometry, scale: Double, originX: Int, y: Int, width: Int, uv: FloatArray, o: Int) {
+    val m = DoubleArray(6)
+    val oy = (y + 0.5) / scale
+    for (x in 0 until width) {
+        geom.map((originX + x + 0.5) / scale, oy, m)
+        uv[(o + x) * 2] = m[2].toFloat(); uv[(o + x) * 2 + 1] = m[3].toFloat()
     }
 }
 
@@ -152,6 +166,33 @@ private fun smooth(e0: Float, e1: Float, x: Float): Float {
     return t * t * (3 - 2 * t)
 }
 
+private val NO_LOCALS = arrayOfNulls<FloatArray>(MaskSet.LOCALS.size)
+
+/** A mask's Exposure (stops), Temp and Tint (-1..1) as linear RGB gains; Temp/Tint keep brightness. */
+internal fun localGains(ev: Float, temp: Float, tint: Float, out: FloatArray) {
+    val r = exp2(0.4f * temp); val g = exp2(-0.3f * tint); val b = exp2(-0.4f * temp)
+    val k = exp2(ev) / (0.2126f * r + 0.7152f * g + 0.0722f * b)
+    out[0] = r * k; out[1] = g * k; out[2] = b * k
+}
+
+/** A mask's Contrast (-1..1) on a display pixel: the global contrast S-curve, per channel. */
+private fun localContrast(p: FloatArray, amount: Float) {
+    if (amount == 0f) return
+    val k = amount * 0.6f
+    for (c in 0..2) {
+        val v = p[c].coerceIn(0f, 1f)
+        p[c] = v + k * (0.5f - 0.5f * cos(PI.toFloat() * v) - v)
+    }
+}
+
+/** A mask's Saturation (-1..1) on a display pixel. */
+private fun localSaturation(p: FloatArray, amount: Float) {
+    if (amount == 0f) return
+    val l = luma(p[0], p[1], p[2])
+    val f = 1 + amount
+    for (c in 0..2) p[c] = l + (p[c] - l) * f
+}
+
 /**
  * Everything a [Settings] needs at render time, precomputed: colour matrix, tone tables,
  * mixer/grading coefficients. [render] runs the whole develop pipeline on a band of rows.
@@ -182,7 +223,10 @@ class Look(private val source: DevelopSource, private val s: Settings) {
     private val clarity = s[P.CLARITY] / 100f
     private val texture = s[P.TEXTURE] / 100f
     private val dehaze = s[P.DEHAZE] / 100f
-    private val needsGuide = shadows != 0f || highlights != 0f || clarity != 0f || dehaze != 0f
+    private val masks: MaskSet? = s.masks.takeIf { it.isNotEmpty() }
+        ?.let { MaskSet(it, source.fullWidth.toDouble(), source.fullHeight.toDouble(), source.maps.subject) }?.takeIf { it.any }
+    private val needsGuide = shadows != 0f || highlights != 0f || clarity != 0f || dehaze != 0f ||
+        masks != null && (masks.uses(MaskSet.SHADOWS) || masks.uses(MaskSet.HIGHLIGHTS) || masks.uses(MaskSet.CLARITY) || masks.uses(MaskSet.DEHAZE))
 
     private val vignette = s[P.VIGNETTE] / 100f
     private val vigMid = s[P.VIGNETTE_MIDPOINT] / 100f
@@ -319,11 +363,25 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         val top = maxOf(0, y0 - m)
         val bottom = minOf(H, y1 + m)
         val rows = bottom - top
-        val img = LinearImage(w, rows)
-        sampler.fill(top, rows, img)
-        linear(img, 0, rows)
         val n = w * rows
+        val img = LinearImage(w, rows)
+        val uv = if (masks != null) FloatArray(n * 2) else null
+        sampler.fill(top, rows, img, uv)
+        linear(img, 0, rows)
         val r = img.r; val g = img.g; val b = img.b
+
+        // --- Masks: every pixel's local sliders, then local exposure and white balance ---
+        val loc = if (masks != null && uv != null) locals(masks, uv, w, rows) else NO_LOCALS
+        val lEv = loc[MaskSet.EV]; val lTemp = loc[MaskSet.TEMP]; val lTint = loc[MaskSet.TINT]
+        if (lEv != null || lTemp != null || lTint != null) {
+            parallelRows(rows) { j ->
+                val k = FloatArray(3)
+                for (i in j * w until (j + 1) * w) {
+                    localGains(lEv?.get(i) ?: 0f, lTemp?.get(i) ?: 0f, lTint?.get(i) ?: 0f, k)
+                    r[i] *= k[0]; g[i] *= k[1]; b[i] *= k[2]
+                }
+            }
+        }
 
         // --- Noise reduction (linear) ---
         if (colorNoise > 0) {
@@ -359,22 +417,26 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         val oy = top + sampler.originY
 
         // --- Dehaze (dark channel prior, with the haze map from the guide) ---
-        if (dehaze != 0f && guide != null) {
-            val gain = exp2(ev)
-            val air = FloatArray(3) { guide.air[it] * gain }
+        val lDehaze = loc[MaskSet.DEHAZE]
+        if ((dehaze != 0f || lDehaze != null) && guide != null) {
             val amax = maxOf(guide.air[0], maxOf(guide.air[1], guide.air[2]))
             parallelRows(rows) { j ->
                 val yy = (oy + j + 0.5f) * gy - 0.5f
+                val air = FloatArray(3)
                 for (x in 0 until w) {
                     val i = j * w + x
+                    val dz = dehaze + (lDehaze?.get(i) ?: 0f)
+                    if (dz == 0f) continue
+                    val gain = exp2(ev + (lEv?.get(i) ?: 0f))
+                    for (c in 0..2) air[c] = guide.air[c] * gain
                     val d = guide.at(guide.dark, (ox + x + 0.5f) * gx - 0.5f, yy)
-                    if (dehaze > 0) {
-                        val t = maxOf(0.15f, 1 - dehaze * 0.9f * d / amax)
+                    if (dz > 0) {
+                        val t = maxOf(0.15f, 1 - dz * 0.9f * d / amax)
                         r[i] = maxOf(0f, (r[i] - air[0]) / t + air[0])
                         g[i] = maxOf(0f, (g[i] - air[1]) / t + air[1])
                         b[i] = maxOf(0f, (b[i] - air[2]) / t + air[2])
                     } else {
-                        val k = -dehaze * 0.6f
+                        val k = -dz * 0.6f
                         r[i] += (air[0] - r[i]) * k; g[i] += (air[1] - g[i]) * k; b[i] += (air[2] - b[i]) * k
                     }
                 }
@@ -382,7 +444,9 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         }
 
         // --- Local tone: Shadows/Highlights, Clarity (guide), Texture (band) ---
-        if (needsGuide && guide != null && (shadows != 0f || highlights != 0f || clarity != 0f) || texture != 0f) {
+        val lShadows = loc[MaskSet.SHADOWS]; val lHighlights = loc[MaskSet.HIGHLIGHTS]; val lClarity = loc[MaskSet.CLARITY]
+        val localTone = shadows != 0f || highlights != 0f || clarity != 0f || lShadows != null || lHighlights != null || lClarity != null
+        if (needsGuide && guide != null && localTone || texture != 0f) {
             val lum = FloatArray(n)
             for (i in 0 until n) lum[i] = log2(luma(r[i], g[i], b[i]))
             var small: FloatArray? = null
@@ -400,14 +464,19 @@ class Look(private val source: DevelopSource, private val s: Settings) {
                     var d = 0f
                     if (guide != null && needsGuide) {
                         val gxx = (ox + x + 0.5f) * gx - 0.5f
-                        val base = guide.at(guide.base, gxx, yy) + ev
-                        if (shadows != 0f) d += shadows * 1.7f / (1 + exp((base - mid + 1.2f) * 1.6f))
-                        if (highlights != 0f) d += highlights * 1.7f / (1 + exp(-(base - mid - 0.6f) * 1.6f))
-                        if (clarity != 0f) {
-                            val med = guide.at(guide.medium, gxx, yy) + ev
+                        // The guide doesn't know about local exposure: shift it like the global one.
+                        val e = ev + (lEv?.get(i) ?: 0f)
+                        val base = guide.at(guide.base, gxx, yy) + e
+                        val sh = shadows + (lShadows?.get(i) ?: 0f)
+                        val hi = highlights + (lHighlights?.get(i) ?: 0f)
+                        val cl = clarity + (lClarity?.get(i) ?: 0f)
+                        if (sh != 0f) d += sh * 1.7f / (1 + exp((base - mid + 1.2f) * 1.6f))
+                        if (hi != 0f) d += hi * 1.7f / (1 + exp(-(base - mid - 0.6f) * 1.6f))
+                        if (cl != 0f) {
+                            val med = guide.at(guide.medium, gxx, yy) + e
                             // Midtone weighting keeps clarity off deep shadows and bright highlights.
                             val wMid = exp(-((l - mid) / 3.5f).let { it * it })
-                            d += clarity * 0.7f * (l - med).coerceIn(-2f, 2f) * wMid
+                            d += cl * 0.7f * (l - med).coerceIn(-2f, 2f) * wMid
                         }
                     }
                     if (small != null) d += texAmt * (l - small[i]).coerceIn(-1.5f, 1.5f)
@@ -423,6 +492,7 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         val outRows = y1 - y0
         val off = y0 - top
         val pr = r; val pg = g; val pb = b
+        val lContrast = loc[MaskSet.CONTRAST]; val lSat = loc[MaskSet.SATURATION]
         parallelRows(rows) { j ->
             val tmp = FloatArray(3)
             for (x in 0 until w) {
@@ -432,7 +502,9 @@ class Look(private val source: DevelopSource, private val s: Settings) {
                     rr = lerpTable(c[0], rr); gg = lerpTable(c[1], gg); bb = lerpTable(c[2], bb)
                 }
                 tmp[0] = rr; tmp[1] = gg; tmp[2] = bb
+                if (lContrast != null) localContrast(tmp, lContrast[i])
                 color(tmp)
+                if (lSat != null) localSaturation(tmp, lSat[i])
                 pr[i] = tmp[0]; pg[i] = tmp[1]; pb[i] = tmp[2]
             }
         }
@@ -514,6 +586,20 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         }
     }
 
+    /** Each pixel's summed mask sliders ([MaskSet.LOCALS] order; null where no mask uses one). */
+    private fun locals(ms: MaskSet, uv: FloatArray, w: Int, rows: Int): Array<FloatArray?> {
+        val out = Array(MaskSet.LOCALS.size) { if (ms.uses(it)) FloatArray(w * rows) else null }
+        parallelRows(rows) { j ->
+            val acc = FloatArray(MaskSet.LOCALS.size)
+            for (i in j * w until (j + 1) * w) {
+                acc.fill(0f)
+                ms.add(uv[i * 2], uv[i * 2 + 1], acc)
+                for (k in acc.indices) out[k]?.set(i, acc[k])
+            }
+        }
+        return out
+    }
+
     /** The flat parameter array the Rust engine reads; the layout is `mod idx` in native/src/render.rs. */
     fun nativeParams(): FloatArray {
         val p = FloatArray(87)
@@ -534,6 +620,12 @@ class Look(private val source: DevelopSource, private val s: Settings) {
 
     internal val toneTable: FloatArray get() = tone
 
+    /** The masks for the Rust engine ([MaskSet.packed]), or null without any. */
+    internal fun nativeMasks(): FloatArray? = masks?.packed()
+
+    /** The subject map, when a mask uses it. */
+    internal val subjectMap: MaskImage? get() = if (s.masks.any { it.usesSubject }) masks?.subject else null
+
     /** The red, green and blue point curves back to back (3 x 1024), or null when flat. */
     internal fun nativeCurves(): FloatArray? = rgbCurves?.let { c -> FloatArray(3 * 1024) { c[it / 1024][it % 1024] } }
 
@@ -550,6 +642,8 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         sharpen = if (sharpen > 0) sharpen * 1.4f * minOf(1f, (scale * 2.5).toFloat().coerceAtLeast(0.3f)) else 0f,
         sharpenRadius = sharpenRadius(scale), sharpenLimit = 0.02f + 0.25f * sharpenDetail, sharpenMasking = sharpenMasking * 0.06f,
         grain = grain, grainCell = (1.0 + grainSize * 4.0).toFloat(), grainRough = grainRough, scale = scale.toFloat(),
+        maskCount = masks?.count ?: 0, masks = (masks?.params ?: FloatArray(0)).copyOf(MaskSet.MAX * MaskSet.STRIDE),
+        sourceSize = floatArrayOf(source.fullWidth.toFloat(), source.fullHeight.toFloat()), subject = subjectMap,
     )
 
     /** HSL mixer (or B&W mixer), color grading, vibrance and saturation on one display pixel. */
@@ -734,6 +828,8 @@ class ShaderParams(
     val vignette: Float, val vigMid: Float, val vigFeather: Float, val vigRound: Float, val vigHighlights: Float,
     val sharpen: Float, val sharpenRadius: Float, val sharpenLimit: Float, val sharpenMasking: Float,
     val grain: Float, val grainCell: Float, val grainRough: Float, val scale: Float,
+    /** [MaskSet.params] padded to [MaskSet.MAX] masks, and the full-size photo they're placed on. */
+    val maskCount: Int, val masks: FloatArray, val sourceSize: FloatArray, val subject: MaskImage?,
 ) {
     companion object {
         const val LUT_SIZE = 4096

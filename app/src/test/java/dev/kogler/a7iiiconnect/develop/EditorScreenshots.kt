@@ -19,6 +19,8 @@ import androidx.compose.runtime.setValue
 import com.github.takahirom.roborazzi.captureRoboImage
 import dev.kogler.a7iiiconnect.Phase
 import dev.kogler.a7iiiconnect.SyncStatus
+import dev.kogler.a7iiiconnect.develop.engine.LocalP
+import dev.kogler.a7iiiconnect.develop.engine.Mask
 import dev.kogler.a7iiiconnect.develop.engine.P
 import dev.kogler.a7iiiconnect.develop.engine.Settings
 import org.junit.Rule
@@ -80,6 +82,23 @@ class EditorScreenshots {
         shot("16-fullscreen-controls")
     }
 
+    /** The Masks tool: a linear gradient over the sky, then a radial one. */
+    @Test
+    fun masks() {
+        openEditor(
+            Settings().with(P.EXPOSURE to 0.2f, P.SHADOWS to 30f).copy(masks = listOf(
+                Mask.linear().copy(y0 = 0.05f, y1 = 0.45f).with(LocalP.EXPOSURE, -0.9f).with(LocalP.TEMP, -25f).with(LocalP.DEHAZE, 20f),
+                Mask.radial(1.5f).copy(x0 = 0.68f, y0 = 0.47f, x1 = 0.12f, y1 = 0.16f, angle = 10f).with(LocalP.EXPOSURE, 0.5f).with(LocalP.TINT, 15f),
+            )),
+        )
+        tool("MASKS"); awaitRender()
+        shot("17-masks-linear")
+        compose.onNodeWithText("2 · Radial").performClick(); settle()
+        shot("18-masks-radial")
+        compose.onNodeWithTag("add-mask-linear").performClick(); awaitRender()
+        shot("19-masks-new")
+    }
+
     /** The phone turned sideways: the panel sits beside the photo. */
     @Test
     @Config(qualifiers = "w914dp-h411dp-land-xxhdpi")
@@ -88,21 +107,18 @@ class EditorScreenshots {
         shot("14-landscape")
     }
 
-    private fun openEditor() {
+    private fun openEditor(edit: Settings = Settings().with(
+        P.EXPOSURE to 0.25f, P.CONTRAST to 12f, P.HIGHLIGHTS to -45f, P.SHADOWS to 35f,
+        P.WHITES to 8f, P.BLACKS to -12f, P.VIBRANCE to 18f, P.CLARITY to 12f, P.DEHAZE to 8f,
+        P.VIGNETTE to -18f, P.GRADE_HUE[0] to 210f, P.GRADE_SAT[0] to 15f,
+        P.GRADE_HUE[2] to 40f, P.GRADE_SAT[2] to 18f,
+    )) {
         val context: Context = RuntimeEnvironment.getApplication()
         val file = File(context.cacheDir, "DSC09412.JPG")
         writeLandscape(file)
         val photos = (1L..6L).map { LibraryPhoto(it, Uri.fromFile(file), "DSC0941$it.JPG", "image/jpeg", 0L) }
         val store = EditStore(context)
-        store.save(
-            photos[0],
-            Settings().with(
-                P.EXPOSURE to 0.25f, P.CONTRAST to 12f, P.HIGHLIGHTS to -45f, P.SHADOWS to 35f,
-                P.WHITES to 8f, P.BLACKS to -12f, P.VIBRANCE to 18f, P.CLARITY to 12f, P.DEHAZE to 8f,
-                P.VIGNETTE to -18f, P.GRADE_HUE[0] to 210f, P.GRADE_SAT[0] to 15f,
-                P.GRADE_HUE[2] to 40f, P.GRADE_SAT[2] to 18f,
-            ),
-        )
+        store.save(photos[0], edit)
 
         gpuPreviewEnabled = false
         compose.mainClock.autoAdvance = false

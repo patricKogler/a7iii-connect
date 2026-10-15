@@ -65,6 +65,7 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.BlurOn
 import androidx.compose.material.icons.outlined.Crop
 import androidx.compose.material.icons.outlined.Grain
+import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Lens
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Style
@@ -155,6 +156,7 @@ import dev.kogler.a7iiiconnect.develop.engine.Guide
 import dev.kogler.a7iiiconnect.develop.engine.ImageSampler
 import dev.kogler.a7iiiconnect.develop.engine.LinearImage
 import dev.kogler.a7iiiconnect.develop.engine.Look
+import dev.kogler.a7iiiconnect.develop.engine.MaskImage
 import dev.kogler.a7iiiconnect.develop.engine.P
 import dev.kogler.a7iiiconnect.develop.engine.Param
 import dev.kogler.a7iiiconnect.develop.engine.Preset
@@ -193,20 +195,25 @@ private enum class Tool(val label: String, val icon: ImageVector, val groups: Li
     DETAIL("Detail", Icons.Outlined.Grain, listOf(Group.DETAIL)),
     OPTICS("Optics", Icons.Outlined.Lens, listOf(Group.OPTICS)),
     GEOMETRY("Geometry", Icons.Outlined.Transform, listOf(Group.GEOMETRY)),
+    MASKS("Masks", Icons.Outlined.Layers, emptyList()),
 }
+
+/** Whether [t]'s panel has changed anything (the dot on its icon). */
+private fun Tool.changed(s: Settings) = if (this == Tool.MASKS) s.masks.isNotEmpty() else groups.any { !s.isDefault(it) }
 
 /** Groups that move pixels around; a before/after split keeps them so both halves line up. */
 private val FRAMING = setOf(Group.CROP, Group.GEOMETRY, Group.OPTICS)
 
 /** The "before" side of the split: without [panel]'s edits, or without any look edits. */
 private fun compareBase(s: Settings, panel: Tool?): Settings {
-    val groups = panel?.groups?.filter { it !in FRAMING }?.takeIf { it.isNotEmpty() } ?: (Group.entries - FRAMING)
-    return groups.fold(s) { acc, g -> acc.reset(g) }
+    if (panel == Tool.MASKS) return s.copy(masks = emptyList())
+    val own = panel?.groups?.filter { it !in FRAMING }?.takeIf { it.isNotEmpty() }
+    return (own ?: (Group.entries - FRAMING)).fold(if (own == null) s.copy(masks = emptyList()) else s) { acc, g -> acc.reset(g) }
 }
 
 /** Sliders that swipe mode cycles through; a closed panel (or Presets) swipes Light. */
 private fun swipeParams(t: Tool?): List<Param> = when (t) {
-    Tool.CROP -> emptyList()
+    Tool.CROP, Tool.MASKS -> emptyList()
     Tool.COLOR -> listOf(P.VIBRANCE, P.SATURATION)
     Tool.EFFECTS -> listOf(P.TEXTURE, P.CLARITY, P.DEHAZE, P.VIGNETTE, P.GRAIN)
     Tool.DETAIL -> listOf(P.SHARPEN, P.NOISE, P.COLOR_NOISE)
@@ -240,23 +247,26 @@ private class History(initial: Settings) {
     fun redo(): Settings { if (at < steps.size - 1) at++; version++; return steps[at] }
 }
 
+/** What a preview render depends on; [subject] counts arrivals of the subject map. */
+private data class RenderKey(val settings: Settings, val dragging: Boolean, val crop: Boolean, val subject: Int)
+
 private class Rendered(val layer: PhotoLayer, val histogram: Array<IntArray>?, val settings: Settings, val cropMode: Boolean)
 
 /** What the photo area draws: a rendered bitmap, or the GPU preview's current frame. */
-private sealed interface PhotoLayer {
+internal sealed interface PhotoLayer {
     val width: Int
     val height: Int
 }
 
-private class BitmapLayer(val image: ImageBitmap) : PhotoLayer {
+internal class BitmapLayer(val image: ImageBitmap) : PhotoLayer {
     override val width get() = image.width
     override val height get() = image.height
 }
 
 /** [version] changes with every frame so Compose redraws. */
-private class GpuLayer(val gpu: GpuPreview, override val width: Int, override val height: Int, val version: Int) : PhotoLayer
+internal class GpuLayer(val gpu: GpuPreview, override val width: Int, override val height: Int, val version: Int) : PhotoLayer
 
-private fun DrawScope.drawLayer(layer: PhotoLayer, r: Rect) {
+internal fun DrawScope.drawLayer(layer: PhotoLayer, r: Rect) {
     when (layer) {
         is BitmapLayer -> drawImage(
             layer.image, dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()),
@@ -324,10 +334,17 @@ fun EditorScreen(
     val snackbar = remember { SnackbarHostState() }
     val guides = remember { GuideCache() }
     val cropMode = tool == Tool.CROP
+    var maskIndex by remember { mutableIntStateOf(0) }
+    var maskOverlay by remember { mutableStateOf(false) }
+    var subjectStatus by remember { mutableStateOf<SubjectStatus>(SubjectStatus.Ready) }
+    // Bumped when the subject map arrives, so the photo re-renders with it.
+    var subjectVersion by remember { mutableIntStateOf(0) }
+    var subjectTry by remember { mutableIntStateOf(0) }
 
     // Open the photo: show the camera's embedded JPEG at once, then the real render.
     LaunchedEffect(photo.id) {
         opened = null; rendered = null; before = null; compareImage = null; loadError = null; tile = null
+        maskIndex = 0; subjectStatus = SubjectStatus.Ready
         guides.clear()
         settings = store.load(photo)
         history = History(settings)
@@ -338,6 +355,17 @@ fun EditorScreen(
         }
         val result = withContext(Dispatchers.Default) { runCatching { Photos.open(context, photo) } }
         result.onSuccess { opened = it }.onFailure { loadError = it.message ?: it.javaClass.simpleName }
+    }
+
+    // Subject masks need the photo's subject: find it once (the store keeps it) when one is used.
+    val needsSubject = settings.masks.any { it.usesSubject }
+    LaunchedEffect(opened, needsSubject, subjectTry) {
+        val o = opened ?: return@LaunchedEffect
+        if (!needsSubject || o.preview.maps.subject != null) return@LaunchedEffect
+        subjectStatus = SubjectStatus.Finding
+        val result = withContext(Dispatchers.IO) { runCatching { SubjectFinder.find(context, store, o) } }
+        subjectStatus = result.exceptionOrNull()?.let { SubjectStatus.Failed(it.message ?: it.javaClass.simpleName) } ?: SubjectStatus.Ready
+        if (result.isSuccess) { tile = null; subjectVersion++ }
     }
 
     // Re-render on every change. On Android 13+ the GPU runs the develop shader, so only geometry
@@ -351,7 +379,7 @@ fun EditorScreen(
         val pool = BitmapPool()
         val scenes = if (gpu != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) SceneCache() else null
         var version = 0
-        snapshotFlow { Triple(settings, dragging, tool == Tool.CROP) }.collectLatest { (s, d, crop) ->
+        snapshotFlow { RenderKey(settings, dragging, tool == Tool.CROP, subjectVersion) }.collectLatest { (s, d, crop) ->
             if (gpu != null && scenes != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val frame = withContext(Dispatchers.Default) { scenes.frame(o, s, d, crop, guides) }
                 gpu.set(frame)
@@ -506,7 +534,10 @@ fun EditorScreen(
         exportProgress = 0f
         scope.launch {
             val result = withContext(Dispatchers.Default) {
-                runCatching { Photos.export(context, o, s, options) { p -> exportProgress = p } }
+                runCatching {
+                    if (s.masks.any { it.usesSubject }) SubjectFinder.find(context, store, o)
+                    Photos.export(context, o, s, options) { p -> exportProgress = p }
+                }
             }
             exportProgress = null
             result.onSuccess { uri ->
@@ -585,6 +616,16 @@ fun EditorScreen(
                         onChange = { settings = it },
                         onDone = { commit(settings) },
                     )
+                } else if (tool == Tool.MASKS && r != null && o != null && !showBefore) {
+                    MaskView(
+                        layer = r.layer,
+                        opened = o,
+                        settings = settings,
+                        selected = maskIndex,
+                        overlay = maskOverlay && !dragging,
+                        onChange = { settings = it; dragging = true },
+                        onDone = { dragging = false; commit(settings) },
+                    )
                 } else {
                     ZoomableImage(
                         layer = shown,
@@ -657,7 +698,7 @@ fun EditorScreen(
                             Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)
                                 .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(24.dp)).padding(horizontal = 4.dp),
                         ) {
-                            for (t in Tool.entries.filter { it != Tool.CROP && it != Tool.PRESETS }) {
+                            for (t in Tool.entries.filter { it != Tool.CROP && it != Tool.PRESETS && it != Tool.MASKS }) {
                                 val sel = t == tool || (tool == null && t == Tool.LIGHT)
                                 val c = if (sel) MaterialTheme.colorScheme.primary else Color.White
                                 Box(
@@ -665,7 +706,7 @@ fun EditorScreen(
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Icon(t.icon, t.label, tint = c)
-                                    if (t.groups.any { !settings.isDefault(it) }) ChangedDot(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 10.dp))
+                                    if (t.changed(settings)) ChangedDot(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 10.dp))
                                 }
                             }
                         }
@@ -735,6 +776,12 @@ fun EditorScreen(
                         Tool.DETAIL -> DetailPanel(ctl)
                         Tool.OPTICS -> OpticsPanel(ctl, hasLensProfile = o?.preview?.lens != null, isRaw = o?.raw != null)
                         Tool.GEOMETRY -> GeometryPanel(ctl)
+                        Tool.MASKS -> MaskPanel(
+                            ctl, maskIndex, onSelect = { maskIndex = it },
+                            aspect = o?.preview?.let { it.fullWidth.toFloat() / it.fullHeight } ?: 1.5f,
+                            subject = subjectStatus, onRetrySubject = { subjectTry++ },
+                            overlay = maskOverlay, onOverlay = { maskOverlay = it },
+                        )
                         else -> {}
                     }
                 }
@@ -771,7 +818,7 @@ fun EditorScreen(
             if (!fullscreen) Row(Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 2.dp)) {
                 for (t in Tool.entries) {
                     val selected = tool == t
-                    val changed = t.groups.any { !settings.isDefault(it) }
+                    val changed = t.changed(settings)
                     Column(
                         Modifier.weight(1f).testTag("tool-${t.name}").clip(RoundedCornerShape(8.dp))
                             .clickable { tool = if (selected) null else t }.padding(vertical = 4.dp),
@@ -875,6 +922,9 @@ private class SceneCache {
     private var fromPreview = false
     private var scene: Bitmap? = null
     private var scale = 1.0
+    private var coords: Bitmap? = null
+    private var subjectOf: MaskImage? = null
+    private var subject: Bitmap? = null
 
     fun frame(o: OpenedPhoto, s: Settings, dragging: Boolean, crop: Boolean, guides: GuideCache): GpuPreview.Frame {
         val k = geometryKey(o, s, crop)
@@ -888,10 +938,18 @@ private class SceneCache {
             scale = sampler.scale
             key = k
             fromPreview = !dragging
+            coords = null
         }
         val look = Look(o.preview, s)
         val guide = guides.get(o, look, s, crop, allowStale = dragging)
-        return GpuPreview.prepare(scene!!, guide, guide?.let { guides.bitmapOf(it) }, look.shaderParams(scale))
+        val params = look.shaderParams(scale)
+        val sc = scene!!
+        if (params.maskCount > 0 && coords == null) coords = GpuPreview.coordsBitmap(geom, scale, sc.width, sc.height)
+        if (params.subject !== subjectOf) {
+            subjectOf = params.subject
+            subject = params.subject?.let { GpuPreview.subjectBitmap(it) }
+        }
+        return GpuPreview.prepare(sc, guide, guide?.let { guides.bitmapOf(it) }, params, coords, subject)
     }
 }
 
@@ -938,7 +996,7 @@ private class BitmapPool {
 }
 
 /** Where a [w] x [h] image sits when fitted (centred) into a [box]. */
-private fun fitRect(box: Size, w: Int, h: Int): Rect {
+internal fun fitRect(box: Size, w: Int, h: Int): Rect {
     val f = minOf(box.width / w, box.height / h)
     val dw = w * f; val dh = h * f
     val l = (box.width - dw) / 2; val t = (box.height - dh) / 2
@@ -1139,7 +1197,7 @@ private fun OverlayButton(
 }
 
 @Composable
-private fun OverlayLabel(text: String, modifier: Modifier) {
+internal fun OverlayLabel(text: String, modifier: Modifier) {
     Text(
         text, color = Color.White, fontSize = 12.sp,
         modifier = modifier.padding(8.dp).clip(RoundedCornerShape(4.dp))
@@ -1149,7 +1207,7 @@ private fun OverlayLabel(text: String, modifier: Modifier) {
 
 /** Marks a tool, tab or slider that differs from its default. */
 @Composable
-private fun ChangedDot(modifier: Modifier = Modifier) {
+internal fun ChangedDot(modifier: Modifier = Modifier) {
     Box(modifier.size(6.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
 }
 
@@ -1338,7 +1396,7 @@ private fun CropPanel(c: Controls, o: OpenedPhoto?, aspect: Float?, onAspect: (F
 // Panels
 
 /** Settings plus the three ways a control changes them: live, finished, and in one go. */
-private class Controls(val s: Settings, val change: (Settings) -> Unit, val done: () -> Unit, val commit: (Settings) -> Unit)
+internal class Controls(val s: Settings, val change: (Settings) -> Unit, val done: () -> Unit, val commit: (Settings) -> Unit)
 
 @Composable
 private fun SectionHeader(title: String, c: Controls, vararg groups: Group, actions: @Composable () -> Unit = {}) {
@@ -1360,7 +1418,7 @@ private fun ParamSlider(p: Param, c: Controls, label: String = p.label, track: B
     )
 }
 
-private fun formatParam(p: Param, v: Float) = if (p.min < 0f) signed(v, p.decimals) else plain(v, p.decimals)
+internal fun formatParam(p: Param, v: Float) = if (p.min < 0f) signed(v, p.decimals) else plain(v, p.decimals)
 
 @Composable
 private fun ParamSwitch(p: Param, c: Controls, label: String = p.label) {
@@ -1592,9 +1650,9 @@ private fun CurveEditor(curve: Curve, color: Color, onChange: (Curve) -> Unit, o
     if (!curve.isIdentity) TextButton(onClick = onReset) { Text("Reset this curve") }
 }
 
-private val TEMP_TRACK = Brush.horizontalGradient(listOf(Color(0xFF3D7BFF), Color(0xFFE0E0E0), Color(0xFFFFC42E)))
-private val TINT_TRACK = Brush.horizontalGradient(listOf(Color(0xFF3BC14A), Color(0xFFE0E0E0), Color(0xFFE040C8)))
-private val SAT_TRACK = Brush.horizontalGradient(listOf(Color(0xFF888888), Color(0xFFFF4040), Color(0xFFFFD000), Color(0xFF40C040), Color(0xFF4080FF)))
+internal val TEMP_TRACK = Brush.horizontalGradient(listOf(Color(0xFF3D7BFF), Color(0xFFE0E0E0), Color(0xFFFFC42E)))
+internal val TINT_TRACK = Brush.horizontalGradient(listOf(Color(0xFF3BC14A), Color(0xFFE0E0E0), Color(0xFFE040C8)))
+internal val SAT_TRACK = Brush.horizontalGradient(listOf(Color(0xFF888888), Color(0xFFFF4040), Color(0xFFFFD000), Color(0xFF40C040), Color(0xFF4080FF)))
 
 private fun hueColor(h: Float, s: Float = 0.85f, v: Float = 0.95f) = Color.hsv(((h % 360f) + 360f) % 360f, s, v)
 
@@ -1933,12 +1991,12 @@ private fun Histogram(h: Array<IntArray>, modifier: Modifier) {
     }
 }
 
-private fun signed(v: Float, decimals: Int): String {
+internal fun signed(v: Float, decimals: Int): String {
     val r = if (decimals == 0) "${v.roundToInt()}" else "%.${decimals}f".format(v)
     return if (v > 0.0005f && (decimals > 0 || v.roundToInt() != 0)) "+$r" else if (decimals == 0 && v.roundToInt() == 0) "0" else r
 }
 
-private fun plain(v: Float, decimals: Int) = if (decimals == 0) "${v.roundToInt()}" else "%.${decimals}f".format(v)
+internal fun plain(v: Float, decimals: Int) = if (decimals == 0) "${v.roundToInt()}" else "%.${decimals}f".format(v)
 
 /**
  * A Lightroom-style slider row. Drag the slider (slower as your finger moves away from it), tap
@@ -1946,7 +2004,7 @@ private fun plain(v: Float, decimals: Int) = if (decimals == 0) "${v.roundToInt(
  * marks a change.
  */
 @Composable
-private fun AdjustSlider(
+internal fun AdjustSlider(
     label: String,
     value: Float,
     range: ClosedFloatingPointRange<Float>,

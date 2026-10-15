@@ -73,4 +73,27 @@ object Filters {
         box(mean, mean, w, h, r)
         for (i in 0 until n) dst[i] = sq[i] * src[i] + mean[i]
     }
+
+    /**
+     * Guided filter with a separate [guide] (He et al.): smooths [src] but lets its edges follow
+     * the guide's, which snaps a rough mask to the photo's real edges.
+     */
+    fun guidedBy(guide: FloatArray, src: FloatArray, dst: FloatArray, w: Int, h: Int, r: Int, eps: Float) {
+        val n = w * h
+        val mi = FloatArray(n); val mp = FloatArray(n); val ip = FloatArray(n); val ii = FloatArray(n)
+        box(guide, mi, w, h, r)
+        box(src, mp, w, h, r)
+        for (i in 0 until n) { ip[i] = guide[i] * src[i]; ii[i] = guide[i] * guide[i] }
+        box(ip, ip, w, h, r)
+        box(ii, ii, w, h, r)
+        // a and b in place of ip and mp.
+        for (i in 0 until n) {
+            val a = (ip[i] - mi[i] * mp[i]) / (ii[i] - mi[i] * mi[i] + eps)
+            ip[i] = a
+            mp[i] = mp[i] - a * mi[i]
+        }
+        box(ip, ip, w, h, r)
+        box(mp, mp, w, h, r)
+        for (i in 0 until n) dst[i] = ip[i] * guide[i] + mp[i]
+    }
 }

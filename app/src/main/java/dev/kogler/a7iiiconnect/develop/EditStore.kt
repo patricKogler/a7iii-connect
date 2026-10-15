@@ -2,6 +2,7 @@ package dev.kogler.a7iiiconnect.develop
 
 import android.content.Context
 import dev.kogler.a7iiiconnect.develop.engine.Group
+import dev.kogler.a7iiiconnect.develop.engine.MaskImage
 import dev.kogler.a7iiiconnect.develop.engine.Preset
 import dev.kogler.a7iiiconnect.develop.engine.Settings
 import java.io.File
@@ -38,6 +39,25 @@ class EditStore(context: Context, folder: String = "develop") {
     private val prefs = context.getSharedPreferences("develop", Context.MODE_PRIVATE)
 
     private fun editFile(photo: LibraryPhoto) = File(editDir, fileName(photo.key) + ".txt")
+
+    private val subjectDir = File(dir, "subjects").apply { mkdirs() }
+    private fun subjectFile(photo: LibraryPhoto) = File(subjectDir, fileName(photo.key) + ".mask")
+
+    /** The subject map found for this photo earlier (8 bits per pixel after a width/height header). */
+    fun loadSubject(photo: LibraryPhoto): MaskImage? = runCatching {
+        val b = subjectFile(photo).takeIf { it.exists() }?.readBytes() ?: return null
+        val w = ((b[0].toInt() and 0xff) shl 8) or (b[1].toInt() and 0xff)
+        val h = ((b[2].toInt() and 0xff) shl 8) or (b[3].toInt() and 0xff)
+        if (w <= 0 || h <= 0 || b.size < 4 + w * h) return null
+        MaskImage(w, h, FloatArray(w * h) { (b[4 + it].toInt() and 0xff) / 255f })
+    }.getOrNull()
+
+    fun saveSubject(photo: LibraryPhoto, m: MaskImage) {
+        val b = ByteArray(4 + m.width * m.height)
+        b[0] = (m.width shr 8).toByte(); b[1] = m.width.toByte(); b[2] = (m.height shr 8).toByte(); b[3] = m.height.toByte()
+        for (i in m.data.indices) b[4 + i] = (m.data[i].coerceIn(0f, 1f) * 255f + 0.5f).toInt().toByte()
+        subjectFile(photo).writeBytes(b)
+    }
 
     fun load(photo: LibraryPhoto): Settings =
         runCatching { Settings.decode(editFile(photo).readText()) }.getOrDefault(Settings())
@@ -97,7 +117,7 @@ class EditStore(context: Context, folder: String = "develop") {
         val m = markMap()
         for (shot in shots) {
             m.remove(shot.key)
-            shot.files.forEach { editFile(it).delete() }
+            shot.files.forEach { editFile(it).delete(); subjectFile(it).delete() }
         }
         writeMarks(m)
     }

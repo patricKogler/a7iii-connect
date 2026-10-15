@@ -8,10 +8,10 @@ data class Preset(val name: String, val settings: Settings, val groups: Set<Grou
 
     fun applyTo(current: Settings): Settings {
         if (groups != null) return current.pasteFrom(settings, groups)
-        return Settings(
-            current.values + settings.values,
-            if (settings.profile != Profile.COLOR) settings.profile else current.profile,
-            List(4) { if (settings.curves[it].isIdentity) current.curves[it] else settings.curves[it] },
+        return current.copy(
+            values = current.values + settings.values,
+            profile = if (settings.profile != Profile.COLOR) settings.profile else current.profile,
+            curves = List(4) { if (settings.curves[it].isIdentity) current.curves[it] else settings.curves[it] },
         )
     }
 
