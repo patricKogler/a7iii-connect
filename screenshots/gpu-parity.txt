@@ -1,14 +1,10 @@
-probe eval-main	error: 1: cannot swizzle value of type 'shader' | 1 error
-probe eval-swizzle	error: 1: cannot swizzle value of type 'shader' | 1 error
-probe eval-helper	error: 1: cannot swizzle value of type 'shader' | error: 1: call to undefined function 'f'
-probe sample	ok
 case	meanAbs	p99	max
-raw-default	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
-raw-light	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
-raw-local	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
-raw-color	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
-raw-mono	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
-raw-curves	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
-raw-effects	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
-raw-grain	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
-jpeg-mixed	FAILED	IllegalArgumentException: Software rendering doesn't support RuntimeShader
+raw-default	FAILED	IllegalStateException: no hardware buffer
+raw-light	FAILED	IllegalStateException: no hardware buffer
+raw-local	FAILED	IllegalStateException: no hardware buffer
+raw-color	FAILED	IllegalStateException: no hardware buffer
+raw-mono	FAILED	IllegalStateException: no hardware buffer
+raw-curves	FAILED	IllegalStateException: no hardware buffer
+raw-effects	FAILED	IllegalStateException: no hardware buffer
+raw-grain	FAILED	IllegalStateException: no hardware buffer
+jpeg-mixed	FAILED	IllegalStateException: no hardware buffer
