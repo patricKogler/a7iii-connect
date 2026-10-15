@@ -63,7 +63,19 @@ class GpuParityTest {
         )
 
         val outDir = File("build/screenshots").apply { mkdirs() }
-        val report = StringBuilder("case\tmeanAbs\tp99\tmax\n")
+        val report = StringBuilder()
+        // Which child-shader syntax this Skia accepts (diagnostics for the report).
+        val probes = listOf(
+            "eval-main" to "uniform shader s; half4 main(float2 p) { return s.eval(p); }",
+            "eval-swizzle" to "uniform shader s; half4 main(float2 p) { return half4(s.eval(p).rgb, 1); }",
+            "eval-helper" to "uniform shader s; half3 f(float2 p) { return s.eval(p).rgb; } half4 main(float2 p) { return half4(f(p), 1); }",
+            "sample" to "uniform shader s; half4 main(float2 p) { return sample(s, p); }",
+        )
+        for ((n, src) in probes) {
+            val r = runCatching { android.graphics.RuntimeShader(src) }
+            report.append("probe $n\t${if (r.isSuccess) "ok" else r.exceptionOrNull()?.message?.lines()?.take(2)?.joinToString(" | ")}\n")
+        }
+        report.append("case\tmeanAbs\tp99\tmax\n")
         for ((name, pair) in cases) {
             val (src, s) = pair
             try {
@@ -111,7 +123,7 @@ class GpuParityTest {
                 side.setPixels(dp, 0, sw, sw * 2, 0, sw, sh)
                 File(outDir, "gpu-$name.png").outputStream().use { side.compress(Bitmap.CompressFormat.PNG, 100, it) }
             } catch (e: Throwable) {
-                report.append("$name\tFAILED\t${e.javaClass.simpleName}: ${e.message?.lines()?.take(6)?.joinToString(" | ")}\n")
+                report.append("$name\tFAILED\t${e.javaClass.simpleName}: ${e.message?.lines()?.take(12)?.joinToString(" | ")}\n")
             }
         }
         File(outDir, "gpu-parity.txt").writeText(report.toString())
