@@ -1,7 +1,6 @@
 package dev.kogler.a7iiiconnect.ui
 
 import android.content.Intent
-import android.util.Size
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
@@ -14,52 +13,42 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyGridScope
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.PhotoLibrary
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.rounded.Bluetooth
-import androidx.compose.material.icons.rounded.SettingsRemote
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.LocationOff
-import androidx.compose.material.icons.rounded.LocationOn
+import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.LocationOff
+import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Nfc
 import androidx.compose.material.icons.rounded.PhotoCamera
+import androidx.compose.material.icons.rounded.SettingsRemote
 import androidx.compose.material.icons.rounded.Stop
-import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Wifi
-import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -69,38 +58,31 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.material3.rememberTopAppBarState
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -109,25 +91,20 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.kogler.a7iiiconnect.Phase
-import dev.kogler.a7iiiconnect.Photo
 import dev.kogler.a7iiiconnect.SyncStatus
 import dev.kogler.a7iiiconnect.ftp.FtpService
 import dev.kogler.a7iiiconnect.ftp.FtpStatus
 import dev.kogler.a7iiiconnect.gps.CameraPairing
 import dev.kogler.a7iiiconnect.gps.GpsPhase
 import dev.kogler.a7iiiconnect.gps.GpsStatus
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
-/** Everything the screen needs, gathered by MainActivity. */
+/** Everything the Camera screen needs, gathered by MainActivity. */
 data class UiState(
     val status: SyncStatus,
     val hasCamera: Boolean,
     val cameraName: String,
     val password: String,
     val smallCopies: Boolean,
-    val photos: List<Photo>,
-    val photoCount: Int,
     val nfcAvailable: Boolean,
     val version: String,
     val gps: GpsStatus,
@@ -139,14 +116,12 @@ data class UiState(
 )
 
 class UiActions(
+    val back: () -> Unit,
     val sync: () -> Unit,
     val stop: () -> Unit,
     val saveCamera: (ssid: String, password: String) -> Unit,
     val setSmallCopies: (Boolean) -> Unit,
     val shareLog: () -> Unit,
-    val openPhoto: (Photo) -> Unit,
-    val openAlbum: () -> Unit,
-    val openEditor: () -> Unit,
     val setGps: (Boolean) -> Unit,
     val startPairing: () -> Unit,
     val repairGps: () -> Unit,
@@ -155,101 +130,56 @@ class UiActions(
     val setFtp: (Boolean) -> Unit,
 )
 
+/**
+ * The Camera screen, opened from the camera button in Photos: getting photos off the camera,
+ * the things that run while shooting (location, FTP, remote), and the connection settings.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App(state: UiState, actions: UiActions) {
-    var showSettings by rememberSaveable { mutableStateOf(false) }
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
-
     Scaffold(
-        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
-            LargeTopAppBar(
-                title = { Text("A7III Connect", fontWeight = FontWeight.SemiBold) },
-                actions = {
-                    IconButton(onClick = { showSettings = true }) {
-                        Icon(Icons.Outlined.Settings, contentDescription = "Settings")
-                    }
+            TopAppBar(
+                title = { Text("Camera") },
+                navigationIcon = {
+                    IconButton(onClick = actions.back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back") }
                 },
-                scrollBehavior = scrollBehavior,
             )
         },
     ) { padding ->
-        if (!state.hasCamera) {
-            Onboarding(Modifier.padding(padding), state.nfcAvailable) { showSettings = true }
-        } else {
-            Home(Modifier.padding(padding), state, actions)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
+        ) {
+            item {
+                if (state.hasCamera) StatusCard(state.status, state.cameraName, actions)
+                else Onboarding(state.nfcAvailable)
+            }
+            if (state.hasCamera && state.nfcAvailable && !state.status.running) item { NfcTip() }
+
+            item { SectionTitle("While you shoot") }
+            item { GpsCard(state, actions) }
+            item { FtpCard(state.ftp, actions.setFtp) }
+            item { RemoteCard(actions.openRemote) }
+
+            item { SectionTitle("Connection") }
+            item { ConnectionSettings(state, actions) }
         }
     }
 
-    if (showSettings) {
-        SettingsSheet(state, actions, onDismiss = { showSettings = false })
-    }
     if (state.showPairIntro || state.pairing != null) {
         PairingDialog(state, actions)
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Home
-
 @Composable
-private fun Home(modifier: Modifier, state: UiState, actions: UiActions) {
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 110.dp),
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        fullWidth { StatusCard(state.status, state.cameraName, actions) }
-        if (state.nfcAvailable && !state.status.running) {
-            fullWidth { NfcTip() }
-        }
-        fullWidth { GpsCard(state, actions) }
-        if (!state.status.running) fullWidth { RemoteCard(actions.openRemote) }
-        if (!state.status.running) fullWidth { FtpCard(state.ftp, actions.setFtp) }
-        fullWidth {
-            Row(
-                Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Recent photos", style = MaterialTheme.typography.titleLarge)
-                    if (state.photoCount > 0) {
-                        Text(
-                            "${state.photoCount} in the ${dev.kogler.a7iiiconnect.RecentPhotos.ALBUM} album",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-                if (state.photoCount > 0) {
-                    TextButton(onClick = actions.openEditor) {
-                        Icon(Icons.Rounded.Tune, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Edit")
-                    }
-                    TextButton(onClick = actions.openAlbum) {
-                        Icon(Icons.Outlined.PhotoLibrary, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Photos")
-                    }
-                }
-            }
-        }
-        if (state.photos.isEmpty()) {
-            fullWidth { EmptyPhotos() }
-        } else {
-            items(state.photos, key = { it.uri.toString() }) { photo ->
-                PhotoTile(photo, Modifier.clickable { actions.openPhoto(photo) })
-            }
-        }
-    }
-}
-
-private fun LazyGridScope.fullWidth(content: @Composable () -> Unit) {
-    item(span = { GridItemSpan(maxLineSpan) }) { content() }
+private fun SectionTitle(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 8.dp, top = 28.dp, bottom = 4.dp),
+    )
 }
 
 @Composable
@@ -402,48 +332,6 @@ private fun NfcTip() {
     }
 }
 
-@Composable
-private fun PhotoTile(photo: Photo, modifier: Modifier) {
-    val context = LocalContext.current
-    val bitmap by produceState<ImageBitmap?>(null, photo.uri) {
-        value = withContext(Dispatchers.IO) {
-            runCatching {
-                context.contentResolver.loadThumbnail(photo.uri, Size(360, 360), null).asImageBitmap()
-            }.getOrNull()
-        }
-    }
-    Box(
-        modifier
-            .aspectRatio(1f)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
-    ) {
-        bitmap?.let {
-            Image(it, contentDescription = photo.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-        }
-    }
-}
-
-@Composable
-private fun EmptyPhotos() {
-    Column(
-        Modifier.fillMaxWidth().padding(vertical = 48.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Icon(
-            Icons.Outlined.PhotoLibrary, null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(48.dp),
-        )
-        Spacer(Modifier.height(12.dp))
-        Text(
-            "Photos you copy will show up here",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodyLarge,
-        )
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // Location linking
 
@@ -469,7 +357,7 @@ private fun GpsCard(state: UiState, actions: UiActions) {
     ) {
         Column {
             ListItem(
-                colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = Color.Transparent),
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 leadingContent = {
                     Icon(
                         if (active) Icons.Rounded.LocationOn else Icons.Rounded.LocationOff, null,
@@ -499,7 +387,7 @@ private fun RemoteCard(onOpen: () -> Unit) {
         modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
     ) {
         ListItem(
-            colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = Color.Transparent),
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
             leadingContent = { Icon(Icons.Rounded.SettingsRemote, null, tint = MaterialTheme.colorScheme.primary) },
             headlineContent = { Text("Remote shooting", fontWeight = FontWeight.Medium) },
             supportingContent = { Text("Live view and shutter. Turn on Ctrl w/ Smartphone on the camera first.") },
@@ -528,7 +416,7 @@ private fun FtpCard(ftp: FtpStatus, setFtp: (Boolean) -> Unit) {
     ) {
         Column {
             ListItem(
-                colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = Color.Transparent),
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 leadingContent = { Icon(Icons.Rounded.CloudUpload, null, tint = MaterialTheme.colorScheme.primary) },
                 headlineContent = { Text("Receive RAW over FTP", fontWeight = FontWeight.Medium) },
                 supportingContent = { Text(subtitle) },
@@ -629,114 +517,123 @@ private fun PairingDialog(state: UiState, actions: UiActions) {
 // First run
 
 @Composable
-private fun Onboarding(modifier: Modifier, nfcAvailable: Boolean, onManual: () -> Unit) {
+private fun Onboarding(nfcAvailable: Boolean) {
     Column(
-        modifier.fillMaxSize().padding(32.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
     ) {
         Box(
-            Modifier.size(140.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+            Modifier.size(112.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 if (nfcAvailable) Icons.Rounded.Nfc else Icons.Rounded.PhotoCamera, null,
                 tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.size(64.dp),
+                modifier = Modifier.size(52.dp),
             )
         }
-        Spacer(Modifier.height(32.dp))
+        Spacer(Modifier.height(24.dp))
         Text(
             "Connect your camera",
-            style = MaterialTheme.typography.headlineMedium,
+            style = MaterialTheme.typography.headlineSmall,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
         Text(
             if (nfcAvailable) {
                 "Turn the A7III on, show a photo in playback, and touch the back of your phone " +
-                    "to the N mark on the camera's side."
+                    "to the N mark on the camera's side. Or enter the network details below."
             } else {
                 "On the camera open MENU > Network > Send to Smartphone, then enter the network " +
-                    "name and password it shows."
+                    "name and password it shows below."
             },
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(32.dp))
-        TextButton(onClick = onManual) { Text("Enter network details instead") }
     }
 }
 
 // ---------------------------------------------------------------------------------------------
-// Settings
+// Connection settings
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsSheet(state: UiState, actions: UiActions, onDismiss: () -> Unit) {
-    var ssid by rememberSaveable { mutableStateOf(state.cameraName) }
-    var password by rememberSaveable { mutableStateOf(state.password) }
+private fun ConnectionSettings(state: UiState, actions: UiActions) {
+    // Keyed on the saved values so an NFC touch while this screen is open shows the new ones.
+    var ssid by rememberSaveable(state.cameraName) { mutableStateOf(state.cameraName) }
+    var password by rememberSaveable(state.password) { mutableStateOf(state.password) }
     var showPassword by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val focus = LocalFocusManager.current
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.padding(horizontal = 24.dp).navigationBarsPadding().padding(bottom = 16.dp)) {
-            Text("Camera", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Filled in automatically when you touch the camera. Otherwise copy them from the " +
-                    "camera's Send to Smartphone screen.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(16.dp))
-            OutlinedTextField(
-                value = ssid, onValueChange = { ssid = it },
-                label = { Text("Network name") },
-                placeholder = { Text("DIRECT-xxxx:ILCE-7M3") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = password, onValueChange = { password = it },
-                label = { Text("Password") },
-                singleLine = true,
-                visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                trailingIcon = {
-                    IconButton(onClick = { showPassword = !showPassword }) {
-                        Icon(
-                            if (showPassword) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                            contentDescription = if (showPassword) "Hide password" else "Show password",
-                        )
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(12.dp))
-            Button(
-                onClick = { actions.saveCamera(ssid.trim(), password); onDismiss() },
-                enabled = ssid.isNotBlank() && (ssid.trim() != state.cameraName || password != state.password),
-                modifier = Modifier.align(Alignment.End),
-            ) { Text("Save") }
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(vertical = 8.dp)) {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text(
+                    "Filled in automatically when you touch the camera. Otherwise copy them from the " +
+                        "camera's Send to Smartphone screen.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = ssid, onValueChange = { ssid = it },
+                    label = { Text("Network name") },
+                    placeholder = { Text("DIRECT-xxxx:ILCE-7M3") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = password, onValueChange = { password = it },
+                    label = { Text("Password") },
+                    singleLine = true,
+                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    trailingIcon = {
+                        IconButton(onClick = { showPassword = !showPassword }) {
+                            Icon(
+                                if (showPassword) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                contentDescription = if (showPassword) "Hide password" else "Show password",
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                val changed = ssid.trim() != state.cameraName || password != state.password
+                if (changed) {
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = { actions.saveCamera(ssid.trim(), password); focus.clearFocus() },
+                        enabled = ssid.isNotBlank(),
+                        modifier = Modifier.align(Alignment.End),
+                    ) { Text("Save") }
+                }
+            }
 
-            HorizontalDivider(Modifier.padding(vertical = 16.dp))
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
+            val itemColors = ListItemDefaults.colors(containerColor = Color.Transparent)
             ListItem(
+                colors = itemColors,
                 headlineContent = { Text("Smaller copies") },
                 supportingContent = { Text("Much faster. Good for sharing, not for editing.") },
                 trailingContent = { Switch(checked = state.smallCopies, onCheckedChange = actions.setSmallCopies) },
                 modifier = Modifier.clickable { actions.setSmallCopies(!state.smallCopies) },
             )
             ListItem(
+                colors = itemColors,
                 headlineContent = { Text("Share log") },
                 supportingContent = { Text("Helps track down connection problems") },
                 leadingContent = { Icon(Icons.Outlined.Share, null) },
                 modifier = Modifier.clickable { actions.shareLog() },
             )
             ListItem(
+                colors = itemColors,
                 headlineContent = { Text("Version ${state.version}") },
                 leadingContent = { Icon(Icons.Outlined.Info, null) },
                 modifier = Modifier.clickable {
