@@ -23,16 +23,19 @@ data class ShotMeta(
     val flash: Boolean? = null,
     /** The camera was held upright. */
     val portrait: Boolean? = null,
-    val located: Boolean = false,
+    val lat: Double? = null,
+    val lon: Double? = null,
 ) {
+    val located get() = lat != null && lon != null
+
     fun encode(): String = listOf(
         lens?.replace('\t', ' ')?.replace('\n', ' '), focal, aperture, exposure, iso, bias, program,
-        flash?.let { if (it) 1 else 0 }, portrait?.let { if (it) 1 else 0 }, if (located) 1 else 0,
+        flash?.let { if (it) 1 else 0 }, portrait?.let { if (it) 1 else 0 }, lat, lon,
     ).joinToString("\t") { it?.toString() ?: "" }
 
     companion object {
         fun decode(fields: List<String>): ShotMeta? {
-            if (fields.size != 10) return null
+            if (fields.size != 11) return null
             fun f(i: Int) = fields[i].ifEmpty { null }
             return ShotMeta(
                 lens = f(0),
@@ -44,13 +47,15 @@ data class ShotMeta(
                 program = f(6)?.toIntOrNull(),
                 flash = f(7)?.let { it == "1" },
                 portrait = f(8)?.let { it == "1" },
-                located = f(9) == "1",
+                lat = f(9)?.toDoubleOrNull(),
+                lon = f(10)?.toDoubleOrNull(),
             )
         }
 
         fun of(exif: ExifInterface): ShotMeta {
             fun double(tag: String) = exif.getAttributeDouble(tag, Double.NaN).takeIf { !it.isNaN() && it > 0 }
             val orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, 0)
+            val latLon = exif.latLong?.takeIf { it[0] != 0.0 || it[1] != 0.0 }
             return ShotMeta(
                 lens = exif.getAttribute(ExifInterface.TAG_LENS_MODEL)?.trim()?.takeIf { it.isNotEmpty() && it != "----" },
                 focal = double(ExifInterface.TAG_FOCAL_LENGTH)?.toFloat(),
@@ -62,7 +67,8 @@ data class ShotMeta(
                 // Bit 0 of the EXIF Flash value: it fired.
                 flash = exif.getAttribute(ExifInterface.TAG_FLASH)?.let { exif.getAttributeInt(ExifInterface.TAG_FLASH, 0) and 1 == 1 },
                 portrait = if (orientation == 0) null else orientation in 5..8,
-                located = exif.latLong != null,
+                lat = latLon?.get(0),
+                lon = latLon?.get(1),
             )
         }
     }
@@ -115,6 +121,66 @@ object MetaIndex {
         runCatching {
             file(context).apply { parentFile?.mkdirs() }
                 .writeText(m.entries.joinToString("") { "${it.key}\t${it.value.encode()}\n" })
+        }
+    }
+}
+
+/**
+ * Names the places shots were taken at ("Hallstatt"), for the filter sheet. Coordinates are
+ * grouped into cells of about a kilometre and each cell is looked up once with Android's
+ * geocoder; names are kept in develop/places.txt. Offline, a cell waits until the next load.
+ */
+object Places {
+    private var cache: MutableMap<String, String>? = null
+
+    fun cell(lat: Double, lon: Double) = "%.2f,%.2f".format(java.util.Locale.US, lat, lon)
+
+    /** Shot key to place name, for every located shot whose cell has a name. */
+    @Synchronized
+    fun known(context: Context, meta: Map<String, ShotMeta>): Map<String, String> {
+        val names = load(context)
+        return meta.mapNotNull { (key, m) ->
+            if (m.lat == null || m.lon == null) null else names[cell(m.lat, m.lon)]?.let { key to it }
+        }.toMap()
+    }
+
+    /** Looks up cells not named yet; true when anything new was found. */
+    fun name(context: Context, meta: Map<String, ShotMeta>, keepGoing: () -> Boolean = { true }): Boolean {
+        if (!android.location.Geocoder.isPresent()) return false
+        val missing = synchronized(this) {
+            val names = load(context)
+            meta.values.filter { it.located }.associateBy { cell(it.lat!!, it.lon!!) }.filterKeys { it !in names }
+        }
+        if (missing.isEmpty()) return false
+        val geocoder = android.location.Geocoder(context)
+        var found = false
+        for ((cell, m) in missing) {
+            if (!keepGoing()) break
+            val address = runCatching {
+                @Suppress("DEPRECATION")
+                geocoder.getFromLocation(m.lat!!, m.lon!!, 1)?.firstOrNull()
+            }.getOrNull() ?: continue
+            val name = address.locality ?: address.subLocality ?: address.subAdminArea ?: address.adminArea
+                ?: address.featureName ?: address.countryName ?: continue
+            synchronized(this) { load(context)[cell] = name; save(context) }
+            found = true
+        }
+        return found
+    }
+
+    private fun file(context: Context) = File(context.filesDir, "develop/places.txt")
+
+    private fun load(context: Context): MutableMap<String, String> = cache ?: runCatching {
+        file(context).readLines().mapNotNull { line ->
+            line.split('\t').takeIf { it.size == 2 }?.let { it[0] to it[1] }
+        }.toMap(HashMap())
+    }.getOrDefault(HashMap()).also { cache = it }
+
+    private fun save(context: Context) {
+        val m = cache ?: return
+        runCatching {
+            file(context).apply { parentFile?.mkdirs() }
+                .writeText(m.entries.joinToString("") { "${it.key}\t${it.value.replace('\t', ' ').replace('\n', ' ')}\n" })
         }
     }
 }

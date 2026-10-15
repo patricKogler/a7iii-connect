@@ -15,10 +15,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.DateRange
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DateRangePicker
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -46,8 +50,8 @@ import androidx.compose.ui.unit.dp
 import java.util.Calendar
 
 /**
- * The filter sheet. The top half is for everyone: presets in plain words, lens, framing and
- * dates. "More filters" opens the exact controls (ranges snap to values that occur in the
+ * The filter sheet. The top half is for everyone: presets in plain words, lens, place, framing
+ * and dates. "More filters" opens the exact controls (ranges snap to values that occur in the
  * library); the sheet remembers it was opened. Every chip shows how many shots it would leave.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -67,6 +71,7 @@ fun FilterSheet(
     val prefs = remember { context.getSharedPreferences("library", 0) }
     var more by remember { mutableStateOf(startExpanded || prefs.getBoolean("more_filters", false)) }
     var naming by remember { mutableStateOf(false) }
+    var pickingDates by remember { mutableStateOf(false) }
     val metas = facts.mapNotNull { it.meta }
     val matching = facts.count { filter.matches(it) }
 
@@ -97,6 +102,25 @@ fun FilterSheet(
                     }
                 }
             }
+            val places = facts.mapNotNull { it.place }.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.map { it.key }
+            val located = metas.count { it.located }
+            Section("Where") {
+                val others = filter.copy(places = emptySet())
+                for (place in places) {
+                    val on = place in filter.places
+                    CountChip(place, on, count(others.copy(places = setOf(place)))) {
+                        onFilter(filter.copy(places = if (on) filter.places - place else filter.places + place))
+                    }
+                }
+                if (places.isEmpty()) {
+                    Text(
+                        if (located > 0) "Looking up where $located photos were taken…"
+                        else "No photos with a location yet. The camera only records it while the phone's location link is on and the Bluetooth remote is off.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             if (metas.any { it.portrait != null }) Section("Framing") {
                 val others = filter.copy(framing = emptySet())
                 for (fr in Framing.entries) {
@@ -108,12 +132,21 @@ fun FilterSheet(
             }
             Section("When") {
                 val others = filter.copy(fromDay = null, toDay = null)
-                for ((label, from) in datePresets()) {
+                val presets = datePresets()
+                for ((label, from) in presets) {
                     val on = filter.fromDay == from && filter.toDay == null
                     CountChip(label, on, count(others.copy(fromDay = from))) {
                         onFilter(if (on) others else others.copy(fromDay = from))
                     }
                 }
+                val custom = (filter.fromDay != null || filter.toDay != null) && !(filter.toDay == null && presets.any { it.second == filter.fromDay })
+                FilterChip(
+                    selected = custom,
+                    onClick = { pickingDates = true },
+                    leadingIcon = { Icon(Icons.Rounded.DateRange, null, Modifier.size(18.dp)) },
+                    label = { Text(if (custom) ShotFilter.dates(filter.fromDay, filter.toDay) else "Pick dates") },
+                    modifier = Modifier.testTag("pick-dates"),
+                )
             }
 
             HorizontalDivider(Modifier.padding(top = 16.dp))
@@ -191,6 +224,29 @@ fun FilterSheet(
                     Text(if (matching == 1) "Show 1 photo" else "Show $matching photos")
                 }
             }
+        }
+    }
+
+    if (pickingDates) {
+        val state = rememberDateRangePickerState(
+            initialSelectedStartDateMillis = filter.fromDay?.let(::localDayToUtc),
+            initialSelectedEndDateMillis = filter.toDay?.let(::localDayToUtc),
+        )
+        DatePickerDialog(
+            onDismissRequest = { pickingDates = false },
+            confirmButton = {
+                TextButton(
+                    enabled = state.selectedStartDateMillis != null,
+                    onClick = {
+                        pickingDates = false
+                        val from = state.selectedStartDateMillis?.let(::utcToLocalDay)
+                        onFilter(filter.copy(fromDay = from, toDay = state.selectedEndDateMillis?.let(::utcToLocalDay) ?: from))
+                    },
+                ) { Text("Apply") }
+            },
+            dismissButton = { TextButton(onClick = { pickingDates = false }) { Text("Cancel") } },
+        ) {
+            DateRangePicker(state, Modifier.weight(1f), title = { Text("Taken between", Modifier.padding(start = 24.dp, top = 16.dp)) })
         }
     }
 
@@ -279,4 +335,17 @@ private fun datePresets(): List<Pair<String, Long>> {
     val month = Calendar.getInstance().apply { timeInMillis = today; add(Calendar.DAY_OF_YEAR, -29) }.timeInMillis
     val year = Calendar.getInstance().apply { timeInMillis = today; set(Calendar.DAY_OF_YEAR, 1) }.timeInMillis
     return listOf("Today" to today, "Last 7 days" to week, "Last 30 days" to month, "This year" to year)
+}
+
+/** The date pickers work in UTC midnights; the filter in local ones. */
+private fun utcToLocalDay(utc: Long): Long {
+    val u = Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply { timeInMillis = utc }
+    return Calendar.getInstance().apply { clear(); set(u.get(Calendar.YEAR), u.get(Calendar.MONTH), u.get(Calendar.DAY_OF_MONTH)) }.timeInMillis
+}
+
+private fun localDayToUtc(day: Long): Long {
+    val l = Calendar.getInstance().apply { timeInMillis = day }
+    return Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply {
+        clear(); set(l.get(Calendar.YEAR), l.get(Calendar.MONTH), l.get(Calendar.DAY_OF_MONTH))
+    }.timeInMillis
 }

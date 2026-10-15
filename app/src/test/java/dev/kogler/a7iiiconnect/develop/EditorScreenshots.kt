@@ -211,10 +211,12 @@ class EditorScreenshots {
                 program = if (i % 3 == 0) 1 else 3,
                 flash = false,
                 portrait = i % 5 == 0,
-                located = i < 6,
+                lat = if (i < 6) 47.56 + i % 2 else null,
+                lon = if (i < 6) 13.65 else null,
             )
         }.toMap()
-        val facts = shots.map { ShotFacts(it, meta[it.key]) }
+        val places = meta.filterValues { it.located }.mapValues { (_, m) -> if (m.lat!! < 48) "Hallstatt" else "Linz" }
+        val facts = shots.map { ShotFacts(it, meta[it.key], place = places[it.key]) }
 
         // The engine: groups narrow each other, values within a group widen it.
         fun n(f: ShotFilter) = facts.count { f.matches(it) }
@@ -225,7 +227,9 @@ class EditorScreenshots {
         check(n(ShotFilter(presets = setOf(FilterPreset.LONG_EXPOSURE))) == 3)
         check(n(ShotFilter(iso = 400..3200)) == 6)
         check(n(ShotFilter(located = false, framing = setOf(Framing.PORTRAIT))) == 1) { "located" }
-        val saved = ShotFilter(lenses = setOf("FE 85mm F1.8"), aperture = 1.8f..2.8f, modes = setOf(ShootingMode.MANUAL), exposure = 0.001..0.5)
+        check(n(ShotFilter(places = setOf("Hallstatt"))) == 3) { "places" }
+        check(n(ShotFilter(fromDay = dayOf(day - 3 * 3_600_000L), toDay = dayOf(day))) == shots.count { dayOf(it.takenMillis) >= dayOf(day - 3 * 3_600_000L) }) { "dates" }
+        val saved = ShotFilter(lenses = setOf("FE 85mm F1.8"), places = setOf("Hallstatt"), fromDay = dayOf(day), toDay = dayOf(day), aperture = 1.8f..2.8f, modes = setOf(ShootingMode.MANUAL), exposure = 0.001..0.5)
         check(SavedFilters.decode(SavedFilters.encode(saved)) == saved) { "saved filter round trip" }
         check(ShotMeta.decode(meta.values.first().encode().split('\t')) == meta.values.first()) { "meta round trip" }
 
@@ -238,7 +242,7 @@ class EditorScreenshots {
                 LibraryScreen(
                     shots = shots, edited = emptySet(), marks = emptyMap(), exported = emptySet(),
                     onOpen = {}, onCull = { _, _ -> }, onTogether = { _, _ -> }, onDeleteRejected = {},
-                    transfer = SyncStatus(), onCamera = {}, meta = meta,
+                    transfer = SyncStatus(), onCamera = {}, meta = meta, places = places,
                     sheetFilter = sheetFilter, onSheetFilter = { sheetFilter = it },
                     saved = savedFilters, onSaveFilter = { savedFilters = savedFilters + SavedFilter(it, sheetFilter) },
                     sheetOpen = sheetOpen, onSheetOpen = { sheetOpen = it },

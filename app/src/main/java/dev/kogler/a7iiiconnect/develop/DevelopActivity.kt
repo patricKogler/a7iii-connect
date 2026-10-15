@@ -43,6 +43,7 @@ class DevelopActivity : ComponentActivity() {
     private var marks by mutableStateOf(emptyMap<String, Mark>())
     private var exported by mutableStateOf(emptySet<String>())
     private var meta by mutableStateOf(emptyMap<String, ShotMeta>())
+    private var places by mutableStateOf(emptyMap<String, String>())
     private var indexing: kotlinx.coroutines.Job? = null
     // Filters live here so they survive opening a photo and coming back.
     private var quickFilter by mutableStateOf(QuickFilter.ALL)
@@ -133,6 +134,7 @@ class DevelopActivity : ComponentActivity() {
                         transfer = transfer,
                         onCamera = { startActivity(MainActivity.intent(this)) },
                         meta = meta,
+                        places = places,
                         filter = quickFilter,
                         onQuickFilter = { quickFilter = it },
                         sheetFilter = sheetFilter,
@@ -235,8 +237,15 @@ class DevelopActivity : ComponentActivity() {
         indexing?.cancel()
         indexing = lifecycleScope.launch(Dispatchers.IO) {
             val known = MetaIndex.known(this@DevelopActivity)
-            withContext(Dispatchers.Main) { meta = known }
+            val named = Places.known(this@DevelopActivity, known)
+            withContext(Dispatchers.Main) { meta = known; places = named }
             MetaIndex.index(this@DevelopActivity, all, keepGoing = { isActive }) { m -> lifecycleScope.launch { meta = m } }
+            // Then name the places, which needs the network; cells already named are skipped.
+            val latest = MetaIndex.known(this@DevelopActivity)
+            if (Places.name(this@DevelopActivity, latest, keepGoing = { isActive })) {
+                val now = Places.known(this@DevelopActivity, latest)
+                withContext(Dispatchers.Main) { places = now }
+            }
         }
     }
 

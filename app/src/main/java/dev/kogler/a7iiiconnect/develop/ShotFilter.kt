@@ -6,6 +6,8 @@ data class ShotFacts(
     val meta: ShotMeta?,
     val edited: Boolean = false,
     val exported: Boolean = false,
+    /** Where it was taken, when the shot has coordinates and the place has been named. */
+    val place: String? = null,
 )
 
 /** Plain-language filters for the basic sheet; each is a fixed combination of the exact ones. */
@@ -39,6 +41,7 @@ data class ShotFilter(
     val presets: Set<FilterPreset> = emptySet(),
     val lenses: Set<String> = emptySet(),
     val framing: Set<Framing> = emptySet(),
+    val places: Set<String> = emptySet(),
     val fromDay: Long? = null,
     val toDay: Long? = null,
     val focal: ClosedFloatingPointRange<Float>? = null,
@@ -59,6 +62,7 @@ data class ShotFilter(
         if (presets.any { !it.matches(m) }) return false
         if (lenses.isNotEmpty() && m?.lens !in lenses) return false
         if (framing.isNotEmpty() && framingOf(m) !in framing) return false
+        if (places.isNotEmpty() && f.place !in places) return false
         val day = dayOf(f.shot.takenMillis)
         if (fromDay != null && day < fromDay) return false
         if (toDay != null && day > toDay) return false
@@ -80,7 +84,8 @@ data class ShotFilter(
         presets.forEach { add(it.label to copy(presets = presets - it)) }
         lenses.forEach { add(it to copy(lenses = lenses - it)) }
         framing.forEach { add(it.label to copy(framing = framing - it)) }
-        if (fromDay != null || toDay != null) add("Dates" to copy(fromDay = null, toDay = null))
+        places.forEach { add(it to copy(places = places - it)) }
+        if (fromDay != null || toDay != null) add(dates(fromDay, toDay) to copy(fromDay = null, toDay = null))
         focal?.let { add("${mm(it.start)}–${mm(it.endInclusive)}" to copy(focal = null)) }
         aperture?.let { add("${fStop(it.start)}–${fStop(it.endInclusive)}" to copy(aperture = null)) }
         exposure?.let { add("${shutter(it.start)}–${shutter(it.endInclusive)}" to copy(exposure = null)) }
@@ -104,6 +109,16 @@ data class ShotFilter(
             s.raw != null && s.jpeg != null -> FileKind.PAIR
             s.raw != null -> FileKind.RAW
             else -> FileKind.JPEG
+        }
+
+        fun dates(from: Long?, to: Long?): String {
+            val fmt = java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault())
+            fun d(t: Long) = fmt.format(java.util.Date(t))
+            return when {
+                from != null && to != null -> if (from == to) d(from) else "${d(from)} – ${d(to)}"
+                from != null -> "Since ${d(from)}"
+                else -> "Until ${d(to!!)}"
+            }
         }
 
         fun mm(v: Float) = "${Math.round(v)}mm"
@@ -146,6 +161,7 @@ object SavedFilters {
         names("presets", f.presets)
         if (f.lenses.isNotEmpty()) put("lenses", org.json.JSONArray(f.lenses.toList()))
         names("framing", f.framing)
+        if (f.places.isNotEmpty()) put("places", org.json.JSONArray(f.places.toList()))
         f.fromDay?.let { put("fromDay", it) }
         f.toDay?.let { put("toDay", it) }
         range("focal", f.focal?.start, f.focal?.endInclusive)
@@ -169,6 +185,7 @@ object SavedFilters {
             presets = strings("presets").mapNotNull { n -> FilterPreset.entries.find { it.name == n } }.toSet(),
             lenses = strings("lenses").toSet(),
             framing = strings("framing").mapNotNull { n -> Framing.entries.find { it.name == n } }.toSet(),
+            places = strings("places").toSet(),
             fromDay = long("fromDay"),
             toDay = long("toDay"),
             focal = pair("focal")?.let { it.first.toFloat()..it.second.toFloat() },

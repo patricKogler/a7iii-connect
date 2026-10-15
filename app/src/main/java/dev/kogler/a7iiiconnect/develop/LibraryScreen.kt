@@ -136,6 +136,7 @@ fun LibraryScreen(
     transfer: SyncStatus,
     onCamera: () -> Unit,
     meta: Map<String, ShotMeta> = emptyMap(),
+    places: Map<String, String> = emptyMap(),
     filter: QuickFilter = QuickFilter.ALL,
     onQuickFilter: (QuickFilter) -> Unit = {},
     sheetFilter: ShotFilter = ShotFilter(),
@@ -149,8 +150,8 @@ fun LibraryScreen(
     // Days picked by long-pressing their headers; Review then covers just those.
     var selectedDays by remember { mutableStateOf(emptySet<Long>()) }
     val bestLevel = shots.maxOfOrNull { marks[it.key]?.level ?: 0 } ?: 0
-    val facts = remember(shots, meta, edited, exported) {
-        shots.map { ShotFacts(it, meta[it.key], it.key in edited, Photos.exportName(it.primary).lowercase() in exported) }
+    val facts = remember(shots, meta, places, edited, exported) {
+        shots.map { ShotFacts(it, meta[it.key], it.key in edited, Photos.exportName(it.primary).lowercase() in exported, places[it.key]) }
     }
     // The sheet's metadata filter narrows everything on screen, Review included.
     val filtered = if (sheetFilter.isEmpty) shots else facts.filter { sheetFilter.matches(it) }.map { it.shot }
