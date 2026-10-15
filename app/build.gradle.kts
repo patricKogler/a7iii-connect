@@ -74,6 +74,8 @@ dependencies {
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     // Together: phone-to-phone link (Bluetooth to find, Wi-Fi Direct to send).
     implementation("com.google.android.gms:play-services-nearby:19.3.0")
+    // Nearby brings an old Fragment along; activity-result APIs need 1.3+ (release lint enforces it).
+    implementation("androidx.fragment:fragment:1.8.5")
 
     // Screenshot tests: the editor rendered on the JVM (Robolectric + Roborazzi).
     testImplementation(composeBom)
