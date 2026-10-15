@@ -95,6 +95,19 @@ class GpuParityTest {
             sh.setInputShader("s", android.graphics.BitmapShader(tex, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP))
             c.drawRect(0f, 0f, 4f, 4f, android.graphics.Paint().apply { shader = sh })
         }
+        fun uprobe(name: String, src: String, set: (android.graphics.RuntimeShader) -> Unit) = probe(name) { c ->
+            val sh = android.graphics.RuntimeShader(src)
+            set(sh)
+            c.drawRect(0f, 0f, 4f, 4f, android.graphics.Paint().apply { shader = sh })
+        }
+        uprobe("u-float", "uniform float a; half4 main(float2 p) { return half4(a, 0, 0, 1); }") { it.setFloatUniform("a", 0.5f) }
+        uprobe("u-float3", "uniform float3 a; half4 main(float2 p) { return half4(a, 1); }") { it.setFloatUniform("a", 0.25f, 0.5f, 0.75f) }
+        uprobe("u-2nd", "uniform float2 a; uniform float3 b; half4 main(float2 p) { return half4(b, 1); }") { it.setFloatUniform("a", 9f, 9f); it.setFloatUniform("b", 0.25f, 0.5f, 0.75f) }
+        uprobe("u-array", "uniform float a[4]; half4 main(float2 p) { return half4(a[1], a[2], a[3], 1); }") { it.setFloatUniform("a", floatArrayOf(0.1f, 0.25f, 0.5f, 0.75f)) }
+        uprobe("u-shader+f", "uniform shader s; uniform float3 a; half4 main(float2 p) { return half4(a, 1); }") {
+            it.setInputShader("s", android.graphics.BitmapShader(Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888), android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP))
+            it.setFloatUniform("a", 0.25f, 0.5f, 0.75f)
+        }
         report.append("case\tmeanAbs\tp99\tmax\n")
         for ((name, pair) in cases) {
             val (src, s) = pair
