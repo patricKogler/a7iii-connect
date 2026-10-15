@@ -230,11 +230,8 @@ fun LibraryScreen(
                     label = { Text(if (active > 0) "Filter · $active" else "Filter") },
                     modifier = Modifier.testTag("filter"),
                 )
-                for (f in QuickFilter.entries) {
-                    if (f == QuickFilter.BEST && bestLevel < 2) continue
-                    FilterChip(selected = filter == f, onClick = { onQuickFilter(f) }, label = { Text(f.label) })
-                }
-                // Saved filters: tapping one applies it, tapping it again clears it.
+                // Saved filters: tapping one applies it, tapping it again clears it. First, so
+                // they never scroll out of sight.
                 for (s in saved) {
                     val on = sheetFilter == s.filter
                     FilterChip(
@@ -243,6 +240,10 @@ fun LibraryScreen(
                         leadingIcon = { Icon(Icons.Rounded.Bookmark, null, Modifier.size(16.dp)) },
                         label = { Text(s.name) },
                     )
+                }
+                for (f in QuickFilter.entries) {
+                    if (f == QuickFilter.BEST && bestLevel < 2) continue
+                    FilterChip(selected = filter == f, onClick = { onQuickFilter(f) }, label = { Text(f.label) })
                 }
             }
             // What the sheet filters on, each removable; a saved filter shows as its own chip instead.
@@ -358,7 +359,7 @@ private fun DayHeader(day: Long, count: Int, toReview: Int, selected: Boolean, m
         Column(Modifier.weight(1f)) {
             Text(dayLabel(day), style = MaterialTheme.typography.titleSmall)
             Text(
-                if (toReview > 0) "$count shots · $toReview to review" else "$count shots",
+                (if (count == 1) "1 shot" else "$count shots") + if (toReview > 0) " · $toReview to review" else "",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
