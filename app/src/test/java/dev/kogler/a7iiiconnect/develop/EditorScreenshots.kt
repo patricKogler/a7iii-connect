@@ -9,6 +9,8 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.isRoot
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
@@ -252,11 +254,11 @@ class EditorScreenshots {
         repeat(20) { step() }
         compose.onNodeWithTag("filter").performClick()
         repeat(20) { step() }
-        shot("30-filter-sheet")
+        sheetShot("30-filter-sheet")
         compose.onNodeWithText("Low light", substring = true).performClick()
         compose.onNodeWithTag("more-filters").performClick()
         repeat(20) { step() }
-        shot("31-filter-more")
+        sheetShot("31-filter-more")
         sheetOpen = false
         sheetFilter = ShotFilter(lenses = setOf("FE 24-70mm F2.8 GM"), iso = 400..6400)
         repeat(20) { step() }
@@ -287,6 +289,11 @@ class EditorScreenshots {
 
     private fun shot(name: String) {
         compose.onRoot().captureRoboImage("build/screenshots/$name.png")
+    }
+
+    /** A bottom sheet is its own window, so it's the second root. */
+    private fun sheetShot(name: String) {
+        compose.onAllNodes(isRoot()).onLast().captureRoboImage("build/screenshots/$name.png")
     }
 
     private fun step() {
