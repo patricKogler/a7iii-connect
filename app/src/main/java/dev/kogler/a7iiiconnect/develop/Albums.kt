@@ -3,6 +3,7 @@ package dev.kogler.a7iiiconnect.develop
 import android.content.Context
 import java.io.File
 import java.util.UUID
+import kotlin.math.abs
 
 /**
  * One shot's place in an album: added, or taken out again, at [at]. Taken-out shots are kept
@@ -74,15 +75,53 @@ object Albums {
         val entries = (a.entries.keys + b.entries.keys).associateWith { k ->
             val x = a.entries[k]
             val y = b.entries[k]
-            when {
-                x == null -> y!!
-                y == null -> x
-                x.at != y.at -> if (x.at > y.at) x else y
-                else -> if (!x.inAlbum) x else y
-            }
+            if (x == null) y!! else if (y == null) x else newer(x, y)
         }
         return Album(a.id, named.name, minOf(a.createdAt, b.createdAt), named.renamedAt, deleted, entries)
     }
+
+    /** The later change to a shot; on a tie, taking it out. */
+    private fun newer(x: AlbumEntry, y: AlbumEntry) = when {
+        x.at != y.at -> if (x.at > y.at) x else y
+        else -> if (!x.inAlbum) x else y
+    }
+
+    /**
+     * Finds this phone's own key for a shot named by another phone: the same key, or else the same
+     * file name stem taken at (nearly) the same time. Her DSC01234.JPG is my DSC01234.ARW when she
+     * only has the JPEG; the hour of slack is the same as RAW+JPEG pairing allows.
+     */
+    fun resolver(local: Collection<String>): (String) -> String? {
+        val known = local.toSet()
+        val byStem = local.mapNotNull { k -> parse(k)?.let { (stem, t) -> Triple(stem, t, k) } }.groupBy { it.first }
+        return { key ->
+            if (key in known) key
+            else parse(key)?.let { (stem, t) ->
+                byStem[stem]?.filter { abs(it.second - t) <= MATCH_WINDOW_MS }?.minByOrNull { abs(it.second - t) }?.third
+            }
+        }
+    }
+
+    /** Albums with their shots under this phone's keys where [resolve] finds them (the rest stay as they are). */
+    fun rekey(albums: List<Album>, resolve: (String) -> String?): List<Album> = albums.map { a ->
+        val out = LinkedHashMap<String, AlbumEntry>()
+        for (e in a.entries.values) {
+            val k = resolve(e.key) ?: e.key
+            val moved = if (k == e.key) e else e.copy(key = k)
+            out[k] = out[k]?.let { newer(it, moved) } ?: moved
+        }
+        if (out == a.entries) a else a.copy(entries = out)
+    }
+
+    /** "DSC01234.ARW@1760000000000" as its lower-case stem and capture time. */
+    private fun parse(key: String): Pair<String, Long>? {
+        val at = key.lastIndexOf('@')
+        if (at <= 0) return null
+        val time = key.substring(at + 1).toLongOrNull() ?: return null
+        return key.substring(0, at).substringBeforeLast('.').lowercase() to time
+    }
+
+    private const val MATCH_WINDOW_MS = 60 * 60 * 1000L
 
     /** Names are one line of text; an empty one becomes "Album". */
     fun clean(name: String) = name.replace(Regex("[\\t\\r\\n]+"), " ").trim().ifEmpty { "Album" }

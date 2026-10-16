@@ -211,6 +211,7 @@ class DevelopActivity : ComponentActivity() {
                             if (a != null) when (action) {
                                 AlbumAction.SLIDESHOW -> slideshow = a.id
                                 AlbumAction.SHARE -> shareAlbum(a)
+                                AlbumAction.TOGETHER -> startActivity(DuoActivity.albumsIntent(this))
                                 AlbumAction.RENAME -> albumDialog = AlbumDialog.Rename(a.id)
                                 AlbumAction.DELETE -> albumDialog = AlbumDialog.Delete(a.id)
                             }
@@ -399,6 +400,11 @@ class DevelopActivity : ComponentActivity() {
             edited = store.editedKeys(all.map { it.primary })
             marks = store.marks()
             exported = Library.exportedNames(this@DevelopActivity)
+            // Albums may have changed in Together; shots that came from the other phone get my keys.
+            val stored = albumStore.load()
+            val rekeyed = Albums.rekey(stored, Albums.resolver(all.map { it.key }))
+            if (rekeyed != stored) albumStore.save(rekeyed)
+            withContext(Dispatchers.Main) { albums = rekeyed }
         }
         shots = all
         loaded = true

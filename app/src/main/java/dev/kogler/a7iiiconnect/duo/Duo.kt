@@ -1,19 +1,15 @@
 package dev.kogler.a7iiiconnect.duo
 
-import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
-import android.os.Environment
 import android.provider.OpenableColumns
-import android.provider.MediaStore
 import android.provider.Settings as AndroidSettings
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import dev.kogler.a7iiiconnect.RecentPhotos
 import dev.kogler.a7iiiconnect.develop.EditStore
 import dev.kogler.a7iiiconnect.develop.ExportOptions
 import dev.kogler.a7iiiconnect.develop.LibraryPhoto
@@ -149,6 +145,8 @@ object Duo : DuoLink.Listener {
     private var battleShot: Shot? = null
     /** Just a battle over one photo, started from the editor: no culling before or after. */
     var battleOnly by mutableStateOf(false); private set
+    /** Just albums, started from an album: nothing to cull, the phones only swap albums ([AlbumSync]). */
+    var albumsOnly by mutableStateOf(false); private set
     /** Host, battle only: the photo, waiting for the other phone to connect. */
     private var pendingBattle: Shot? = null
 
@@ -182,6 +180,14 @@ object Duo : DuoLink.Listener {
         if (active) return
         host(context)
         battleOnly = true
+    }
+
+    /** Host: swap albums with the other phone, nothing else. */
+    fun hostAlbums(context: Context) {
+        init(context)
+        if (active) return
+        host(context)
+        albumsOnly = true
     }
 
     /** Host, battle only: the photo to fight over. The battle starts as soon as the other phone is here. */
@@ -257,7 +263,8 @@ object Duo : DuoLink.Listener {
         deck = emptyList(); preparing = 0f; session = DuoSession(emptyList()); tick = 0; matchCount = 0
         ready = 0; debateItem = null; coinTick = 0; coin = null
         offer = null; want = null; bothShots = emptyList(); mineShots = emptyList(); keepers = 0 to 0; transfer = null; update = null; partnerVersion = 0
-        resetBattle(); battleOnly = false; pendingBattle = null
+        resetBattle(); battleOnly = false; pendingBattle = null; albumsOnly = false
+        AlbumSync.reset()
         if (::app.isInitialized) File(app.filesDir, "duo").deleteRecursively()
     }
 
@@ -580,12 +587,14 @@ object Duo : DuoLink.Listener {
         if (!incoming) joinCode = endpointName.substringAfterLast('|', "").ifEmpty { null }
         partnerName = endpointName.substringBeforeLast('|')
         link?.send(JSONObject().put("t", "hello").put("name", myName).put("v", versionCode()).put("p", PROTOCOL))
+        AlbumSync.start(app, link)
         if (hosting && deck.isNotEmpty()) {
             if (phase == Phase.LOBBY) phase = Phase.CULL
             sendDeck()
             broadcast()
         }
         pendingBattle?.let { if (hosting && phase == Phase.LOBBY) startBattle(it) }
+        if (hosting && albumsOnly) broadcast()
     }
 
     override fun onDisconnected() {
@@ -616,6 +625,10 @@ object Duo : DuoLink.Listener {
                 connected = false
                 notice = "$partnerName ended the session"
             }
+            // Both sides: albums.
+            "albums" -> AlbumSync.onAlbums(app, link, msg)
+            "albumneed" -> AlbumSync.onNeed(app, link, msg)
+            "albumcount" -> AlbumSync.onCount(msg)
             // Guest side.
             "deck" -> onDeck(msg)
             "state" -> onState(msg)
@@ -674,6 +687,7 @@ object Duo : DuoLink.Listener {
                 battleStore().save(photo, Settings())
                 battlePhoto = photo
             }
+            "albumshot" -> AlbumSync.onFile(app, meta, file)
             "apk" -> {
                 val dest = File(app.filesDir, "duo/update/Shootback.apk")
                 dest.parentFile?.mkdirs()
@@ -688,6 +702,7 @@ object Duo : DuoLink.Listener {
     override fun onProgress(meta: JSONObject, fraction: Float, outgoing: Boolean) {
         when (meta.optString("kind")) {
             "preview" -> if (outgoing && fraction >= 1f) File(meta.optString("tmp")).delete()
+            "albumshot" -> AlbumSync.onProgress(meta, fraction, outgoing)
             "keeper" -> if (outgoing && fraction >= 1f) {
                 keepers = (keepers.first + 1) to keepers.second
                 meta.optString("tmp").ifEmpty { null }?.let { File(it).delete() }
@@ -743,6 +758,7 @@ object Duo : DuoLink.Listener {
             .put("debate", debateItem ?: -1)
             .put("kt", keepers.second)
             .put("bo", battleOnly)
+            .put("ao", albumsOnly)
         coin?.let { (w, c) -> msg.put("cw", w).put("cc", c.token) }
         offer?.let { msg.put("ob", it.both.toJson()).put("om", it.mine.toJson()) }
         want?.let { msg.put("w", it.format?.name ?: "NONE") }
@@ -784,6 +800,7 @@ object Duo : DuoLink.Listener {
     private fun onState(msg: JSONObject) {
         val newPhase = runCatching { Phase.valueOf(msg.getString("phase")) }.getOrDefault(phase)
         battleOnly = msg.optBoolean("bo")
+        albumsOnly = msg.optBoolean("ao")
         session.loadVotes(DuoSession.HOST, msg.optString("hv"))
         session.loadDecisions(msg.optString("dc"))
         session.loadProposals(DuoSession.HOST, msg.optString("hp"))
@@ -829,19 +846,8 @@ object Duo : DuoLink.Listener {
     }
 
     /** A keeper lands in the guest's Photos, like a shot from their own camera would. */
-    private fun saveKeeper(meta: JSONObject, file: File) {
-        val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, meta.getString("name"))
-            put(MediaStore.Images.Media.MIME_TYPE, meta.getString("mime"))
-            put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/${RecentPhotos.ALBUM}")
-            put(MediaStore.Images.Media.DATE_TAKEN, meta.getLong("taken"))
-            put(MediaStore.Images.Media.IS_PENDING, 1)
-        }
-        val resolver = app.contentResolver
-        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return
-        resolver.openOutputStream(uri)!!.use { out -> file.inputStream().use { it.copyTo(out) } }
-        resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
-    }
+    private fun saveKeeper(meta: JSONObject, file: File) =
+        saveToLibrary(app, meta.getString("name"), meta.getString("mime"), meta.getLong("taken"), file)
 
     private fun versionCode(): Long = app.packageManager.getPackageInfo(app.packageName, 0).longVersionCode
 }

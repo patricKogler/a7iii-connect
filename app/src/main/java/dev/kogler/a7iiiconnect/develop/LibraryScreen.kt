@@ -129,7 +129,7 @@ private fun TransferStrip(status: SyncStatus, onClick: () -> Unit) {
 }
 
 /** What can be done with the open album from its top bar. */
-enum class AlbumAction { SLIDESHOW, SHARE, RENAME, DELETE }
+enum class AlbumAction { SLIDESHOW, SHARE, TOGETHER, RENAME, DELETE }
 
 enum class QuickFilter(val label: String) {
     ALL("All"), TO_REVIEW("To review"), PICKS("Picks"), EDITED("Edited"), REJECTED("Rejected")
@@ -252,12 +252,14 @@ fun LibraryScreen(
                             Text(if (selectedShots.size >= 2) "Compare" else "Pick one more")
                         }
                     } else if (album != null) {
+                        // Room is short next to the album's name: Review is just its icon here.
                         if (due.isNotEmpty()) {
-                            TextButton(onClick = { onCull(album.name, due) }, modifier = Modifier.testTag("review")) {
-                                Icon(Icons.Rounded.Swipe, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Review ${due.size}")
+                            IconButton(onClick = { onCull(album.name, due) }, modifier = Modifier.testTag("review")) {
+                                Icon(Icons.Rounded.Swipe, "Review ${due.size}")
                             }
+                        }
+                        IconButton(onClick = { onAlbumAction(AlbumAction.TOGETHER) }, modifier = Modifier.testTag("album-together")) {
+                            Icon(Icons.Rounded.People, "Swap albums with another phone")
                         }
                         IconButton(onClick = { onAlbumAction(AlbumAction.SLIDESHOW) }, enabled = shown.isNotEmpty(), modifier = Modifier.testTag("album-slideshow")) {
                             Icon(Icons.Rounded.PlayArrow, "Slideshow")

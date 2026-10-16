@@ -147,6 +147,7 @@ fun DuoScreen(onExit: () -> Unit, onShareApp: () -> Unit, onInstall: (File) -> U
             when {
                 Duo.ended -> Ended(onExit)
                 !Duo.connected && Duo.phase == Phase.LOBBY -> Lobby(onClose = leave, onShareApp = onShareApp)
+                Duo.albumsOnly && Duo.phase == Phase.LOBBY -> AlbumsTogether(onDone = onExit)
                 Duo.phase == Phase.LOBBY -> Centered {
                     Spinner(if (Duo.battleOnly) "Connected to ${Duo.partnerName}. Getting the photo ready…" else "Connected to ${Duo.partnerName}. Getting the photos ready…")
                 }
@@ -168,6 +169,8 @@ fun DuoScreen(onExit: () -> Unit, onShareApp: () -> Unit, onInstall: (File) -> U
         ) {
             if (Duo.reconnecting && !Duo.ended) Banner("Lost ${Duo.partnerName}. Reconnecting…")
             Duo.transfer?.let { (label, f) -> Banner(label, f) }
+            // Albums swap alongside whatever else is going on.
+            if (!Duo.albumsOnly && Duo.connected && AlbumSync.busy) albumProgress()?.let { (label, f) -> Banner(label, f) }
             Duo.update?.let { apk ->
                 Banner("${Duo.partnerName} has a newer Shootback", action = "Install") { onInstall(apk) }
             }
@@ -281,6 +284,58 @@ private fun ShotImage(shot: Shot, modifier: Modifier = Modifier, contentScale: C
     }
 }
 
+// ---- Albums --------------------------------------------------------------------------------------
+
+/** What's on its way, for the albums: the photos coming here first, then the ones going over. */
+private fun albumProgress(): Pair<String, Float>? {
+    val (got, of) = AlbumSync.getting
+    val (sent, to) = AlbumSync.sending
+    return when {
+        AlbumSync.asked -> "Albums: asking ${Duo.partnerName} for photos" to 0f
+        got < of -> "Albums: getting ${got + 1} of $of from ${Duo.partnerName}" to got / of.toFloat()
+        sent < to -> "Albums: sending ${sent + 1} of $to to ${Duo.partnerName}" to sent / to.toFloat()
+        else -> null
+    }
+}
+
+/** Swapping albums, started from an album: how it's going, and Done. */
+@Composable
+private fun AlbumsTogether(onDone: () -> Unit) {
+    TopBar("Albums with ${Duo.partnerName}", onClose = onDone)
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        val progress = albumProgress()
+        when {
+            !AlbumSync.merged -> Spinner("Swapping albums with ${Duo.partnerName}…")
+            progress != null -> Spinner(progress.first, progress.second)
+            else -> {
+                Icon(Icons.Rounded.Check, null, tint = Gold, modifier = Modifier.size(56.dp))
+                Spacer(Modifier.height(12.dp))
+                Text("Your albums are in sync", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            }
+        }
+        if (AlbumSync.merged) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "${AlbumSync.albumCount} ${if (AlbumSync.albumCount == 1) "album" else "albums"} · ${AlbumSync.shotCount} shots",
+                color = Color.White.copy(alpha = 0.7f),
+            )
+        }
+        Spacer(Modifier.height(32.dp))
+        Button(onClick = onDone) { Text(if (AlbumSync.inSync) "Done" else "Stop for now") }
+        if (AlbumSync.merged && !AlbumSync.inSync) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "The albums are already swapped. Photos that don't make it now come the next time you tap.",
+                color = Color.White.copy(alpha = 0.6f), textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
 // ---- Lobby --------------------------------------------------------------------------------------
 
 @Composable
@@ -295,6 +350,7 @@ private fun Lobby(onClose: () -> Unit, onShareApp: () -> Unit) {
         Text(
             when {
                 hosting && Duo.battleOnly -> "Edit battle"
+                hosting && Duo.albumsOnly -> "Albums together"
                 hosting -> "Cull together"
                 else -> "Join"
             },
@@ -305,6 +361,7 @@ private fun Lobby(onClose: () -> Unit, onShareApp: () -> Unit) {
             when {
                 !hosting -> "Go through someone's photos with them"
                 Duo.battleOnly -> "You both edit the same photo, then vote blind"
+                Duo.albumsOnly -> "You both get every album, and the photos in them"
                 Duo.deck.isEmpty() -> "Getting the photos ready… ${(Duo.preparing * 100).toInt()}%"
                 else -> "${Duo.deck.sumOf { it.size }} shots ready to share"
             },
