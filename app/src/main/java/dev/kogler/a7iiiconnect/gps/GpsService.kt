@@ -30,6 +30,8 @@ data class GpsStatus(
     val accuracyMeters: Float? = null,
     /** The camera stopped taking locations; on the A7III that happens while Bluetooth Rmt Ctrl is on. */
     val offOnCamera: Boolean = false,
+    /** Android wouldn't let the service start in the background (e.g. from the Quick Settings tile). */
+    val startRefused: Boolean = false,
 )
 
 /** Shared GPS-link state for the screen, same pattern as SyncState. */
@@ -85,11 +87,21 @@ class GpsService : Service(), LocationListener {
             return START_NOT_STICKY
         }
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Camera location", NotificationManager.IMPORTANCE_MIN))
-        startForeground(
-            NOTIFICATION_ID, notification("Waiting for the camera"),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-        )
+        try {
+            startForeground(
+                NOTIFICATION_ID, notification("Waiting for the camera"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        } catch (e: Exception) {
+            // Location services may only start while the app is in use; the tile then opens the app.
+            SyncState.log("Location: Android refused to start in the background: $e")
+            GpsState.update { GpsStatus(GpsPhase.OFF, startRefused = true) }
+            GpsTile.refresh(this)
+            stopSelf()
+            return START_NOT_STICKY
+        }
         GpsState.update { GpsStatus(GpsPhase.WAITING_CAMERA) }
+        GpsTile.refresh(this)
 
         listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.FUSED_PROVIDER)
             .filter { runCatching { lm.isProviderEnabled(it) }.getOrDefault(false) }
@@ -118,8 +130,9 @@ class GpsService : Service(), LocationListener {
         main.removeCallbacks(sender)
         runCatching { lm.removeUpdates(this) }
         link?.stop()
+        if (link != null) GpsState.update { GpsStatus(GpsPhase.OFF) }
         link = null
-        GpsState.update { GpsStatus(GpsPhase.OFF) }
+        GpsTile.refresh(this)
         super.onDestroy()
     }
 
