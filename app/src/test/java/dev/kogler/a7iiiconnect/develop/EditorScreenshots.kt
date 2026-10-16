@@ -15,6 +15,8 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.doubleClick
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.geometry.Offset
@@ -203,7 +205,8 @@ class EditorScreenshots {
         screen = "cull"
         repeat(40) { step() }
         shot("21-cull-stack")
-        compose.onNodeWithTag("cull-pick").performClick()
+        // The burst is settled head to head: tap the better of the two.
+        compose.onNodeWithTag("compare-best").performClick()
         repeat(30) { step() }
         shot("22-cull")
         compose.onNodeWithTag("cull-card").performTouchInput { down(center); moveBy(Offset(width * 0.32f, 20f)) }
@@ -303,6 +306,69 @@ class EditorScreenshots {
         val shots = listOf(at(1, t), at(2, t + 500), at(3, t + 30_000), at(4, t + 600_000))
         val stacks = Similar.stacks(context, shots)
         check(stacks.map { s -> s.map { it.primary.id } } == listOf(listOf(1L, 2L, 3L), listOf(4L))) { "stacks: $stacks" }
+
+        // Half a second later but a different picture (a green and white wall): its own stack. An id no
+        // other test uses, since thumbnails are cached by id.
+        val other = File(context.cacheDir, "DSC09413.JPG")
+        val wall = Bitmap.createBitmap(1500, 1000, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(wall)
+        val paint = android.graphics.Paint()
+        for (y in 0 until 4) for (x in 0 until 6) {
+            paint.color = if ((x + y) % 2 == 0) 0xFF2E7D32.toInt() else 0xFFF5F5F5.toInt()
+            canvas.drawRect(x * 250f, y * 250f, x * 250f + 250f, y * 250f + 250f, paint)
+        }
+        other.outputStream().use { wall.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+        val turned = Shot(null, LibraryPhoto(905L, Uri.fromFile(other), "DSC05.JPG", "image/jpeg", t + 1_000))
+        val split = Similar.stacks(context, listOf(at(1, t), at(2, t + 500), turned))
+        check(split.map { s -> s.map { it.primary.id } } == listOf(listOf(1L, 2L), listOf(905L))) { "stacks: $split" }
+    }
+
+    @Test
+    fun compareShots() {
+        val context: Context = RuntimeEnvironment.getApplication()
+        val file = File(context.cacheDir, "DSC09412.JPG")
+        writeLandscape(file)
+        val t = 1_760_000_000_000L
+        val shots = Library.shots((0 until 6).map { i ->
+            LibraryPhoto(400L + i, Uri.fromFile(file), "DSC096${10 + i}.JPG", "image/jpeg", t - i * 300_000L)
+        })
+        var compare by mutableStateOf<List<Shot>?>(null)
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            MaterialTheme(colorScheme = darkColorScheme()) {
+                val c = compare
+                if (c == null) {
+                    LibraryScreen(
+                        shots = shots, edited = emptySet(), marks = shots.associate { it.key to Mark.PICK }, exported = emptySet(),
+                        onOpen = {}, onCull = { _, _ -> }, onTogether = {}, onDeleteRejected = {},
+                        transfer = SyncStatus(), onCamera = {}, onCompare = { compare = it },
+                    )
+                } else {
+                    CompareScreen(shots = c, marks = emptyMap(), onMark = { _, _ -> }, onBack = { compare = null })
+                }
+            }
+        }
+        repeat(20) { step() }
+        for (i in 0 until 4) {
+            compose.onNodeWithTag("thumb-${shots[i].key}").performTouchInput { longClick() }
+            repeat(4) { step() }
+        }
+        shot("40-library-select")
+        compose.onNodeWithTag("compare").performClick()
+        repeat(40) { step() }
+        shot("41-compare")
+        compose.onNodeWithTag("compare-challenger").performTouchInput { doubleClick(center) }
+        repeat(30) { step() }
+        shot("42-compare-zoomed")
+        compose.onNodeWithTag("compare-best").performTouchInput { doubleClick(center) }
+        repeat(10) { step() }
+        compose.onNodeWithTag("compare-challenger").performClick()
+        repeat(30) { step() }
+        compose.onNodeWithTag("compare-keep-both").performClick()
+        repeat(10) { step() }
+        compose.onNodeWithTag("compare-best").performClick()
+        repeat(40) { step() }
+        shot("43-compare-done")
     }
 
     private fun tool(name: String) {
