@@ -226,6 +226,8 @@ private class SwipeAdjust(
     val onThumbs: (u: Float, v: Float) -> Unit,
     /** The left thumb moved by (dx, dy) px to ([u], [v]) of the photo (-1 off it). */
     val onLeft: (dx: Float, dy: Float, u: Float, v: Float, height: Float) -> Unit,
+    /** The left thumb held still at ([u], [v]) of the photo (-1 off it). */
+    val onLeftHold: (u: Float, v: Float) -> Unit,
     /** The right thumb moved by (dx, dy) px. */
     val onRight: (dx: Float, dy: Float, height: Float) -> Unit,
     val onMove: (dx: Float, dy: Float, width: Float) -> Unit,
@@ -615,41 +617,36 @@ fun EditorScreen(
     fun toneAt(channel: Int, u: Float, v: Float): Float? = probeAt(u, v)?.let { rgb ->
         if (channel == 0) 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2] else rgb[channel - 1]
     }
-    /**
-     * Two-thumb mode on a curve: selects the point for tone [x] (where the left thumb landed): an
-     * existing one nearby, or a new one on the curve that goes away again if it's left unmoved.
-     * Without a tone, the middle point.
-     */
+    /** Two-thumb mode on a curve: selects the existing point nearest tone [x] (where the left thumb landed), or the middle one. */
     fun selectCurvePoint(channel: Int, x: Float?) {
-        val curve = settings.curves[channel]
-        val near = x?.let { t -> curve.points.indices.minByOrNull { abs(curve.points[it].first - t) }?.takeIf { abs(curve.points[it].first - t) < 0.06f } }
-        val (pts, i) = when {
-            near != null -> curve.points.sortedBy { it.first }.toMutableList() to near
-            x != null -> grabCurvePoint(curve, x)
-            else -> curve.points.sortedBy { it.first }.toMutableList().let { it to it.indices.minBy { i -> abs(it[i].first - 0.5f) } }
-        }
+        val pts = settings.curves[channel].points.sortedBy { it.first }.toMutableList()
+        val i = pts.indices.minBy { abs(pts[it].first - (x ?: 0.5f)) }
         swipeState.curve = pts
         swipeState.curveSel = i
-        swipeState.curveAdded = near == null && x != null && i >= 0
         swipeState.acc = 0f
-        curvePoint = pts.getOrNull(i)
+        curvePoint = pts[i]
     }
-    /** Two-thumb mode: the left thumb steps through the curve's points, up to brighter ones. */
+    /** Two-thumb mode: the left thumb, held still, adds a point at tone [x] on the curve and selects it. */
+    fun addCurvePoint(channel: Int, x: Float) {
+        val (pts, i) = grabCurvePoint(Curve(swipeState.curve ?: settings.curves[channel].points), x)
+        if (i < 0) return
+        swipeState.curve = pts
+        swipeState.curveSel = i
+        swipeState.acc = 0f
+        curvePoint = pts[i]
+        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        dragging = true
+        settings = settings.withCurve(channel, Curve(pts.toList()))
+    }
+    /** Two-thumb mode: sliding the left thumb steps through the curve's points, up to brighter ones. */
     fun stepCurvePoint(dy: Float) {
         val pts = swipeState.curve ?: return
         swipeState.acc -= dy
         val steps = (swipeState.acc / swipeRowStep).toInt()
         if (steps == 0) return
         swipeState.acc -= steps * swipeRowStep
-        var i = swipeState.curveSel
-        // A point added just to be selected, and never moved, goes away again.
-        if (swipeState.curveAdded && i in pts.indices) {
-            pts.removeAt(i)
-            if (steps > 0) i--
-            swipeState.curveAdded = false
-        }
-        val next = (i + steps).coerceIn(0, pts.size - 1)
-        if (next != swipeState.curveSel || pts.size != (swipeState.curve?.size ?: 0)) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        val next = (swipeState.curveSel + steps).coerceIn(0, pts.size - 1)
+        if (next != swipeState.curveSel) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         swipeState.curveSel = next
         curvePoint = pts.getOrNull(next)
     }
@@ -756,6 +753,10 @@ fun EditorScreen(
                 else -> menuMove(dx, dy)
             }
         },
+        onLeftHold = { u, v ->
+            val node = swipeNav.node(menuTree, swipePath)
+            if (node is SwipeCurve && u >= 0f) toneAt(node.channel, u, v)?.let { addCurvePoint(node.channel, it) }
+        },
         onRight = { dx, dy, height ->
             val up = if (height > 0f) -dy / height else 0f
             when (val node = swipeNav.node(menuTree, swipePath)) {
@@ -798,7 +799,6 @@ fun EditorScreen(
                         val hi = if (i == pts.size - 1) 1f else pts[i + 1].first - 0.01f
                         val (x, y) = pts[i]
                         pts[i] = (x + dx / height).coerceIn(lo, maxOf(lo, hi)) to (y + up).coerceIn(0f, 1f)
-                        swipeState.curveAdded = false
                         curveGrab[node.channel] = pts[i].first
                         curvePoint = pts[i]
                         dragging = true
@@ -1511,11 +1511,26 @@ private fun ZoomableImage(
                     var last = down.uptimeMillis
                     var leftId: PointerId? = null
                     var rightId: PointerId? = null
+                    // Two thumbs: where the left one is, since when it has been still, and whether that hold fired.
+                    var leftAt = Offset.Zero
+                    var leftStill = 0L
+                    var leftDrift = 0f
+                    var leftHeld = false
                     while (true) {
                         val ev = if (axis == 0) {
                             val left = viewConfiguration.longPressTimeoutMillis - (last - down.uptimeMillis)
                             withTimeoutOrNull(left.coerceAtLeast(1L)) { awaitPointerEvent() }
+                        } else if (axis == 6 && !leftHeld) {
+                            val left = viewConfiguration.longPressTimeoutMillis - (last - leftStill)
+                            withTimeoutOrNull(left.coerceAtLeast(1L)) { awaitPointerEvent() }
                         } else awaitPointerEvent()
+                        if (ev == null && axis == 6) {
+                            // The left thumb held still: that adds (on a curve, a point at its tone).
+                            leftHeld = true
+                            val at = toImage(leftAt)
+                            adjust?.onLeftHold?.invoke(at?.x ?: -1f, at?.y ?: -1f)
+                            continue
+                        }
                         if (ev == null) {
                             val at = toImage(down.position + moved)
                             axis = if (at != null && adjust?.onTarget?.invoke(at.x, at.y) == true) 4 else { holding(true); 5 }
@@ -1532,6 +1547,7 @@ private fun ZoomableImage(
                                 if (axis != 0) adjust?.onEnd?.invoke()
                                 val (l, r) = if (a.position.x < b.position.x) a to b else b to a
                                 leftId = l.id; rightId = r.id
+                                leftAt = l.position; leftStill = last; leftDrift = 0f; leftHeld = false
                                 axis = 6
                                 val at = toImage(l.position)
                                 adjust?.onThumbs?.invoke(at?.x ?: -1f, at?.y ?: -1f)
@@ -1545,6 +1561,11 @@ private fun ZoomableImage(
                                 val r = ev.changes.firstOrNull { it.id == rightId }
                                 if (l != null && l.pressed) {
                                     val d = l.positionChange()
+                                    leftAt = l.position
+                                    leftDrift += d.getDistance()
+                                    if (leftDrift > viewConfiguration.touchSlop) {
+                                        leftDrift = 0f; leftStill = last; leftHeld = false
+                                    }
                                     if (d != Offset.Zero) {
                                         val at = toImage(l.position)
                                         adjust?.onLeft?.invoke(d.x, d.y, at?.x ?: -1f, at?.y ?: -1f, size.height.toFloat())
@@ -1553,7 +1574,11 @@ private fun ZoomableImage(
                                 }
                                 if (r != null && r.pressed) {
                                     val d = r.positionChange()
-                                    if (d != Offset.Zero) adjust?.onRight?.invoke(d.x, d.y, size.height.toFloat())
+                                    if (d != Offset.Zero) {
+                                        // Working with the right thumb disarms the left thumb's hold until it slides again.
+                                        leftHeld = true
+                                        adjust?.onRight?.invoke(d.x, d.y, size.height.toFloat())
+                                    }
                                     r.consume()
                                 }
                                 // The right thumb lifted: the left one carries on in the menu, as one finger.
@@ -1679,8 +1704,6 @@ private class SwipeState {
     /** A curve row's points while one is dragged, and which. */
     var curve: MutableList<Pair<Float, Float>>? = null
     var curveSel = -1
-    /** Two-thumb mode: the selected curve point was only added to be selected (not moved yet). */
-    var curveAdded = false
     /** Two-thumb mode: the right thumb's slider detent, and its row. */
     var thumbDetent: Detent? = null
     var thumbRow: String? = null
