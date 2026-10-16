@@ -307,7 +307,8 @@ class EditorScreenshots {
         val stacks = Similar.stacks(context, shots)
         check(stacks.map { s -> s.map { it.primary.id } } == listOf(listOf(1L, 2L, 3L), listOf(4L))) { "stacks: $stacks" }
 
-        // Half a second later but a different picture (turned to a green and white wall): its own stack.
+        // Half a second later but a different picture (a green and white wall): its own stack. An id no
+        // other test uses, since thumbnails are cached by id.
         val other = File(context.cacheDir, "DSC09413.JPG")
         val wall = Bitmap.createBitmap(1500, 1000, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(wall)
@@ -317,9 +318,9 @@ class EditorScreenshots {
             canvas.drawRect(x * 250f, y * 250f, x * 250f + 250f, y * 250f + 250f, paint)
         }
         other.outputStream().use { wall.compress(Bitmap.CompressFormat.JPEG, 92, it) }
-        val turned = Shot(null, LibraryPhoto(5L, Uri.fromFile(other), "DSC05.JPG", "image/jpeg", t + 1_000))
+        val turned = Shot(null, LibraryPhoto(905L, Uri.fromFile(other), "DSC05.JPG", "image/jpeg", t + 1_000))
         val split = Similar.stacks(context, listOf(at(1, t), at(2, t + 500), turned))
-        check(split.map { s -> s.map { it.primary.id } } == listOf(listOf(1L, 2L), listOf(5L))) { "stacks: $split" }
+        check(split.map { s -> s.map { it.primary.id } } == listOf(listOf(1L, 2L), listOf(905L))) { "stacks: $split" }
     }
 
     @Test
