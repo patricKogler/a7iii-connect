@@ -14,6 +14,8 @@ data class SyncStatus(
     val done: Int = 0,
     val total: Int = 0,
     val currentFile: String? = null,
+    /** Copying over the USB cable rather than the camera's Wi-Fi. */
+    val usb: Boolean = false,
 )
 
 object SyncState {

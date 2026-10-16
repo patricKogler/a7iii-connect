@@ -28,6 +28,8 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
     <uses-feature android:name="android.hardware.nfc.hce" android:required="false" />
+    <!-- Copying over a USB cable: the phone is the host, the camera an MTP device. -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <uses-permission
         android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation"
@@ -64,6 +66,13 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/x-sony-pmm" />
             </intent-filter>
+            <!-- Plugging the camera in with a cable. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_camera" />
         </activity>
         <activity
             android:name=".remote.RemoteActivity"
@@ -105,6 +114,10 @@
         </provider>
         <service
             android:name=".SyncService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+        <service
+            android:name=".usb.UsbImportService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
         <service
