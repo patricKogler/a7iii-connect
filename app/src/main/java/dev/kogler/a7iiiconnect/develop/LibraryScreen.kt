@@ -75,6 +75,13 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PhotoAlbum
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RemoveCircleOutline
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -150,6 +157,10 @@ fun LibraryScreen(
     onCamera: () -> Unit,
     meta: Map<String, ShotMeta> = emptyMap(),
     places: Map<String, String> = emptyMap(),
+    /** What looking at each shot found, and the people in them. */
+    insights: Map<String, ShotInsight> = emptyMap(),
+    people: List<Person> = emptyList(),
+    onNamePerson: (ids: Set<String>, name: String) -> Unit = { _, _ -> },
     filter: QuickFilter = QuickFilter.ALL,
     onQuickFilter: (QuickFilter) -> Unit = {},
     sheetFilter: ShotFilter = ShotFilter(),
@@ -181,9 +192,22 @@ fun LibraryScreen(
     BackHandler(enabled = selectedShots.isNotEmpty() || selectedDays.isNotEmpty()) {
         selectedShots = emptySet(); selectedDays = emptySet()
     }
-    val facts = remember(shots, meta, places, edited, exported) {
-        shots.map { ShotFacts(it, meta[it.key], it.key in edited, Photos.exportName(it.primary).lowercase() in exported, places[it.key]) }
+    var searching by remember { mutableStateOf(false) }
+    val facts = remember(shots, meta, places, edited, exported, insights, people) {
+        val keys = HashMap<String, MutableSet<String>>()
+        val names = HashMap<String, MutableList<String>>()
+        for (p in people) for (f in p.faces) {
+            keys.getOrPut(f.shot) { mutableSetOf() } += p.key
+            p.name?.let { names.getOrPut(f.shot) { mutableListOf() } += it }
+        }
+        shots.map {
+            ShotFacts(
+                it, meta[it.key], it.key in edited, Photos.exportName(it.primary).lowercase() in exported, places[it.key],
+                insights[it.key], keys[it.key].orEmpty(), names[it.key].orEmpty(),
+            )
+        }
     }
+    fun personName(key: String) = people.find { it.key == key }?.name ?: "Someone"
     // The sheet's metadata filter narrows everything on screen, Review included.
     val matching = if (sheetFilter.isEmpty) shots else facts.filter { sheetFilter.matches(it) }.map { it.shot }
     // An open album shows just its shots; the filters still narrow them down.
@@ -309,6 +333,9 @@ fun LibraryScreen(
                                 Text("Review ${due.size}")
                             }
                         }
+                        IconButton(onClick = { searching = true }, modifier = Modifier.testTag("search")) {
+                            Icon(Icons.Rounded.Search, "Search")
+                        }
                         IconButton(onClick = onCamera, modifier = Modifier.testTag("camera")) {
                             Icon(Icons.Rounded.PhotoCamera, "Camera")
                         }
@@ -319,6 +346,15 @@ fun LibraryScreen(
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             if (transfer.running) TransferStrip(transfer, onCamera)
+            if (searching || !sheetFilter.query.isNullOrBlank()) {
+                SearchField(
+                    query = sheetFilter.query.orEmpty(),
+                    onQuery = { onSheetFilter(sheetFilter.copy(query = it.ifEmpty { null })) },
+                    onClose = { searching = false; onSheetFilter(sheetFilter.copy(query = null)) },
+                    looked = shots.count { it.key in insights },
+                    total = shots.size,
+                )
+            }
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -373,15 +409,17 @@ fun LibraryScreen(
                 }
             }
             // What the sheet filters on, each removable; a saved filter shows as its own chip instead.
-            if (!sheetFilter.isEmpty && saved.none { it.filter == sheetFilter }) {
+            // The search words are in the search field already.
+            val unsearched = sheetFilter.copy(query = null)
+            if (!unsearched.isEmpty && saved.none { it.filter == sheetFilter }) {
                 Row(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    for ((label, without) in sheetFilter.chips()) {
+                    for ((label, without) in unsearched.chips(::personName)) {
                         InputChip(
                             selected = true,
-                            onClick = { onSheetFilter(without) },
+                            onClick = { onSheetFilter(without.copy(query = sheetFilter.query)) },
                             label = { Text(label) },
                             trailingIcon = { Icon(Icons.Rounded.Close, "Remove $label", Modifier.size(16.dp)) },
                         )
@@ -392,6 +430,8 @@ fun LibraryScreen(
                 val current = saved.find { it.filter == sheetFilter }
                 FilterSheet(
                     facts = facts,
+                    people = People.shown(people),
+                    onNamePerson = onNamePerson,
                     filter = sheetFilter,
                     onFilter = onSheetFilter,
                     onSave = onSaveFilter,
@@ -418,6 +458,7 @@ fun LibraryScreen(
                             shots.isEmpty() -> "Photos from the camera will show up here"
                             album != null && album.size == 0 -> "Nothing in this album yet. Long-press shots in Photos to add them."
                             filter == QuickFilter.TO_REVIEW && sheetFilter.isEmpty -> "All reviewed"
+                            !sheetFilter.query.isNullOrBlank() && unsearched.isEmpty -> "Nothing found for \u201c${sheetFilter.query.orEmpty().trim()}\u201d"
                             !sheetFilter.isEmpty -> "No photos match these filters"
                             else -> "Nothing here"
                         },
@@ -481,6 +522,34 @@ fun LibraryScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+/** Search box above the grid; it searches what's in the photos, their text, places, lenses and people. */
+@Composable
+private fun SearchField(query: String, onQuery: (String) -> Unit, onClose: () -> Unit, looked: Int, total: Int) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { if (query.isEmpty()) runCatching { focus.requestFocus() } }
+    Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp)) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQuery,
+            singleLine = true,
+            placeholder = { Text("Dog, beach, a name, words on a sign") },
+            leadingIcon = { Icon(Icons.Rounded.Search, null) },
+            trailingIcon = { IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "Close search") } },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            shape = RoundedCornerShape(28.dp),
+            modifier = Modifier.fillMaxWidth().focusRequester(focus).testTag("search-field"),
+        )
+        if (looked < total) {
+            Text(
+                "Still looking through your photos: $looked of $total done",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 16.dp, top = 4.dp),
+            )
         }
     }
 }

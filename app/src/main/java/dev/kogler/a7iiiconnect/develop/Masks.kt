@@ -137,7 +137,7 @@ internal fun MaskView(
     // The red coverage tint, rendered small on the CPU.
     var tint by remember { mutableStateOf<ImageBitmap?>(null) }
     val showTint = mask != null && (overlay || handleDrag)
-    LaunchedEffect(showTint, mask?.copy(values = emptyMap()), geom.outW, geom.outH, opened.preview.maps.subject) {
+    LaunchedEffect(showTint, mask?.copy(values = emptyMap()), geom.outW, geom.outH, opened.preview.maps.subject, opened.preview.maps.sky) {
         tint = if (!showTint || mask == null) null else withContext(Dispatchers.Default) { coverage(opened, settings, mask) }
     }
 
@@ -154,7 +154,7 @@ internal fun MaskView(
                 detectDragGestures(
                     onDragStart = { p ->
                         start = null
-                        val m = s.masks.getOrNull(selected)?.takeIf { it.kind != MaskKind.SUBJECT }
+                        val m = s.masks.getOrNull(selected)?.takeIf { it.shaped }
                         if (m != null) {
                             val space = MaskSpace(opened.geometry(s), fitRect(box, layer.width, layer.height))
                             val near = handlesOf(space, m).minByOrNull { (_, at) -> hypot(at.x - p.x, at.y - p.y) }
@@ -190,7 +190,7 @@ internal fun MaskView(
                     dstSize = IntSize(r.width.roundToInt(), r.height.roundToInt()), filterQuality = FilterQuality.Low,
                 )
             }
-            if (mask != null && mask.kind != MaskKind.SUBJECT) {
+            if (mask != null && mask.shaped) {
                 clipRect(r.left, r.top, r.right, r.bottom) { drawHandles(MaskSpace(geom, r), mask, r) }
             }
         }
@@ -211,7 +211,7 @@ private fun handlesOf(space: MaskSpace, m: Mask): List<Pair<MaskHandle, Offset>>
             MaskHandle.RADIUS_Y to space.radialPoint(m, 0.0, m.y1 * g.srcH),
         )
     }
-    MaskKind.SUBJECT -> emptyList()
+    MaskKind.SUBJECT, MaskKind.SKY -> emptyList()
 }
 
 /** [m0] with [handle] dragged from screen point [from] to [to]. */
@@ -286,7 +286,7 @@ private fun DrawScope.drawHandles(space: MaskSpace, m: Mask, r: Rect) {
             dot(space.radialPoint(m, rx, 0.0), false)
             dot(space.radialPoint(m, 0.0, ry), false)
         }
-        MaskKind.SUBJECT -> {}
+        MaskKind.SUBJECT, MaskKind.SKY -> {}
     }
 }
 
@@ -295,7 +295,7 @@ private fun coverage(o: OpenedPhoto, s: Settings, mask: Mask): ImageBitmap {
     val geom = o.geometry(s)
     val k = 240.0 / maxOf(geom.outW, geom.outH)
     val w = maxOf(1, (geom.outW * k).toInt()); val h = maxOf(1, (geom.outH * k).toInt())
-    val set = MaskSet(listOf(mask), geom.srcW, geom.srcH, o.preview.maps.subject)
+    val set = MaskSet(listOf(mask), geom.srcW, geom.srcH, o.preview.maps.subject, o.preview.maps.sky)
     val px = IntArray(w * h)
     val m = DoubleArray(6)
     for (y in 0 until h) for (x in 0 until w) {
@@ -312,6 +312,7 @@ private fun maskLabel(m: Mask) = when (m.kind) {
     MaskKind.LINEAR -> "Linear"
     MaskKind.RADIAL -> "Radial"
     MaskKind.SUBJECT -> "Subject"
+    MaskKind.SKY -> "Sky"
 }
 
 /**
@@ -326,6 +327,8 @@ internal fun MaskPanel(
     aspect: Float,
     subject: SubjectStatus,
     onRetrySubject: () -> Unit,
+    sky: SubjectStatus = SubjectStatus.Ready,
+    onRetrySky: () -> Unit = {},
     overlay: Boolean,
     onOverlay: (Boolean) -> Unit,
 ) {
@@ -350,6 +353,7 @@ internal fun MaskPanel(
         if (masks.size < MaskSet.MAX) {
             for ((label, make) in listOf<Pair<String, () -> Mask>>(
                 "Linear" to { Mask.linear() }, "Radial" to { Mask.radial(aspect) }, "Subject" to { Mask.subject() },
+                "Sky" to { Mask.sky() },
             )) {
                 AssistChip(
                     onClick = {
@@ -368,7 +372,7 @@ internal fun MaskPanel(
     if (m == null) {
         Text(
             "Add a mask to change part of the photo: Linear for a sky, Radial for a face or a spotlight, " +
-                "Subject to pick out the person or thing in front.",
+                "Subject to pick out the person or thing in front, Sky for just the sky.",
             color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(vertical = 12.dp),
         )
         return
@@ -395,6 +399,19 @@ internal fun MaskPanel(
             is SubjectStatus.Failed -> Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Couldn't find the subject: ${subject.message}", color = Color(0xFFFF8A80), fontSize = 12.sp, modifier = Modifier.weight(1f))
                 TextButton(onClick = onRetrySubject) { Text("Retry") }
+            }
+            SubjectStatus.Ready -> {}
+        }
+    }
+    if (m.usesSky) {
+        when (sky) {
+            SubjectStatus.Finding -> {
+                Text("Finding the sky…", color = Color.Gray, fontSize = 12.sp)
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp))
+            }
+            is SubjectStatus.Failed -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Couldn't find the sky: ${sky.message}", color = Color(0xFFFF8A80), fontSize = 12.sp, modifier = Modifier.weight(1f))
+                TextButton(onClick = onRetrySky) { Text("Retry") }
             }
             SubjectStatus.Ready -> {}
         }

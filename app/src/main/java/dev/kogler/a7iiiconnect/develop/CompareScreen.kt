@@ -37,6 +37,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -74,6 +78,9 @@ fun CompareScreen(
     // What the shots were marked before, so undoing the last choice can put it back.
     val before = remember(shots) { shots.associate { it.key to marks[it.key] } }
     var applied by remember(shots) { mutableStateOf(false) }
+    // Closed eyes and focus, as far as they've been looked at.
+    val context = LocalContext.current
+    val insights by produceState(emptyMap<String, ShotInsight>()) { value = withContext(Dispatchers.IO) { Insights.known(context) } }
     LaunchedEffect(duel.done) {
         if (duel.done && !applied) {
             duel.kept.forEach { onMark(it, Mark.PICK) }
@@ -106,7 +113,7 @@ fun CompareScreen(
         if (duel.done) {
             CompareResult(duel.kept, duel.dropped.size, onBack, Modifier.weight(1f))
         } else {
-            HeadToHead(duel, Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp))
+            HeadToHead(duel, Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), notesOf = { Best.notes(it, insights, shots) })
             Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.Center) {
                 KeepBoth("compare-keep-both") { duel.keepBoth() }
             }
@@ -153,7 +160,12 @@ private fun CompareResult(kept: List<Shot>, rejected: Int, onBack: () -> Unit, m
  * so focus can be compared directly.
  */
 @Composable
-internal fun HeadToHead(duel: Duel<Shot>, modifier: Modifier, header: (@Composable () -> Unit)? = null) {
+internal fun HeadToHead(
+    duel: Duel<Shot>, modifier: Modifier,
+    /** Notes for each shot's caption ([Best.notes]). */
+    notesOf: (Shot) -> List<String> = { emptyList() },
+    header: (@Composable () -> Unit)? = null,
+) {
     val haptics = LocalHapticFeedback.current
     var scale by remember { mutableFloatStateOf(1f) }
     var pan by remember { mutableStateOf(Offset.Zero) }
@@ -234,7 +246,7 @@ internal fun HeadToHead(duel: Duel<Shot>, modifier: Modifier, header: (@Composab
                     .then(if (bestWins) Modifier.border(1.dp, PickGreen.copy(alpha = 0.7f), RoundedCornerShape(6.dp)) else Modifier)
                     .padding(horizontal = 8.dp, vertical = 3.dp),
             )
-            if (scale <= 1.01f) CardInfo(shot, Modifier.align(Alignment.BottomStart))
+            if (scale <= 1.01f) CardInfo(shot, Modifier.align(Alignment.BottomStart), notesOf(shot))
         }
     }
 

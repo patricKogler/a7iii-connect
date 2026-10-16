@@ -10,6 +10,7 @@ enum class MaskKind(val label: String) {
     LINEAR("Linear gradient"),
     RADIAL("Radial gradient"),
     SUBJECT("Subject"),
+    SKY("Sky"),
 }
 
 /** The sliders a mask carries: Lightroom's local adjustments that fit this engine. */
@@ -39,6 +40,7 @@ object LocalP {
  * Radial: centre ([x0], [y0]), radii [x1] (of the width) and [y1] (of the height), turned by
  * [angle] degrees; [feather] (0..100) is how much of the radius fades.
  * Subject: the photo's main subject, found on the device (see [MaskMaps.subject]).
+ * Sky: the photo's sky, found on the device (see [MaskMaps.sky]).
  */
 data class Mask(
     val kind: MaskKind,
@@ -61,10 +63,13 @@ data class Mask(
     }
 
     val usesSubject get() = kind == MaskKind.SUBJECT || excludeSubject
+    val usesSky get() = kind == MaskKind.SKY
+    /** Placed by hand (with handles), rather than found in the photo. */
+    val shaped get() = kind == MaskKind.LINEAR || kind == MaskKind.RADIAL
 
     fun encode(): String = buildString {
         append(kind.name.lowercase())
-        if (kind != MaskKind.SUBJECT) append(";x0=$x0;y0=$y0;x1=$x1;y1=$y1")
+        if (kind != MaskKind.SUBJECT && kind != MaskKind.SKY) append(";x0=$x0;y0=$y0;x1=$x1;y1=$y1")
         if (kind == MaskKind.RADIAL) append(";angle=$angle;feather=$feather")
         if (invert) append(";invert=1")
         if (excludeSubject) append(";excludeSubject=1")
@@ -79,6 +84,8 @@ data class Mask(
         fun radial(aspect: Float) = Mask(MaskKind.RADIAL, 0.5f, 0.5f, 0.25f, 0.25f * aspect)
 
         fun subject() = Mask(MaskKind.SUBJECT)
+
+        fun sky() = Mask(MaskKind.SKY)
 
         fun decode(text: String): Mask? = runCatching {
             val parts = text.split(';')
@@ -130,6 +137,8 @@ class MaskImage(val width: Int, val height: Int, val data: FloatArray) {
 class MaskMaps {
     /** Null until it has been found (masks that use it have no effect until then). */
     @Volatile var subject: MaskImage? = null
+    /** The sky, likewise (masks that use it have no effect until it's found). */
+    @Volatile var sky: MaskImage? = null
 }
 
 /**
@@ -137,7 +146,7 @@ class MaskMaps {
  * flattened into [params] ([STRIDE] floats per mask; the Rust engine and the GPU shader read the
  * same layout). [add] sums every mask's sliders, weighted by its coverage, at one pixel.
  */
-class MaskSet(masks: List<Mask>, private val srcW: Double, private val srcH: Double, val subject: MaskImage?) {
+class MaskSet(masks: List<Mask>, private val srcW: Double, private val srcH: Double, val subject: MaskImage?, val sky: MaskImage? = null) {
     val count = minOf(MAX, masks.size)
     val params = FloatArray(count * STRIDE)
     /** Which of the [LOCALS] are non-zero in some mask. */
@@ -185,7 +194,8 @@ class MaskSet(masks: List<Mask>, private val srcW: Double, private val srcH: Dou
                 val ry = (-qx * p[o + 6] + qy * p[o + 5]) / p[o + 4]
                 1 - smoothstep(1 - p[o + 7], 1f, sqrt(rx * rx + ry * ry))
             }
-            else -> subjectAt(x, y)
+            3 -> subjectAt(x, y)
+            else -> skyAt(x, y)
         }
         if (p[o + 8] > 0.5f) w = 1 - w
         if (p[o + 9] > 0.5f) w *= 1 - subjectAt(x, y)
@@ -193,6 +203,7 @@ class MaskSet(masks: List<Mask>, private val srcW: Double, private val srcH: Dou
     }
 
     private fun subjectAt(x: Float, y: Float): Float = subject?.at((x / srcW).toFloat(), (y / srcH).toFloat()) ?: 0f
+    private fun skyAt(x: Float, y: Float): Float = sky?.at((x / srcW).toFloat(), (y / srcH).toFloat()) ?: 0f
 
     /** Adds every mask's [LOCALS] at full-size pixel ([x], [y]) into [out]. */
     fun add(x: Float, y: Float, out: FloatArray) {

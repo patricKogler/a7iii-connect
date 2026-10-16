@@ -368,11 +368,13 @@ fun EditorScreen(
     // Bumped when the subject map arrives, so the photo re-renders with it.
     var subjectVersion by remember { mutableIntStateOf(0) }
     var subjectTry by remember { mutableIntStateOf(0) }
+    var skyStatus by remember { mutableStateOf<SubjectStatus>(SubjectStatus.Ready) }
+    var skyTry by remember { mutableIntStateOf(0) }
 
     // Open the photo: show the camera's embedded JPEG at once, then the real render.
     LaunchedEffect(photo.id) {
         opened = null; rendered = null; before = null; compareImage = null; loadError = null; tile = null
-        maskIndex = 0; subjectStatus = SubjectStatus.Ready
+        maskIndex = 0; subjectStatus = SubjectStatus.Ready; skyStatus = SubjectStatus.Ready
         guides.clear()
         settings = store.load(photo)
         history = History(settings)
@@ -393,6 +395,16 @@ fun EditorScreen(
         subjectStatus = SubjectStatus.Finding
         val result = withContext(Dispatchers.IO) { runCatching { SubjectFinder.find(context, store, o) } }
         subjectStatus = result.exceptionOrNull()?.let { SubjectStatus.Failed(it.message ?: it.javaClass.simpleName) } ?: SubjectStatus.Ready
+        if (result.isSuccess) { tile = null; subjectVersion++ }
+    }
+    // Sky masks likewise need the photo's sky.
+    val needsSky = settings.masks.any { it.usesSky }
+    LaunchedEffect(opened, needsSky, skyTry) {
+        val o = opened ?: return@LaunchedEffect
+        if (!needsSky || o.preview.maps.sky != null) return@LaunchedEffect
+        skyStatus = SubjectStatus.Finding
+        val result = withContext(Dispatchers.Default) { runCatching { SkyFinder.find(store, o) } }
+        skyStatus = result.exceptionOrNull()?.let { SubjectStatus.Failed(it.message ?: it.javaClass.simpleName) } ?: SubjectStatus.Ready
         if (result.isSuccess) { tile = null; subjectVersion++ }
     }
 
@@ -917,6 +929,7 @@ fun EditorScreen(
             val result = withContext(Dispatchers.Default) {
                 runCatching {
                     if (s.masks.any { it.usesSubject }) SubjectFinder.find(context, store, o)
+                    if (s.masks.any { it.usesSky }) SkyFinder.find(store, o)
                     Photos.export(context, o, s, options) { p -> exportProgress = p }
                 }
             }
@@ -1233,6 +1246,7 @@ fun EditorScreen(
                             ctl, maskIndex, onSelect = { maskIndex = it },
                             aspect = o?.preview?.let { it.fullWidth.toFloat() / it.fullHeight } ?: 1.5f,
                             subject = subjectStatus, onRetrySubject = { subjectTry++ },
+                            sky = skyStatus, onRetrySky = { skyTry++ },
                             overlay = maskOverlay, onOverlay = { maskOverlay = it },
                         )
                         else -> {}
@@ -1377,6 +1391,7 @@ private class SceneCache {
     private var scale = 1.0
     private var coords: Bitmap? = null
     private var subjectOf: MaskImage? = null
+    private var skyOf: MaskImage? = null
     private var subject: Bitmap? = null
 
     fun frame(o: OpenedPhoto, s: Settings, dragging: Boolean, crop: Boolean, guides: GuideCache): GpuPreview.Frame {
@@ -1398,9 +1413,10 @@ private class SceneCache {
         val params = look.shaderParams(scale)
         val sc = scene!!
         if (params.maskCount > 0 && coords == null) coords = GpuPreview.coordsBitmap(geom, scale, sc.width, sc.height)
-        if (params.subject !== subjectOf) {
+        if (params.subject !== subjectOf || params.sky !== skyOf) {
             subjectOf = params.subject
-            subject = params.subject?.let { GpuPreview.subjectBitmap(it) }
+            skyOf = params.sky
+            subject = if (params.subject != null || params.sky != null) GpuPreview.mapsBitmap(params.subject, params.sky) else null
         }
         return GpuPreview.prepare(sc, guide, guide?.let { guides.bitmapOf(it) }, params, coords, subject)
     }

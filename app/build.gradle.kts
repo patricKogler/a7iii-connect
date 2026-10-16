@@ -12,8 +12,10 @@ android {
         applicationId = "dev.kogler.a7iiiconnect"
         minSdk = 31
         targetSdk = 35
-        versionCode = 49
-        versionName = "0.31.1"
+        versionCode = 50
+        versionName = "0.32.1"
+        // The Rust engine is built for arm64 only; this keeps other libraries' native code out too.
+        ndk { abiFilters += "arm64-v8a" }
     }
 
     // CI decodes the KEYSTORE_B64 secret to a file, so every build has the same signature and
@@ -35,7 +37,7 @@ android {
             // Shrinks the Compose icon library down to the icons actually used (~40 MB -> a few MB).
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("fixed") ?: signingConfigs.getByName("debug")
         }
     }
@@ -79,6 +81,12 @@ dependencies {
     // Subject masks: on-device subject segmentation (the model ships with Google Play services).
     implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
     implementation("com.google.android.gms:play-services-base:18.5.0")
+    // Smart library: faces and open eyes, what's in a photo, and text in it (models from Play services).
+    implementation("com.google.android.gms:play-services-mlkit-face-detection:17.1.0")
+    implementation("com.google.android.gms:play-services-mlkit-image-labeling:16.0.8")
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
+    // People: runs the SFace model (assets/sface_int8.onnx) that tells faces apart.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
 
     // Screenshot tests: the editor rendered on the JVM (Robolectric + Roborazzi).
     testImplementation(composeBom)

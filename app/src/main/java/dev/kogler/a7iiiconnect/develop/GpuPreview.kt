@@ -114,7 +114,8 @@ internal class GpuPreview(source: String = AGSL) {
         u("maskData", *p.masks)
         u("srcSize", p.sourceSize[0], p.sourceSize[1])
         u("coordScale", 1f / COORD_STEP, 1f / COORD_STEP)
-        u("hasSubject", if (f.subject != null) 1f else 0f)
+        u("hasSubject", if (f.subject != null && p.subject != null) 1f else 0f)
+        u("hasSky", if (f.subject != null && p.sky != null) 1f else 0f)
         u("subjSize", (f.subject?.width ?: 1).toFloat(), (f.subject?.height ?: 1).toFloat())
     }
 
@@ -157,7 +158,7 @@ internal class GpuPreview(source: String = AGSL) {
             val curves = params.curves?.let { cv -> floatBitmap(cv[0].size, 3) { y, x, c -> if (c == 3) 1f else cv[y][x] } }
             return Frame(
                 scene, guideBitmap, guide?.air ?: FloatArray(3), tone, curves, params,
-                coords.takeIf { params.maskCount > 0 }, subject.takeIf { params.maskCount > 0 && params.subject != null },
+                coords.takeIf { params.maskCount > 0 }, subject.takeIf { params.maskCount > 0 && (params.subject != null || params.sky != null) },
             )
         }
 
@@ -185,7 +186,24 @@ internal class GpuPreview(source: String = AGSL) {
         }
 
         /** The subject map as a texture. */
-        fun subjectBitmap(m: MaskImage): Bitmap = floatBitmap(m.width, m.height) { y, x, c -> if (c == 3) 1f else m.data[y * m.width + x] }
+        fun subjectBitmap(m: MaskImage): Bitmap = mapsBitmap(m, null)
+
+        /**
+         * The subject (red) and sky (green) maps in one texture, at the subject map's size (they're
+         * found at the same size; a sky alone sets it).
+         */
+        fun mapsBitmap(subject: MaskImage?, sky: MaskImage?): Bitmap {
+            val size = subject ?: sky ?: MaskImage(1, 1, FloatArray(1))
+            val w = size.width; val h = size.height
+            return floatBitmap(w, h) { y, x, c ->
+                when (c) {
+                    0 -> subject?.data?.get(y * w + x) ?: 0f
+                    1 -> sky?.let { s -> if (s.width == w && s.height == h) s.data[y * w + x] else s.at((x + 0.5f) / w, (y + 0.5f) / h) } ?: 0f
+                    2 -> 0f
+                    else -> 1f
+                }
+            }
+        }
 
         /** The geometry-corrected camera pixels as a float texture. */
         fun sceneBitmap(img: LinearImage): Bitmap = floatBitmap(img.width, img.height) { y, x, c ->
@@ -275,6 +293,7 @@ uniform float2 coordScale;
 uniform float2 srcSize;
 uniform float2 subjSize;
 uniform float hasSubject;
+uniform float hasSky;
 uniform float maskCount;
 uniform float maskData[152];
 
@@ -379,6 +398,12 @@ float subjectAt(float2 uv) {
     if (hasSubject == 0.0) return 0.0;
     return EVAL(subject, uv * subjSize).r;
 }
+
+// The sky map rides in the subject texture's green channel.
+float skyAt(float2 uv) {
+    if (hasSky == 0.0) return 0.0;
+    return EVAL(subject, uv * subjSize).g;
+}
 float displayLum(float2 p) { return tone(luma(lin(p))); }
 
 // Sine-free hash on small (wrapped) cell coordinates: sin() of large arguments loses precision
@@ -430,8 +455,10 @@ half4 main(float2 p) {
                     float rx = (o.x * cs + o.y * sn) / maskData[k * 19 + 3];
                     float ry = (-o.x * sn + o.y * cs) / maskData[k * 19 + 4];
                     w = 1.0 - smoothstep(1.0 - maskData[k * 19 + 7], 1.0, sqrt(rx * rx + ry * ry));
-                } else {
+                } else if (kind < 3.5) {
                     w = subj;
+                } else {
+                    w = skyAt(uv);
                 }
                 if (maskData[k * 19 + 8] > 0.5) w = 1.0 - w;
                 if (maskData[k * 19 + 9] > 0.5) w *= 1.0 - subj;

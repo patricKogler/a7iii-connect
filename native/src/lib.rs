@@ -132,7 +132,8 @@ pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native
 /// `grid_info`: x0, y0, nx, ny, step. `frame`: width, height, frame width, frame height,
 /// origin x, origin y, scale. `guide_size`: width, height (null when there is no guide).
 /// `masks`: count, photo width, photo height, then the masks (null without any);
-/// `subject_size`: width, height of `subject` (null when there is no subject map).
+/// `subject_size`: width, height of `subject` (null when there is no subject map); `sky_size`
+/// and `sky` likewise for the sky map.
 #[no_mangle]
 pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native_render(
     env: *mut JNIEnv,
@@ -154,12 +155,14 @@ pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native
     masks: jfloatArray,
     subject_size: jintArray,
     subject: jfloatArray,
+    sky_size: jintArray,
+    sky: jfloatArray,
     y0: jint,
     y1: jint,
     out: jintArray,
 ) -> jboolean {
     guarded(|| {
-        let lens: Vec<usize> = [params, tone, curves, guide_size, base, medium, dark, air, src, src_info, grid, grid_info, vig, frame, out, masks, subject_size, subject]
+        let lens: Vec<usize> = [params, tone, curves, guide_size, base, medium, dark, air, src, src_info, grid, grid_info, vig, frame, out, masks, subject_size, subject, sky_size, sky]
             .iter()
             .map(|&a| len(env, a))
             .collect();
@@ -205,6 +208,8 @@ pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native
         let mk = Pinned::<f32>::new(env, masks, lens[15], false)?;
         let ss = Pinned::<i32>::new(env, subject_size, lens[16], false)?;
         let sj = Pinned::<f32>::new(env, subject, lens[17], false)?;
+        let ks = Pinned::<i32>::new(env, sky_size, lens[18], false)?;
+        let kj = Pinned::<f32>::new(env, sky, lens[19], false)?;
         let mut o = Pinned::<i32>::new(env, out, lens[14], true)?;
 
         let guide = if gs.slice().len() >= 2 {
@@ -239,7 +244,16 @@ pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native
             } else {
                 None
             };
-            Some(render::Masks { count, src_w: m[1], src_h: m[2], p: &m[3..3 + count * render::MASK_STRIDE], subject })
+            let sky = if ks.slice().len() >= 2 {
+                let (w, h) = (ks.slice()[0] as usize, ks.slice()[1] as usize);
+                if w == 0 || h == 0 || kj.slice().len() < w * h {
+                    return None;
+                }
+                Some(render::Subject { width: w, height: h, data: kj.slice() })
+            } else {
+                None
+            };
+            Some(render::Masks { count, src_w: m[1], src_h: m[2], p: &m[3..3 + count * render::MASK_STRIDE], subject, sky })
         } else {
             None
         };
