@@ -278,14 +278,17 @@ object Photos {
      * Renders [settings] at the chosen size and saves a JPEG to Pictures/[EXPORT_ALBUM], with the
      * original's EXIF (date, camera, lens, exposure, GPS). Returns the new file.
      */
-    fun export(context: Context, opened: OpenedPhoto, settings: Settings, options: ExportOptions, progress: (Float) -> Unit): Uri {
+    fun export(
+        context: Context, opened: OpenedPhoto, settings: Settings, options: ExportOptions,
+        version: Int = 0, progress: (Float) -> Unit,
+    ): Uri {
         val photo = opened.photo
         val bitmap = render(context, opened, settings, options, progress)
 
-        val name = exportName(photo)
+        val name = exportName(photo, version)
         val resolver = context.contentResolver
         // Re-exporting replaces the earlier export instead of adding "(1)", "(2)" copies.
-        previousExport(context, photo)?.let { old ->
+        previousExport(context, photo, name)?.let { old ->
             val replaced = runCatching {
                 resolver.openOutputStream(old, "wt")!!.use { bitmap.compress(Bitmap.CompressFormat.JPEG, options.quality, it) }
             }.isSuccess
@@ -320,15 +323,16 @@ object Photos {
         return uri
     }
 
-    fun exportName(photo: LibraryPhoto) = photo.stem + "-edit.jpg"
+    /** The first version exports as DSC01234-edit.jpg, later ones as DSC01234-edit-v2.jpg and so on. */
+    fun exportName(photo: LibraryPhoto, version: Int = 0) = photo.stem + "-edit" + (if (version > 0) "-v${version + 1}" else "") + ".jpg"
 
     /** This photo's earlier export: same name, taken within a day (not a DSC01234 from another cycle). */
-    private fun previousExport(context: Context, photo: LibraryPhoto): Uri? = runCatching {
+    private fun previousExport(context: Context, photo: LibraryPhoto, name: String): Uri? = runCatching {
         context.contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATE_TAKEN),
             "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Images.Media.DISPLAY_NAME} = ?",
-            arrayOf("${Environment.DIRECTORY_PICTURES}/$EXPORT_ALBUM%", exportName(photo)), null,
+            arrayOf("${Environment.DIRECTORY_PICTURES}/$EXPORT_ALBUM%", name), null,
         )?.use { c ->
             while (c.moveToNext()) {
                 if (c.isNull(1) || kotlin.math.abs(c.getLong(1) - photo.takenMillis) < 24 * 3600_000L) {

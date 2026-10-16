@@ -345,7 +345,7 @@ class DevelopActivity : ComponentActivity() {
                     runCatching {
                         val jpeg = shot.jpeg
                         if (shot.key !in edited && jpeg != null) jpeg.uri
-                        else Photos.export(this@DevelopActivity, Photos.open(this@DevelopActivity, shot.primary), store.load(shot.primary), options) {}
+                        else Photos.export(this@DevelopActivity, Photos.open(this@DevelopActivity, shot.primary), store.load(shot.primary), options, store.versions(shot.primary).active) {}
                     }.getOrNull()
                 }
                 if (uri != null) uris += uri

@@ -25,6 +25,17 @@ enum class Mark {
     }
 }
 
+/** One of a photo's independent edits (Lightroom's virtual copies). [id] is stable: it names the files and the export. */
+data class Version(val id: Int, val name: String)
+
+/** A photo's versions and which one the editor (and everything else) shows. */
+data class Versions(val list: List<Version>, val active: Int) {
+    val current get() = list.first { it.id == active }
+}
+
+/** A saved state of one version to go back to. [auto] ones are made before a preset replaces the look. */
+data class Checkpoint(val name: String, val time: Long, val settings: Settings, val auto: Boolean = false)
+
 /**
  * Edits are kept beside the app, never written into the original file (non-destructive, like
  * Lightroom). One small text file per photo, named after its [LibraryPhoto.key], so edits follow
@@ -120,7 +131,7 @@ class EditStore(context: Context, folder: String = "develop") {
         val m = markMap()
         for (shot in shots) {
             m.remove(shot.key)
-            shot.files.forEach { editFile(it).delete(); subjectFile(it).delete(); skyFile(it).delete() }
+            shot.files.forEach { editFile(it).delete(); subjectFile(it).delete(); skyFile(it).delete(); versionsOf(it).deleteRecursively() }
         }
         writeMarks(m)
     }
@@ -164,4 +175,126 @@ class EditStore(context: Context, folder: String = "develop") {
     }
 
     fun deletePreset(name: String) { File(presetDir, "$name.txt").delete() }
+
+    // Versions. The active version's edit stays in edits/ so the library, albums and exports
+    // read it as before; the others wait in versions/<photo>/<id>.txt beside each version's
+    // checkpoints and undo history.
+    private val versionDir = File(dir, "versions")
+    private fun versionsOf(photo: LibraryPhoto) = File(versionDir, fileName(photo.key))
+    private fun stashFile(photo: LibraryPhoto, id: Int) = File(versionsOf(photo), "$id.txt")
+    private fun checkpointFile(photo: LibraryPhoto, id: Int) = File(versionsOf(photo), "$id.checkpoints")
+    private fun historyFile(photo: LibraryPhoto, id: Int) = File(versionsOf(photo), "$id.history")
+
+    fun versions(photo: LibraryPhoto): Versions {
+        val lines = runCatching { File(versionsOf(photo), "index.txt").readLines() }.getOrNull()
+        val list = lines?.drop(1)?.mapNotNull { l ->
+            val t = l.split('\t', limit = 2)
+            t[0].toIntOrNull()?.let { Version(it, t.getOrNull(1)?.takeIf { n -> n.isNotBlank() } ?: "Version ${it + 1}") }
+        }?.takeIf { it.isNotEmpty() } ?: listOf(Version(0, "Version 1"))
+        val active = lines?.firstOrNull()?.removePrefix("active=")?.toIntOrNull()?.takeIf { a -> list.any { it.id == a } } ?: list[0].id
+        return Versions(list, active)
+    }
+
+    private fun writeVersions(photo: LibraryPhoto, v: Versions) {
+        versionsOf(photo).mkdirs()
+        File(versionsOf(photo), "index.txt").writeText("active=${v.active}\n" + v.list.joinToString("") { "${it.id}\t${clean(it.name)}\n" })
+    }
+
+    private fun stashed(photo: LibraryPhoto, id: Int): Settings =
+        runCatching { Settings.decode(stashFile(photo, id).readText()) }.getOrDefault(Settings())
+
+    private fun stash(photo: LibraryPhoto, id: Int, s: Settings) {
+        versionsOf(photo).mkdirs()
+        stashFile(photo, id).writeText(s.encode())
+    }
+
+    /** Makes version [id] the one shown. */
+    fun switchVersion(photo: LibraryPhoto, id: Int) {
+        val v = versions(photo)
+        if (id == v.active || v.list.none { it.id == id }) return
+        stash(photo, v.active, load(photo))
+        save(photo, stashed(photo, id))
+        stashFile(photo, id).delete()
+        writeVersions(photo, v.copy(active = id))
+    }
+
+    /** Adds a version holding [settings] and makes it the active one. */
+    fun addVersion(photo: LibraryPhoto, settings: Settings) {
+        val v = versions(photo)
+        val id = v.list.maxOf { it.id } + 1
+        var n = v.list.size + 1
+        while (v.list.any { it.name == "Version $n" }) n++
+        stash(photo, v.active, load(photo))
+        save(photo, settings)
+        writeVersions(photo, Versions(v.list + Version(id, "Version $n"), id))
+    }
+
+    fun renameVersion(photo: LibraryPhoto, id: Int, name: String) {
+        val v = versions(photo)
+        writeVersions(photo, v.copy(list = v.list.map { if (it.id == id) it.copy(name = name.trim().ifEmpty { it.name }) else it }))
+    }
+
+    /** Deletes version [id] with its checkpoints and history; the last version can't go. */
+    fun deleteVersion(photo: LibraryPhoto, id: Int) {
+        val v = versions(photo)
+        if (v.list.size <= 1 || v.list.none { it.id == id }) return
+        val rest = v.list.filter { it.id != id }
+        if (id == v.active) {
+            val next = rest[0].id
+            save(photo, stashed(photo, next))
+            stashFile(photo, next).delete()
+            writeVersions(photo, Versions(rest, next))
+        } else {
+            stashFile(photo, id).delete()
+            writeVersions(photo, v.copy(list = rest))
+        }
+        checkpointFile(photo, id).delete()
+        historyFile(photo, id).delete()
+    }
+
+    fun checkpoints(photo: LibraryPhoto, id: Int): List<Checkpoint> = readBlocks(checkpointFile(photo, id)).mapNotNull { (head, s) ->
+        val t = head.split('\t', limit = 3)
+        val time = t.getOrNull(0)?.toLongOrNull() ?: return@mapNotNull null
+        Checkpoint(t.getOrElse(2) { "Checkpoint" }, time, s, t.getOrNull(1) == "auto")
+    }
+
+    fun saveCheckpoints(photo: LibraryPhoto, id: Int, list: List<Checkpoint>) =
+        writeBlocks(checkpointFile(photo, id), list.map { "${it.time}\t${if (it.auto) "auto" else "saved"}\t${clean(it.name)}" to it.settings })
+
+    /** Undo steps of version [id] and the one it's at, kept so undo works after leaving the editor. */
+    fun history(photo: LibraryPhoto, id: Int): Pair<List<Settings>, Int>? {
+        val blocks = readBlocks(historyFile(photo, id)).takeIf { it.isNotEmpty() } ?: return null
+        val at = blocks.indexOfFirst { it.first == "at" }.takeIf { it >= 0 } ?: (blocks.size - 1)
+        return blocks.map { it.second } to at
+    }
+
+    fun saveHistory(photo: LibraryPhoto, id: Int, steps: List<Settings>, at: Int) {
+        val drop = (steps.size - MAX_HISTORY).coerceIn(0, at)
+        writeBlocks(historyFile(photo, id), steps.drop(drop).mapIndexed { i, s -> (if (i == at - drop) "at" else "") to s })
+    }
+
+    // Several settings in one file, each under a "#<tab>header" line (settings lines never start with #).
+    private fun readBlocks(f: File): List<Pair<String, Settings>> = runCatching {
+        val out = ArrayList<Pair<String, Settings>>()
+        var head: String? = null
+        val body = StringBuilder()
+        fun flush() { head?.let { out += it to Settings.decode(body.toString()) }; body.clear() }
+        for (line in f.readLines()) {
+            if (line.startsWith("#\t")) { flush(); head = line.removePrefix("#\t") } else body.append(line).append('\n')
+        }
+        flush()
+        out
+    }.getOrDefault(emptyList())
+
+    private fun writeBlocks(f: File, blocks: List<Pair<String, Settings>>) {
+        if (blocks.isEmpty()) { f.delete(); return }
+        f.parentFile?.mkdirs()
+        f.writeText(blocks.joinToString("") { (h, s) -> "#\t$h\n" + s.encode() })
+    }
+
+    private fun clean(name: String) = name.replace(Regex("[\\t\\n\\r]"), " ").trim()
+
+    private companion object {
+        const val MAX_HISTORY = 80
+    }
 }
