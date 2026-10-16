@@ -4,6 +4,10 @@ import dev.kogler.a7iiiconnect.develop.engine.P
 import dev.kogler.a7iiiconnect.develop.engine.Param
 import dev.kogler.a7iiiconnect.develop.engine.Profile
 import dev.kogler.a7iiiconnect.develop.engine.Settings
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.sin
 
 /**
  * Swipe mode's menu: every slider the panels show, as a tree mirroring them (tool, then section
@@ -26,6 +30,28 @@ internal class SwipeLeaf(
     val param: Param? = null,
     val format: ((Float) -> String)? = null,
 ) : SwipeNode(id, label)
+
+/**
+ * A color wheel row: a swipe that starts sideways turns into a free 2D drag, the dot following
+ * the finger (hue around, saturation outwards).
+ */
+internal class SwipeWheel(id: String, label: String, val hue: Param, val sat: Param) : SwipeNode(id, label) {
+    /** The dot's position, -1..1 on each axis (y up). */
+    fun xy(s: Settings): Pair<Float, Float> {
+        val a = Math.toRadians(s[hue].toDouble()); val r = s[sat] / sat.max
+        return (cos(a) * r).toFloat() to (sin(a) * r).toFloat()
+    }
+
+    /** The dot moved to ([x], [y]); it snaps to the middle near it, and keeps its hue there. */
+    fun moveTo(s: Settings, x: Float, y: Float): Settings {
+        val r = hypot(x, y).coerceAtMost(1f)
+        if (r < SNAP) return s.with(sat, 0f)
+        val h = ((Math.toDegrees(atan2(y.toDouble(), x.toDouble())).toFloat() % 360f) + 360f) % 360f
+        return s.with(hue to h, sat to r * sat.max)
+    }
+
+    companion object { const val SNAP = 0.03f }
+}
 
 private fun leaf(p: Param, label: String = p.label) =
     SwipeLeaf(p.key, label, p.min, p.max, p.default, { it[p] }, { s, v -> s.with(p, v) }, p)
@@ -66,8 +92,9 @@ internal fun swipeTree(s: Settings, asShot: Pair<Float, Float>, isRaw: Boolean, 
     }
     val grading = SwipeFolder(
         "grading", "Grading",
-        P.GRADE_ZONES.indices.map { z ->
-            folder(P.GRADE_ZONES[z], P.GRADE_ZONES[z].replaceFirstChar { it.uppercase() }, leaf(P.GRADE_HUE[z]), leaf(P.GRADE_SAT[z]), leaf(P.GRADE_LUM[z]))
+        P.GRADE_ZONES.indices.flatMap { z ->
+            val name = P.GRADE_ZONES[z].replaceFirstChar { it.uppercase() }
+            listOf(SwipeWheel(P.GRADE_ZONES[z], name, P.GRADE_HUE[z], P.GRADE_SAT[z]), leaf(P.GRADE_LUM[z], "$name luminance"))
         } + listOf(leaf(P.GRADE_BLENDING), leaf(P.GRADE_BALANCE)),
     )
     val lensOn = isRaw && hasLensProfile && s.on(P.LENS_PROFILE)
@@ -117,7 +144,7 @@ internal class SwipeNav {
         for (i in path.indices) {
             last[key(path.take(i))] = path[i]
             val n = f.children.firstOrNull { it.id == path[i] } ?: break
-            if (n is SwipeLeaf) lastLeaf[key(path.take(i))] = n.id
+            if (n !is SwipeFolder) lastLeaf[key(path.take(i))] = n.id
             f = n as? SwipeFolder ?: break
         }
     }
@@ -158,7 +185,7 @@ internal class SwipeNav {
     fun ownLeaf(root: SwipeFolder, folderPath: List<String>): List<String> {
         val f = folderAt(root, folderPath)
         val id = lastLeaf[key(folderPath)]?.takeIf { l -> f.children.any { it.id == l } }
-            ?: f.children.first { it is SwipeLeaf }.id
+            ?: f.children.first { it !is SwipeFolder }.id
         return folderPath + id
     }
 

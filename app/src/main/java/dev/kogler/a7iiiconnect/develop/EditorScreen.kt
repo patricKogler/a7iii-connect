@@ -505,7 +505,8 @@ fun EditorScreen(
                 }
                 "grading" -> {
                     colorMode = 2
-                    P.GRADE_ZONES.indexOf(path.getOrNull(2)).takeIf { it >= 0 }?.let { gradeZone = it }
+                    val row = path.getOrNull(2)
+                    P.GRADE_ZONES.indexOfFirst { row == it || row == "grade.$it.lum" }.takeIf { it >= 0 }?.let { gradeZone = it }
                 }
                 null -> {}
                 else -> colorMode = 0
@@ -527,8 +528,9 @@ fun EditorScreen(
             swipeState.acc = 0f
             swipeState.sideways = 0f
             swipeState.startIndex = swipeNav.folderAt(menuTree, path.dropLast(1)).children.indexOfFirst { it.id == path.last() }.coerceAtLeast(0)
-            val leaf = swipeNav.node(menuTree, path) as? SwipeLeaf
-            swipeState.detent = leaf?.let { Detent(it.min, it.max, it.default).apply { start(it.get(settings)) } }
+            val node = swipeNav.node(menuTree, path)
+            swipeState.detent = (node as? SwipeLeaf)?.let { Detent(it.min, it.max, it.default).apply { start(it.get(settings)) } }
+            swipeState.wheel = (node as? SwipeWheel)?.xy(settings)
             swipeAxis = if (horizontal) 1 else 2
         },
         onMove = { dx, dy, width ->
@@ -553,6 +555,22 @@ fun EditorScreen(
                     swipeState.acc = 0f
                     swipeState.sideways = 0f
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                }
+            } else if (swipeState.wheel != null) {
+                // A wheel: the dot follows the finger, the photo's width spanning the wheel.
+                val wheel = swipeNav.node(menuTree, swipePath) as? SwipeWheel
+                val (x0, y0) = swipeState.wheel!!
+                var x = x0 + dx / width * 2; var y = y0 - dy / width * 2
+                val r = hypot(x, y)
+                if (r > 1f) { x /= r; y /= r }
+                swipeState.wheel = x to y
+                if (wheel != null && width > 0f) {
+                    val next = wheel.moveTo(settings, x, y)
+                    if (next != settings) {
+                        if (next[wheel.sat] == 0f && settings[wheel.sat] != 0f) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        dragging = true
+                        settings = next
+                    }
                 }
             } else {
                 val leaf = swipeNav.node(menuTree, swipePath) as? SwipeLeaf
@@ -721,6 +739,7 @@ fun EditorScreen(
                     val node = swipeNav.node(menuTree, path)
                     fun valueOf(n: SwipeNode) = when (n) {
                         is SwipeFolder -> "›"
+                        is SwipeWheel -> if (settings[n.sat] == 0f) "–" else "${settings[n.hue].roundToInt()}° · ${settings[n.sat].roundToInt()}"
                         is SwipeLeaf -> n.get(settings).let { v -> n.format?.invoke(v) ?: n.param?.let { formatParam(it, v) } ?: "" }
                     }
                     if (swipeAxis == 2) {
@@ -755,6 +774,11 @@ fun EditorScreen(
                             if (first + 7 < rows.size) Text("⋯", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp))
                         }
                     } else if (node != null) {
+                        if (swipeAxis == 1 && node is SwipeWheel) {
+                            Canvas(Modifier.align(Alignment.TopCenter).padding(top = if (split) 76.dp else 44.dp).size(96.dp)) {
+                                drawHueWheel(settings[node.hue], settings[node.sat])
+                            }
+                        }
                         // Below the top level, name the folder too ("Red · Saturation").
                         val parent = path.dropLast(1).takeIf { it.size > 1 }?.let { swipeNav.node(menuTree, it)?.label }
                         val label = listOfNotNull(parent, node.label).joinToString(" · ")
@@ -867,7 +891,7 @@ fun EditorScreen(
                                 })
                             },
                             onBand = { b -> navigate(swipeNav.descend(menuTree, listOf("color", "mix", P.MIX_BANDS[b].first))) },
-                            onZone = { z -> navigate(swipeNav.descend(menuTree, listOf("color", "grading", P.GRADE_ZONES[z]))) },
+                            onZone = { z -> navigate(listOf("color", "grading", P.GRADE_ZONES[z])) },
                         )
                         Tool.EFFECTS -> EffectsPanel(ctl)
                         Tool.DETAIL -> DetailPanel(ctl)
@@ -1269,6 +1293,8 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 /** Swipe mode's gesture state, kept across one gesture's callbacks. */
 private class SwipeState {
     var acc = 0f
+    /** A wheel row's dot during a sideways swipe, -1..1 (y up); null on slider rows. */
+    var wheel: Pair<Float, Float>? = null
     /** Sideways motion while the menu is open, toward opening a folder or going back. */
     var sideways = 0f
     var startIndex = 0
@@ -1877,20 +1903,23 @@ private fun ColorWheel(hue: Float, sat: Float, onChange: (Float, Float) -> Unit,
                 )
             },
         ) {
-            Canvas(Modifier.fillMaxSize()) {
-                val r = size.minDimension / 2
-                // Sweep runs clockwise on screen; hue runs counter-clockwise, so mirror it.
-                val sweep = (0..12).map { hueColor(360f - it * 30f, 1f, 1f) }
-                drawCircle(Brush.sweepGradient(sweep, center), r)
-                drawCircle(Brush.radialGradient(listOf(Color(0xFF808080), Color(0x00808080)), center, r), r)
-                drawCircle(Color.White.copy(alpha = 0.6f), r, style = Stroke(1f))
-                val a = hue / 180f * PI.toFloat(); val d = sat / 100f * r
-                val p = Offset(center.x + cos(a) * d, center.y - sin(a) * d)
-                drawCircle(Color.Black, 8.dp.toPx(), p)
-                drawCircle(Color.White, 6.dp.toPx(), p)
-            }
+            Canvas(Modifier.fillMaxSize()) { drawHueWheel(hue, sat) }
         }
     }
+}
+
+/** The color wheel with its dot: hue around (counter-clockwise from red at 3 o'clock), saturation 0..100 outwards. */
+private fun DrawScope.drawHueWheel(hue: Float, sat: Float) {
+    val r = size.minDimension / 2
+    // Sweep runs clockwise on screen; hue runs counter-clockwise, so mirror it.
+    val sweep = (0..12).map { hueColor(360f - it * 30f, 1f, 1f) }
+    drawCircle(Brush.sweepGradient(sweep, center), r)
+    drawCircle(Brush.radialGradient(listOf(Color(0xFF808080), Color(0x00808080)), center, r), r)
+    drawCircle(Color.White.copy(alpha = 0.6f), r, style = Stroke(1f))
+    val a = hue / 180f * PI.toFloat(); val d = sat / 100f * r
+    val p = Offset(center.x + cos(a) * d, center.y - sin(a) * d)
+    drawCircle(Color.Black, 8.dp.toPx(), p)
+    drawCircle(Color.White, 6.dp.toPx(), p)
 }
 
 @Composable
