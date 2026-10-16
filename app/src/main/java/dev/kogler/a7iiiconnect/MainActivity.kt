@@ -164,6 +164,19 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+        if (savedInstanceState == null) turnOnGpsIfAsked(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        turnOnGpsIfAsked(intent)
+    }
+
+    /** The Quick Settings tile couldn't start geotagging on its own and sent us here to do it. */
+    private fun turnOnGpsIfAsked(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_TURN_ON_GPS, false) != true) return
+        intent.removeExtra(EXTRA_TURN_ON_GPS)
+        setGps(true)
     }
 
     override fun onStart() {
@@ -208,7 +221,19 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        const val EXTRA_TURN_ON_GPS = "turn_on_gps"
+
         fun intent(context: Context) = Intent(context, MainActivity::class.java)
+
+        /** For the location tile: the Camera screen, turning geotagging on as it opens. */
+        fun openTurningOnGps(context: Context): PendingIntent = PendingIntent.getActivities(
+            context, 1,
+            arrayOf(
+                Intent(context, DevelopActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                intent(context).putExtra(EXTRA_TURN_ON_GPS, true),
+            ),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
 
         /** For notifications: the Camera screen, with Photos behind it so Back lands there. */
         fun open(context: Context): PendingIntent = PendingIntent.getActivities(
