@@ -5,6 +5,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Compare
+import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CircleShape
 import androidx.activity.compose.BackHandler
@@ -171,6 +172,8 @@ fun LibraryScreen(
     sheetOpen: Boolean = false,
     onSheetOpen: (Boolean) -> Unit = {},
     onCompare: (List<Shot>) -> Unit = {},
+    /** Flag the selected shots: pick, reject, or null to put them back to review. */
+    onMarkShots: (List<Shot>, Mark?) -> Unit = { _, _ -> },
     /** Albums to show as chips (not the deleted ones), and the one open, if any. */
     albums: List<Album> = emptyList(),
     album: Album? = null,
@@ -188,6 +191,7 @@ fun LibraryScreen(
     // Shots picked by long-pressing them, to compare head to head or put in an album.
     var selectedShots by remember { mutableStateOf(emptySet<String>()) }
     var albumMenu by remember { mutableStateOf(false) }
+    var flagMenu by remember { mutableStateOf(false) }
     BackHandler(enabled = album != null) { onOpenAlbum(null) }
     BackHandler(enabled = selectedShots.isNotEmpty() || selectedDays.isNotEmpty()) {
         selectedShots = emptySet(); selectedDays = emptySet()
@@ -272,6 +276,25 @@ fun LibraryScreen(
                             onClick = { onAddToAlbum(picked); selectedShots = emptySet(); selectedDays = emptySet() },
                             modifier = Modifier.testTag("album-add"),
                         ) { Icon(Icons.Rounded.LibraryAdd, "Add to album") }
+                        Box {
+                            IconButton(onClick = { flagMenu = true }, modifier = Modifier.testTag("flag")) { Icon(Icons.Rounded.Flag, "Pick or reject") }
+                            DropdownMenu(expanded = flagMenu, onDismissRequest = { flagMenu = false }) {
+                                fun mark(m: Mark?) { flagMenu = false; onMarkShots(picked, m); selectedShots = emptySet(); selectedDays = emptySet() }
+                                DropdownMenuItem(
+                                    text = { Text("Pick") }, onClick = { mark(Mark.PICK) },
+                                    leadingIcon = { Icon(Icons.Rounded.Check, null, tint = Color(0xFF3DDC84)) },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Reject") }, onClick = { mark(Mark.REJECT) },
+                                    leadingIcon = { Icon(Icons.Rounded.Close, null, tint = Color(0xFFFF5A5F)) },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Clear flag (back to review)") }, onClick = { mark(null) },
+                                    leadingIcon = { Icon(Icons.Rounded.Swipe, null) },
+                                    modifier = Modifier.testTag("flag-clear"),
+                                )
+                            }
+                        }
                     }
                     if (selectedShots.isNotEmpty()) {
                         // Selected shots in the order they were taken, for a fair head to head.

@@ -116,6 +116,13 @@ class EditStore(context: Context, folder: String = "develop") {
         writeMarks(m)
     }
 
+    /** One mark (or none) for many shots at once, written in one go. */
+    fun setMarks(keys: Collection<String>, mark: Mark?) {
+        val m = markMap()
+        keys.forEach { if (mark == null) m.remove(it) else m[it] = mark }
+        writeMarks(m)
+    }
+
     private fun writeMarks(m: Map<String, Mark>) =
         markFile.writeText(m.entries.joinToString("") { "${it.key}\t${it.value}\n" })
 
