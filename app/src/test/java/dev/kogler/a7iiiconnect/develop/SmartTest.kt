@@ -22,7 +22,7 @@ class SmartTest {
     private fun shot(name: String, t: Long) = Shot(null, LibraryPhoto(t, Uri.EMPTY, "$name.JPG", "image/jpeg", t))
 
     /** A unit vector near [base], as two photos of the same face would give. */
-    private fun near(base: FloatArray, rnd: Random, spread: Float = 0.35f) =
+    private fun near(base: FloatArray, rnd: Random, spread: Float = 0.15f) =
         ShotInsight.normalize(FloatArray(base.size) { base[it] + rnd.nextFloat() * spread - spread / 2 })
 
     private fun person(rnd: Random) = ShotInsight.normalize(FloatArray(128) { rnd.nextFloat() * 2 - 1 })

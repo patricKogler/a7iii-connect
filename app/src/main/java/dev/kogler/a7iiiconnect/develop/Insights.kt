@@ -1,6 +1,7 @@
 package dev.kogler.a7iiiconnect.develop
 
 import android.content.Context
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -105,7 +106,7 @@ object Insights {
     fun index(context: Context, shots: List<Shot>, batch: Int = 10, keepGoing: () -> Boolean = { true }, onProgress: (Map<String, ShotInsight>) -> Unit) {
         val missing = missing(context, shots.sortedByDescending { it.takenMillis })
         if (missing.isEmpty()) return
-        Analyzer(context).use { analyzer ->
+        open(context)?.use { analyzer ->
             for (chunk in missing.chunked(batch)) {
                 if (!keepGoing()) return
                 for (shot in chunk) {
@@ -121,7 +122,7 @@ object Insights {
     fun ensure(context: Context, shots: List<Shot>, keepGoing: () -> Boolean = { true }, onEach: (Map<String, ShotInsight>) -> Unit = {}) {
         val missing = missing(context, shots)
         if (missing.isEmpty()) return
-        Analyzer(context).use { analyzer ->
+        open(context)?.use { analyzer ->
             for (shot in missing) {
                 if (!keepGoing()) return
                 analyse(context, analyzer, shot)
@@ -129,6 +130,10 @@ object Insights {
             }
         }
     }
+
+    /** ML Kit can be missing (no Play services, or not set up yet); then nothing gets looked at. */
+    private fun open(context: Context): Analyzer? = runCatching { Analyzer(context) }
+        .onFailure { Log.w("Insights", "can't look at photos", it) }.getOrNull()
 
     private fun missing(context: Context, shots: List<Shot>): List<Shot> = synchronized(this) {
         val have = load(context)
