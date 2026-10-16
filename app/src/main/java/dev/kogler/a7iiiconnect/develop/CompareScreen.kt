@@ -108,9 +108,18 @@ fun CompareScreen(
         } else {
             HeadToHead(duel, Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp))
             Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.Center) {
-                RoundButton(Icons.Rounded.DoneAll, "Keep both", PickGreen, 56, "compare-keep-both") { duel.keepBoth() }
+                KeepBoth("compare-keep-both") { duel.keepBoth() }
             }
         }
+    }
+}
+
+/** Lets the challenger through too; labelled, since two ticks alone don't say it. */
+@Composable
+internal fun KeepBoth(tag: String, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        RoundButton(Icons.Rounded.DoneAll, "Keep both", PickGreen, 56, tag, onClick)
+        Text("Keep both", color = PickGreen, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
     }
 }
 

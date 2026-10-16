@@ -45,7 +45,6 @@ import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledIconButton
@@ -264,7 +263,7 @@ fun CullScreen(
                 // A stack: two at a time until one is left (or a few, with "Keep both"); ✕ lets them all go.
                 RoundButton(Icons.Rounded.Close, "None of these", RejectRed, 64, "cull-reject") { record(top.map { it to Verdict.REJECT }) }
                 RoundButton(Icons.Rounded.ArrowUpward, "Skip", SkipBlue, 48, "cull-skip") { record(top.map { it to Verdict.SKIP }) }
-                RoundButton(Icons.Rounded.DoneAll, "Keep both", PickGreen, 64, "cull-keep-both") { duel.keepBoth() }
+                KeepBoth("cull-keep-both") { duel.keepBoth() }
             } else {
                 RoundButton(Icons.Rounded.Close, "Reject", RejectRed, 64, "cull-reject") { if (fling == null) fling = Verdict.REJECT }
                 RoundButton(Icons.Rounded.ArrowUpward, "Skip", SkipBlue, 48, "cull-skip") { if (fling == null) fling = Verdict.SKIP }
