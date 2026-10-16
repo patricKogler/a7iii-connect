@@ -224,7 +224,7 @@ class Look(private val source: DevelopSource, private val s: Settings) {
     private val texture = s[P.TEXTURE] / 100f
     private val dehaze = s[P.DEHAZE] / 100f
     private val masks: MaskSet? = s.masks.takeIf { it.isNotEmpty() }
-        ?.let { MaskSet(it, source.fullWidth.toDouble(), source.fullHeight.toDouble(), source.maps.subject) }?.takeIf { it.any }
+        ?.let { MaskSet(it, source.fullWidth.toDouble(), source.fullHeight.toDouble(), source.maps.subject, source.maps.sky) }?.takeIf { it.any }
     private val needsGuide = shadows != 0f || highlights != 0f || clarity != 0f || dehaze != 0f ||
         masks != null && (masks.uses(MaskSet.SHADOWS) || masks.uses(MaskSet.HIGHLIGHTS) || masks.uses(MaskSet.CLARITY) || masks.uses(MaskSet.DEHAZE))
 
@@ -626,6 +626,9 @@ class Look(private val source: DevelopSource, private val s: Settings) {
     /** The subject map, when a mask uses it. */
     internal val subjectMap: MaskImage? get() = if (s.masks.any { it.usesSubject }) masks?.subject else null
 
+    /** The sky map, when a mask uses it. */
+    internal val skyMap: MaskImage? get() = if (s.masks.any { it.usesSky }) masks?.sky else null
+
     /** The red, green and blue point curves back to back (3 x 1024), or null when flat. */
     internal fun nativeCurves(): FloatArray? = rgbCurves?.let { c -> FloatArray(3 * 1024) { c[it / 1024][it % 1024] } }
 
@@ -644,6 +647,7 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         grain = grain, grainCell = (1.0 + grainSize * 4.0).toFloat(), grainRough = grainRough, scale = scale.toFloat(),
         maskCount = masks?.count ?: 0, masks = (masks?.params ?: FloatArray(0)).copyOf(MaskSet.MAX * MaskSet.STRIDE),
         sourceSize = floatArrayOf(source.fullWidth.toFloat(), source.fullHeight.toFloat()), subject = subjectMap,
+        sky = skyMap,
     )
 
     /** HSL mixer (or B&W mixer), color grading, vibrance and saturation on one display pixel. */
@@ -830,6 +834,7 @@ class ShaderParams(
     val grain: Float, val grainCell: Float, val grainRough: Float, val scale: Float,
     /** [MaskSet.params] padded to [MaskSet.MAX] masks, and the full-size photo they're placed on. */
     val maskCount: Int, val masks: FloatArray, val sourceSize: FloatArray, val subject: MaskImage?,
+    val sky: MaskImage? = null,
 ) {
     companion object {
         const val LUT_SIZE = 4096

@@ -55,6 +55,8 @@ class GpuParityTest {
             val x = i % 90; val y = i / 90
             if (x in 4..14 && y in 32..52) 1f else 0f
         })
+        // A stand-in sky: the top third, fading out towards the horizon.
+        raw.maps.sky = MaskImage(90, 60, FloatArray(90 * 60) { i -> ((24 - i / 90) / 8f).coerceIn(0f, 1f) })
 
         val cases = listOf(
             "raw-default" to (raw to Settings()),
@@ -84,6 +86,10 @@ class GpuParityTest {
                 Mask.subject().with(LocalP.SHADOWS, 70f).with(LocalP.EXPOSURE, 1f),
                 Mask.linear().copy(excludeSubject = true).with(LocalP.HIGHLIGHTS, -60f),
             ))),
+            "mask-sky" to (raw to Settings().copy(masks = listOf(
+                Mask.sky().with(LocalP.EXPOSURE, -0.7f).with(LocalP.TEMP, -25f).with(LocalP.SATURATION, 30f),
+                Mask.subject().with(LocalP.EXPOSURE, 0.5f),
+            ))),
         )
 
         val outDir = File("build/screenshots").apply { mkdirs() }
@@ -106,7 +112,8 @@ class GpuParityTest {
                 val params = look.shaderParams(sampler.scale)
                 val frame = GpuPreview.prepare(
                     GpuPreview.sceneBitmap(scene), guide, guide?.let { GpuPreview.guideBitmap(it) }, params,
-                    GpuPreview.coordsBitmap(geom, sampler.scale, sw, sh), params.subject?.let { GpuPreview.subjectBitmap(it) },
+                    GpuPreview.coordsBitmap(geom, sampler.scale, sw, sh),
+                    if (params.subject != null || params.sky != null) GpuPreview.mapsBitmap(params.subject, params.sky) else null,
                 )
                 fun gpuRender(source: String): Bitmap {
                     val gpu = GpuPreview(source)

@@ -41,21 +41,31 @@ class EditStore(context: Context, folder: String = "develop") {
 
     private val subjectDir = File(dir, "subjects").apply { mkdirs() }
     private fun subjectFile(photo: LibraryPhoto) = File(subjectDir, fileName(photo.key) + ".mask")
+    private fun skyFile(photo: LibraryPhoto) = File(subjectDir, fileName(photo.key) + ".sky")
 
     /** The subject map found for this photo earlier (8 bits per pixel after a width/height header). */
-    fun loadSubject(photo: LibraryPhoto): MaskImage? = runCatching {
-        val b = subjectFile(photo).takeIf { it.exists() }?.readBytes() ?: return null
+    fun loadSubject(photo: LibraryPhoto): MaskImage? = loadMap(subjectFile(photo))
+
+    fun saveSubject(photo: LibraryPhoto, m: MaskImage) = saveMap(subjectFile(photo), m)
+
+    /** The sky map found for this photo earlier, stored like the subject's. */
+    fun loadSky(photo: LibraryPhoto): MaskImage? = loadMap(skyFile(photo))
+
+    fun saveSky(photo: LibraryPhoto, m: MaskImage) = saveMap(skyFile(photo), m)
+
+    private fun loadMap(f: File): MaskImage? = runCatching {
+        val b = f.takeIf { it.exists() }?.readBytes() ?: return null
         val w = ((b[0].toInt() and 0xff) shl 8) or (b[1].toInt() and 0xff)
         val h = ((b[2].toInt() and 0xff) shl 8) or (b[3].toInt() and 0xff)
         if (w <= 0 || h <= 0 || b.size < 4 + w * h) return null
         MaskImage(w, h, FloatArray(w * h) { (b[4 + it].toInt() and 0xff) / 255f })
     }.getOrNull()
 
-    fun saveSubject(photo: LibraryPhoto, m: MaskImage) {
+    private fun saveMap(f: File, m: MaskImage) {
         val b = ByteArray(4 + m.width * m.height)
         b[0] = (m.width shr 8).toByte(); b[1] = m.width.toByte(); b[2] = (m.height shr 8).toByte(); b[3] = m.height.toByte()
         for (i in m.data.indices) b[4 + i] = (m.data[i].coerceIn(0f, 1f) * 255f + 0.5f).toInt().toByte()
-        subjectFile(photo).writeBytes(b)
+        f.writeBytes(b)
     }
 
     fun load(photo: LibraryPhoto): Settings =
@@ -110,7 +120,7 @@ class EditStore(context: Context, folder: String = "develop") {
         val m = markMap()
         for (shot in shots) {
             m.remove(shot.key)
-            shot.files.forEach { editFile(it).delete(); subjectFile(it).delete() }
+            shot.files.forEach { editFile(it).delete(); subjectFile(it).delete(); skyFile(it).delete() }
         }
         writeMarks(m)
     }

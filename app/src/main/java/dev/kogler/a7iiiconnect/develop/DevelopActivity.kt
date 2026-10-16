@@ -48,6 +48,8 @@ class DevelopActivity : ComponentActivity() {
     private var exported by mutableStateOf(emptySet<String>())
     private var meta by mutableStateOf(emptyMap<String, ShotMeta>())
     private var places by mutableStateOf(emptyMap<String, String>())
+    private var insights by mutableStateOf(emptyMap<String, ShotInsight>())
+    private var people by mutableStateOf(emptyList<Person>())
     private var indexing: kotlinx.coroutines.Job? = null
     // Filters live here so they survive opening a photo and coming back.
     private var quickFilter by mutableStateOf(QuickFilter.ALL)
@@ -182,6 +184,17 @@ class DevelopActivity : ComponentActivity() {
                         onCamera = { startActivity(MainActivity.intent(this)) },
                         meta = meta,
                         places = places,
+                        insights = insights,
+                        people = people,
+                        onNamePerson = { ids, name ->
+                            people = People.rename(people, ids, name)
+                            val now = people
+                            val found = insights
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                synchronized(People) { People.save(this@DevelopActivity, now) }
+                                regroup(found)
+                            }
+                        },
                         filter = quickFilter,
                         onQuickFilter = { quickFilter = it },
                         sheetFilter = sheetFilter,
@@ -455,7 +468,21 @@ class DevelopActivity : ComponentActivity() {
                 val now = Places.known(this@DevelopActivity, latest)
                 withContext(Dispatchers.Main) { places = now }
             }
+            // Then look at the photos themselves: faces, focus, what's in them. Newest first; it
+            // pauses while the editor is open or the app is in the background (coming back reloads).
+            regroup(Insights.known(this@DevelopActivity))
+            Insights.index(this@DevelopActivity, all, keepGoing = {
+                isActive && editing == null && lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
+            }) { found -> regroup(found) }
         }
+    }
+
+    /** Shows [found] and groups its faces into people again (call off the main thread). */
+    private fun regroup(found: Map<String, ShotInsight>) {
+        val grouped = synchronized(People) {
+            People.group(found, People.load(this)).also { People.save(this, it) }
+        }
+        runOnUiThread { insights = found; people = grouped }
     }
 
     companion object {

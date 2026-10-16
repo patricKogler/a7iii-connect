@@ -96,6 +96,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -139,10 +140,20 @@ fun CullScreen(
     val context = LocalContext.current
     var progress by remember { mutableFloatStateOf(0f) }
     var deck by remember { mutableStateOf<List<List<Shot>>?>(null) }
+    // Faces and focus, for "Eyes closed" and putting a stack's likely best shot first.
+    var insights by remember { mutableStateOf(emptyMap<String, ShotInsight>()) }
     LaunchedEffect(Unit) {
+        insights = withContext(Dispatchers.IO) { Insights.known(context) }
         // Newest day first, and within a day in the order the shots were taken.
-        deck = withContext(Dispatchers.IO) { Similar.stacks(context, shots) { progress = it } }
+        val dealt = withContext(Dispatchers.IO) { Similar.stacks(context, shots) { progress = it } }
             .sortedByDescending { dayOf(it.first().takenMillis) }
+        deck = dealt
+        // Look at the shots not looked at yet, in the order they'll come up.
+        withContext(Dispatchers.IO) {
+            Insights.ensure(context, dealt.flatten(), keepGoing = { isActive }) { found ->
+                launch(Dispatchers.Main) { insights = found }
+            }
+        }
     }
     var pos by remember { mutableIntStateOf(0) }
     val undo = remember { mutableStateListOf<Step>() }
@@ -179,7 +190,7 @@ fun CullScreen(
     val items = deck
     val top = items?.getOrNull(pos)
     // A stack of similar shots is settled head to head; once it's down to the keepers, it's recorded.
-    val duel = remember(top) { top?.takeIf { it.size > 1 }?.let { Duel(it) } }
+    val duel = remember(top) { top?.takeIf { it.size > 1 }?.let { Duel(Best.order(it, insights)) } }
     LaunchedEffect(duel, duel?.done) {
         if (duel != null && duel.done && top != null) {
             val kept = duel.kept.toSet()
@@ -234,7 +245,7 @@ fun CullScreen(
 
         Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
             if (duel != null) {
-                HeadToHead(duel, Modifier.fillMaxSize().testTag("cull-stack"), header = {
+                HeadToHead(duel, Modifier.fillMaxSize().testTag("cull-stack"), notesOf = { Best.notes(it, insights, top.orEmpty()) }, header = {
                     Row(Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("${top.size} similar shots", color = Color.White, fontWeight = FontWeight.SemiBold)
@@ -256,6 +267,7 @@ fun CullScreen(
                             fling = if (i == pos) fling else null,
                             rejectLabel = "REJECT",
                             onDecided = { record(listOf(shot to it)) },
+                            notes = Best.notes(shot, insights),
                         )
                     }
                 }
@@ -432,6 +444,7 @@ private fun Summary(
 @Composable
 internal fun SwipeCard(
     shot: Shot, depth: Int, fling: Verdict?, rejectLabel: String, onDecided: (Verdict) -> Unit, skipLabel: String = "SKIP",
+    notes: List<String> = emptyList(),
 ) {
     val haptics = LocalHapticFeedback.current
     val density = LocalDensity.current
@@ -570,7 +583,7 @@ internal fun SwipeCard(
         ZoomedPhoto(shot, image, tile, scale, pan)
 
         if (depth == 0) {
-            CardInfo(shot, Modifier.align(Alignment.BottomStart).alpha(if (scale > 1.01f) 0f else 1f))
+            CardInfo(shot, Modifier.align(Alignment.BottomStart).alpha(if (scale > 1.01f) 0f else 1f), notes)
             if (progressX > 0f) Stamp("PICK", PickGreen, -14f, Modifier.align(Alignment.TopStart).alpha(progressX))
             if (progressX < 0f) Stamp(rejectLabel, RejectRed, 14f, Modifier.align(Alignment.TopEnd).alpha(-progressX))
             if (progressUp > 0f) Stamp(skipLabel, SkipBlue, 0f, Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp).alpha(progressUp))
@@ -594,7 +607,7 @@ private fun Stamp(text: String, color: Color, angle: Float, modifier: Modifier) 
 }
 
 @Composable
-internal fun CardInfo(shot: Shot, modifier: Modifier) {
+internal fun CardInfo(shot: Shot, modifier: Modifier, notes: List<String> = emptyList()) {
     val kind = when {
         shot.raw != null && shot.jpeg != null -> "RAW+JPEG"
         shot.raw != null -> "RAW"
@@ -606,9 +619,29 @@ internal fun CardInfo(shot: Shot, modifier: Modifier) {
             .background(Color.Black.copy(alpha = 0.45f))
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
+        if (notes.isNotEmpty()) {
+            Row(Modifier.padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (n in notes) Note(n)
+            }
+        }
         Text(shot.primary.stem, color = Color.White, fontWeight = FontWeight.SemiBold)
         Text("$kind · $time", color = Color.White.copy(alpha = 0.75f), fontSize = 12.sp)
     }
+}
+
+/** A [Best.notes] pill: green for good news, amber for a problem. */
+@Composable
+private fun Note(text: String) {
+    val good = text == "Sharpest"
+    Text(
+        text,
+        color = if (good) Color(0xFF0B3D1E) else Color(0xFF3D2A00),
+        fontSize = 12.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.background(if (good) PickGreen else Color(0xFFFFC94D), RoundedCornerShape(50))
+            .padding(horizontal = 10.dp, vertical = 3.dp)
+            .testTag("note"),
+    )
 }
 
 /** Where a ContentScale.Fit image of [iw]x[ih] lands inside [box]. */

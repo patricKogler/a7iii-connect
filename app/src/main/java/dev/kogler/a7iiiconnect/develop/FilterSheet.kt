@@ -47,6 +47,25 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import android.graphics.Bitmap
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.Calendar
 
 /**
@@ -66,12 +85,16 @@ fun FilterSheet(
     savedName: String? = null,
     onDeleteSaved: () -> Unit = {},
     startExpanded: Boolean = false,
+    /** People to filter by ([People.shown]); long-press one to name them. */
+    people: List<Person> = emptyList(),
+    onNamePerson: (ids: Set<String>, name: String) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("library", 0) }
     var more by remember { mutableStateOf(startExpanded || prefs.getBoolean("more_filters", false)) }
     var naming by remember { mutableStateOf(false) }
     var pickingDates by remember { mutableStateOf(false) }
+    var namingPerson by remember { mutableStateOf<List<Person>?>(null) }
     val metas = facts.mapNotNull { it.meta }
     val matching = facts.count { filter.matches(it) }
 
@@ -91,6 +114,38 @@ fun FilterSheet(
                     val next = filter.copy(presets = if (on) filter.presets - p else filter.presets + p)
                     CountChip(p.label, on, if (on) null else count(next)) { onFilter(next) }
                 }
+            }
+            if (people.isNotEmpty()) {
+                val byKey = remember(facts) { facts.associateBy { it.shot.key } }
+                Text(
+                    "People", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
+                )
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // People given the same name are one person.
+                    for (same in people.groupBy { it.key }.values) {
+                        val key = same.first().key
+                        val on = key in filter.people
+                        val cover = same.flatMap { it.faces }.mapNotNull { ref -> byKey[ref.shot]?.let { f -> f.insight?.faces?.getOrNull(ref.index)?.let { Triple(f.shot, it, ref) } } }
+                            .maxByOrNull { it.second.width }
+                        val count = same.flatMap { p -> p.faces.map { it.shot } }.distinct().size
+                        PersonAvatar(
+                            name = same.first().name,
+                            count = count,
+                            selected = on,
+                            shot = cover?.first,
+                            box = cover?.second?.box,
+                            onClick = { onFilter(filter.copy(people = if (on) filter.people - key else filter.people + key)) },
+                            onLongClick = { namingPerson = same },
+                        )
+                    }
+                }
+                Text(
+                    "Long-press someone to name them. Give two the same name if they're the same person.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
             }
             val lenses = metas.mapNotNull { it.lens }.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.map { it.key }
             if (lenses.isNotEmpty()) Section("Lens") {
@@ -251,7 +306,7 @@ fun FilterSheet(
     }
 
     if (naming) {
-        var name by remember { mutableStateOf(filter.chips().joinToString(" · ") { it.first }.take(40)) }
+        var name by remember { mutableStateOf(filter.chips { k -> people.find { it.key == k }?.name ?: "Someone" }.joinToString(" · ") { it.first }.take(40)) }
         AlertDialog(
             onDismissRequest = { naming = false },
             title = { Text("Save filter") },
@@ -261,6 +316,81 @@ fun FilterSheet(
             },
             dismissButton = { TextButton(onClick = { naming = false }) { Text("Cancel") } },
         )
+    }
+
+    namingPerson?.let { same ->
+        var name by remember(same) { mutableStateOf(same.first().name.orEmpty()) }
+        val done = {
+            val key = same.first().key
+            namingPerson = null
+            onNamePerson(same.map { it.id }.toSet(), name)
+            // Keep the filter on this person under their new name.
+            if (key in filter.people) onFilter(filter.copy(people = filter.people - key + (name.trim().ifEmpty { same.first().id })))
+        }
+        AlertDialog(
+            onDismissRequest = { namingPerson = null },
+            title = { Text(if (same.first().name == null) "Who is this?" else "Rename") },
+            text = {
+                OutlinedTextField(
+                    name, { name = it }, singleLine = true, label = { Text("Name") },
+                    modifier = Modifier.testTag("person-name"),
+                )
+            },
+            confirmButton = { TextButton(onClick = done) { Text(if (name.isBlank()) "Forget name" else "Save") } },
+            dismissButton = { TextButton(onClick = { namingPerson = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+/** A face to filter by: round crop, name (or "Name?") and how many shots they're in. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PersonAvatar(name: String?, count: Int, selected: Boolean, shot: Shot?, box: FloatArray?, onClick: () -> Unit, onLongClick: () -> Unit) {
+    val context = LocalContext.current
+    val face by produceState<ImageBitmap?>(FaceCrops.cached(shot, box)?.asImageBitmap(), shot?.key, box) {
+        if (value == null && shot != null && box != null) value = withContext(Dispatchers.IO) { FaceCrops.get(context, shot, box)?.asImageBitmap() }
+    }
+    Column(
+        Modifier.width(72.dp).combinedClickable(onClick = onClick, onLongClick = onLongClick).testTag("person"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier.size(60.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .then(if (selected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, CircleShape) else Modifier),
+        ) {
+            face?.let { Image(it, name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+        }
+        Text(
+            name ?: "Name?", maxLines = 1, overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (name == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Text("$count", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** Round-ready face crops for the People row, kept while the app runs. */
+internal object FaceCrops {
+    private val cache = android.util.LruCache<String, Bitmap>(64)
+    private fun key(shot: Shot, box: FloatArray) = shot.key + box.joinToString(",")
+
+    fun cached(shot: Shot?, box: FloatArray?): Bitmap? = if (shot == null || box == null) null else cache.get(key(shot, box))
+
+    /** A square around the face with some room, about 160 pixels across. */
+    fun get(context: android.content.Context, shot: Shot, box: FloatArray): Bitmap? {
+        cache.get(key(shot, box))?.let { return it }
+        val src = Photos.cullImage(context, shot, 1024) ?: return null
+        val cx = (box[0] + box[2]) / 2 * src.width
+        val cy = (box[1] + box[3]) / 2 * src.height
+        val half = maxOf((box[2] - box[0]) * src.width, (box[3] - box[1]) * src.height) * 0.8f
+        val l = (cx - half).toInt().coerceIn(0, src.width - 1)
+        val t = (cy - half).toInt().coerceIn(0, src.height - 1)
+        val side = minOf((2 * half).toInt(), src.width - l, src.height - t).coerceAtLeast(1)
+        val crop = Bitmap.createScaledBitmap(Bitmap.createBitmap(src, l, t, side, side), 160, 160, true)
+        src.recycle()
+        cache.put(key(shot, box), crop)
+        return crop
     }
 }
 

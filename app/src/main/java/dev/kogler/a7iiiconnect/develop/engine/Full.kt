@@ -141,6 +141,7 @@ class FullSampler(
         val (map, vig) = grid
         val masks = look.nativeMasks()
         val subject = if (masks != null) look.subjectMap else null
+        val sky = if (masks != null) look.skyMap else null
         val nx = (width - 1) / GRID_STEP + 2
         val ny = (height - 1) / GRID_STEP + 2
         return Native.render(
@@ -153,6 +154,7 @@ class FullSampler(
             doubleArrayOf(width.toDouble(), height.toDouble(), frameWidth.toDouble(), frameHeight.toDouble(),
                 originX.toDouble(), originY.toDouble(), scale),
             masks, subject?.let { intArrayOf(it.width, it.height) }, subject?.data,
+            sky?.let { intArrayOf(it.width, it.height) }, sky?.data,
             y0, y1, out,
         )
     }
