@@ -4,9 +4,12 @@ import dev.kogler.a7iiiconnect.develop.engine.P
 import dev.kogler.a7iiiconnect.develop.engine.Param
 import dev.kogler.a7iiiconnect.develop.engine.Profile
 import dev.kogler.a7iiiconnect.develop.engine.Settings
+import dev.kogler.a7iiiconnect.develop.engine.Curve
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
@@ -32,18 +35,31 @@ internal class SwipeLeaf(
 ) : SwipeNode(id, label)
 
 /**
- * A color wheel row: a swipe that starts sideways turns into a free 2D drag, the dot following
- * the finger (hue around, saturation outwards).
+ * A row with two values (a color wheel, the white balance pad): a swipe that starts sideways turns
+ * into a free 2D drag, the dot following the finger.
  */
-internal class SwipeWheel(id: String, label: String, val hue: Param, val sat: Param) : SwipeNode(id, label) {
+internal sealed class Swipe2D(id: String, label: String) : SwipeNode(id, label) {
+    /** True for a wheel (the dot stays inside the circle), false for a square pad. */
+    abstract val round: Boolean
     /** The dot's position, -1..1 on each axis (y up). */
-    fun xy(s: Settings): Pair<Float, Float> {
+    abstract fun xy(s: Settings): Pair<Float, Float>
+    abstract fun moveTo(s: Settings, x: Float, y: Float): Settings
+    /** At its neutral point (no color, as-shot white balance): the drag clicks there. */
+    abstract fun neutral(s: Settings): Boolean
+}
+
+/** A color wheel row: hue around, saturation outwards. */
+internal class SwipeWheel(id: String, label: String, val hue: Param, val sat: Param) : Swipe2D(id, label) {
+    override val round = true
+    override fun neutral(s: Settings) = s[sat] == 0f
+
+    override fun xy(s: Settings): Pair<Float, Float> {
         val a = Math.toRadians(s[hue].toDouble()); val r = s[sat] / sat.max
         return (cos(a) * r).toFloat() to (sin(a) * r).toFloat()
     }
 
     /** The dot moved to ([x], [y]); it snaps to the middle near it, and keeps its hue there. */
-    fun moveTo(s: Settings, x: Float, y: Float): Settings {
+    override fun moveTo(s: Settings, x: Float, y: Float): Settings {
         val r = hypot(x, y).coerceAtMost(1f)
         if (r < SNAP) return s.with(sat, 0f)
         val h = ((Math.toDegrees(atan2(y.toDouble(), x.toDouble())).toFloat() % 360f) + 360f) % 360f
@@ -51,6 +67,58 @@ internal class SwipeWheel(id: String, label: String, val hue: Param, val sat: Pa
     }
 
     companion object { const val SNAP = 0.03f }
+}
+
+/** White balance as one pad: temperature across (in mireds, as the slider), tint up and down. */
+internal class SwipeWbPad(id: String, label: String, private val k0: Float, private val t0: Float) : Swipe2D(id, label) {
+    override val round = false
+    override fun neutral(s: Settings) = s.temperature == null && s.tint == null
+    override fun xy(s: Settings) = (kelvinToPos(s.temperature ?: k0) * 2 - 1) to (s.tint ?: t0) / 150f
+
+    override fun moveTo(s: Settings, x: Float, y: Float): Settings {
+        val (x0, y0) = xy(Settings())
+        if (hypot(x - x0, y - y0) < SwipeWheel.SNAP) return s.withWhiteBalance(null, null)
+        return s.withWhiteBalance(posToKelvin((x.coerceIn(-1f, 1f) + 1) / 2), y.coerceIn(-1f, 1f) * 150f)
+    }
+}
+
+/** A point curve row (RGB, red, green, blue): long-press a tone on the photo to grab its point. */
+internal class SwipeCurve(id: String, label: String, val channel: Int) : SwipeNode(id, label)
+
+/** The curve rows' ids, by channel. */
+internal val CURVE_IDS = listOf("rgb", "red", "green", "blue")
+
+/** A row the panel shows as a plain control (not a folder or a point curve), for the "Basic" and "Parametric" chips. */
+internal val SwipeNode.isPlain get() = this is SwipeLeaf || this is Swipe2D
+
+/**
+ * The point on [curve] at input [x] to drag: an existing one within reach, or a new one added on
+ * the curve (so nothing jumps). Returns the points and the grabbed index, or -1 when the curve is full.
+ */
+internal fun grabCurvePoint(curve: Curve, x: Float): Pair<MutableList<Pair<Float, Float>>, Int> {
+    val pts = curve.points.sortedBy { it.first }.toMutableList()
+    val near = pts.indices.minByOrNull { abs(pts[it].first - x) }
+    if (near != null && abs(pts[near].first - x) < 0.04f) return pts to near
+    val cx = x.coerceIn(0.02f, 0.98f)
+    if (pts.size >= 16) return pts to -1
+    val t = curve.table(1024)
+    val pt = cx to t[(cx * 1023).roundToInt()]
+    pts += pt
+    pts.sortBy { it.first }
+    return pts to pts.indexOf(pt)
+}
+
+/** The color mixer band nearest to [hue] (degrees). */
+internal fun bandOf(hue: Float): Int = P.MIX_BANDS.indices.minBy { i ->
+    val d = abs(((hue - P.MIX_BANDS[i].second) % 360f + 540f) % 360f - 180f)
+    d
+}
+
+/** The grading zone (shadows, midtones, highlights) a pixel of luminance [lum] (0..1) belongs to. */
+internal fun zoneOf(lum: Float): Int = when {
+    lum < 0.33f -> 0
+    lum > 0.66f -> 2
+    else -> 1
 }
 
 private fun leaf(p: Param, label: String = p.label) =
@@ -104,9 +172,13 @@ internal fun swipeTree(s: Settings, asShot: Pair<Float, Float>, isRaw: Boolean, 
             SwipeFolder(
                 "light", "Light",
                 listOf(P.EXPOSURE, P.CONTRAST, P.HIGHLIGHTS, P.SHADOWS, P.WHITES, P.BLACKS).map { leaf(it) } +
-                    folder("curve", "Tone curve", leaf(P.CURVE_HIGHLIGHTS), leaf(P.CURVE_LIGHTS), leaf(P.CURVE_DARKS), leaf(P.CURVE_SHADOWS)),
+                    SwipeFolder(
+                        "curve", "Tone curve",
+                        listOf(leaf(P.CURVE_HIGHLIGHTS), leaf(P.CURVE_LIGHTS), leaf(P.CURVE_DARKS), leaf(P.CURVE_SHADOWS)) +
+                            listOf("RGB curve", "Red curve", "Green curve", "Blue curve").mapIndexed { i, l -> SwipeCurve(CURVE_IDS[i], l, i) },
+                    ),
             ),
-            folder("color", "Color", temp, tint, leaf(P.VIBRANCE), leaf(P.SATURATION), mix, grading),
+            folder("color", "Color", SwipeWbPad("wb", "White balance", k0, t0), temp, tint, leaf(P.VIBRANCE), leaf(P.SATURATION), mix, grading),
             SwipeFolder(
                 "effects", "Effects",
                 listOf(leaf(P.TEXTURE), leaf(P.CLARITY), leaf(P.DEHAZE), leaf(P.VIGNETTE)) +
@@ -144,7 +216,7 @@ internal class SwipeNav {
         for (i in path.indices) {
             last[key(path.take(i))] = path[i]
             val n = f.children.firstOrNull { it.id == path[i] } ?: break
-            if (n !is SwipeFolder) lastLeaf[key(path.take(i))] = n.id
+            if (n.isPlain) lastLeaf[key(path.take(i))] = n.id
             f = n as? SwipeFolder ?: break
         }
     }
@@ -185,7 +257,7 @@ internal class SwipeNav {
     fun ownLeaf(root: SwipeFolder, folderPath: List<String>): List<String> {
         val f = folderAt(root, folderPath)
         val id = lastLeaf[key(folderPath)]?.takeIf { l -> f.children.any { it.id == l } }
-            ?: f.children.first { it !is SwipeFolder }.id
+            ?: f.children.first { it.isPlain }.id
         return folderPath + id
     }
 
