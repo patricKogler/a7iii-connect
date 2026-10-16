@@ -45,6 +45,7 @@ class CameraScreenshots {
     private val actions = UiActions(
         back = {}, sync = {}, stop = {}, saveCamera = { _, _ -> }, setSmallCopies = {}, shareLog = {},
         setGps = {}, startPairing = {}, repairGps = {}, dismissPairing = {}, openRemote = {}, setFtp = {},
+        copyUsb = {},
     )
 
     @Test
@@ -55,6 +56,14 @@ class CameraScreenshots {
         "camera-2-copying",
         state.copy(
             status = SyncStatus(running = true, phase = Phase.COPYING, done = 7, total = 23, currentFile = "DSC01234.JPG"),
+        ),
+    )
+
+    @Test
+    fun usbCopying() = shot(
+        "camera-4-usb",
+        state.copy(
+            status = SyncStatus(running = true, usb = true, phase = Phase.COPYING, done = 41, total = 120, currentFile = "DSC01234.ARW"),
         ),
     )
 

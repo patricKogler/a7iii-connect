@@ -308,6 +308,8 @@ class SyncService : Service() {
         private const val PARALLEL_DOWNLOADS = 2
 
         fun start(context: Context) {
+            // A USB copy may be running; this service would never reach startForeground.
+            if (SyncState.status.running) return
             context.startForegroundService(Intent(context, SyncService::class.java))
         }
 

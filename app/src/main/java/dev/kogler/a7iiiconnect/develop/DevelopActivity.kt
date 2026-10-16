@@ -28,6 +28,7 @@ import dev.kogler.a7iiiconnect.ftp.FtpStatus
 import dev.kogler.a7iiiconnect.gps.GpsService
 import dev.kogler.a7iiiconnect.ui.AppTheme
 import dev.kogler.a7iiiconnect.duo.DuoActivity
+import dev.kogler.a7iiiconnect.usb.UsbImportService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -88,7 +89,7 @@ class DevelopActivity : ComponentActivity() {
         editing = savedInstanceState?.getLong(KEY_EDITING, -1L)?.takeIf { it >= 0 }
             ?: intent.getLongExtra(EXTRA_PHOTO_ID, -1L).takeIf { it >= 0 }
         culling = savedInstanceState?.getStringArrayList(KEY_CULLING)?.let { (savedInstanceState.getString(KEY_DECK_TITLE) ?: "Review") to it }
-        if (savedInstanceState == null) CameraTouch.handleIntent(this, intent)
+        if (savedInstanceState == null) handleIntent(intent)
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
@@ -159,7 +160,13 @@ class DevelopActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    /** Touching the camera's N mark, or plugging the camera in, starts a copy. */
+    private fun handleIntent(intent: Intent?) {
         CameraTouch.handleIntent(this, intent)
+        UsbImportService.attachedCamera(intent)?.let { UsbImportService.start(this, it) }
     }
 
     override fun onStart() {

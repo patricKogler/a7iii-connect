@@ -12,8 +12,8 @@ android {
         applicationId = "dev.kogler.a7iiiconnect"
         minSdk = 31
         targetSdk = 35
-        versionCode = 37
-        versionName = "0.22.0"
+        versionCode = 38
+        versionName = "0.23.0"
     }
 
     // CI decodes the KEYSTORE_B64 secret to a file, so every build has the same signature and

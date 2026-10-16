@@ -46,6 +46,7 @@ import androidx.compose.material.icons.rounded.Nfc
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.SettingsRemote
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.Usb
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Wifi
@@ -128,6 +129,7 @@ class UiActions(
     val dismissPairing: () -> Unit,
     val openRemote: () -> Unit,
     val setFtp: (Boolean) -> Unit,
+    val copyUsb: () -> Unit,
 )
 
 /**
@@ -152,10 +154,11 @@ fun App(state: UiState, actions: UiActions) {
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
         ) {
             item {
-                if (state.hasCamera) StatusCard(state.status, state.cameraName, actions)
+                if (state.hasCamera || state.status.usb) StatusCard(state.status, state.cameraName, actions)
                 else Onboarding(state.nfcAvailable)
             }
             if (state.hasCamera && state.nfcAvailable && !state.status.running) item { NfcTip() }
+            if (!state.status.running) item { UsbCard(actions.copyUsb) }
 
             item { SectionTitle("While you shoot") }
             item { GpsCard(state, actions) }
@@ -263,7 +266,7 @@ private fun StatusCard(status: SyncStatus, cameraName: String, actions: UiAction
 private fun headline(status: SyncStatus, cameraName: String): Pair<String, String> = when (status.phase) {
     Phase.IDLE -> "Ready" to "Open Send to Smartphone on the camera, then tap Get photos.\n$cameraName"
     Phase.SEARCHING -> "Looking for your camera" to "Make sure Send to Smartphone is open on the camera."
-    Phase.READING -> "Connected" to "Checking which photos are new"
+    Phase.READING -> (if (status.usb) "Camera plugged in" else "Connected") to "Checking which photos are new"
     Phase.COPYING -> "Copying ${status.done} of ${status.total}" to (status.currentFile ?: "")
     Phase.DONE -> when {
         status.copied > 0 -> "Done" to status.message
@@ -392,6 +395,47 @@ private fun RemoteCard(onOpen: () -> Unit) {
             headlineContent = { Text("Remote shooting", fontWeight = FontWeight.Medium) },
             supportingContent = { Text("Live view and shutter. Turn on Ctrl w/ Smartphone on the camera first.") },
             trailingContent = { Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null) },
+        )
+    }
+}
+
+@Composable
+private fun UsbCard(onCopy: () -> Unit) {
+    var showSetup by rememberSaveable { mutableStateOf(false) }
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = RoundedCornerShape(20.dp),
+        onClick = onCopy,
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+    ) {
+        Column {
+            ListItem(
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                leadingContent = { Icon(Icons.Rounded.Usb, null, tint = MaterialTheme.colorScheme.primary) },
+                headlineContent = { Text("Copy over USB cable", fontWeight = FontWeight.Medium) },
+                supportingContent = { Text("RAW and JPEG, much faster than Wi-Fi. Plugging the camera in starts it by itself.") },
+                trailingContent = { Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null) },
+            )
+            TextButton(onClick = { showSetup = true }, modifier = Modifier.padding(start = 56.dp, bottom = 4.dp)) {
+                Text("Camera setup")
+            }
+        }
+    }
+    if (showSetup) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showSetup = false },
+            title = { Text("Copy over USB") },
+            text = {
+                Text(
+                    "1. Camera: MENU > Setup > USB Connection > MTP (once).\n" +
+                        "2. Connect the camera's USB port to the phone (USB-C to Micro-USB cable or adapter).\n" +
+                        "3. Pick Shootback if Android asks which app to open, and allow access. " +
+                        "Tick \"Always\" so next time it just starts.\n\n" +
+                        "New photos land in Photos as they copy. Ones already on the phone are skipped, " +
+                        "and so are videos.",
+                )
+            },
+            confirmButton = { TextButton(onClick = { showSetup = false }) { Text("OK") } },
         )
     }
 }

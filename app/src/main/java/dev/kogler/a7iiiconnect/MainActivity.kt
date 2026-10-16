@@ -27,8 +27,9 @@ import dev.kogler.a7iiiconnect.ui.App
 import dev.kogler.a7iiiconnect.ui.AppTheme
 import dev.kogler.a7iiiconnect.ui.UiActions
 import dev.kogler.a7iiiconnect.ui.UiState
+import dev.kogler.a7iiiconnect.usb.UsbImportService
 
-/** The Camera screen: getting photos off the camera, location, FTP, remote and the connection settings. */
+/** The Camera screen: getting photos off the camera (Wi-Fi or USB cable), location, FTP, remote and the connection settings. */
 class MainActivity : ComponentActivity() {
 
     private lateinit var store: Store
@@ -119,7 +120,8 @@ class MainActivity : ComponentActivity() {
         val actions = UiActions(
             back = { finish() },
             sync = { SyncService.start(this) },
-            stop = { SyncService.cancel(this) },
+            stop = { if (SyncState.status.usb) UsbImportService.cancel(this) else SyncService.cancel(this) },
+            copyUsb = { UsbImportService.start(this) },
             saveCamera = { ssid, pass ->
                 store.ssid = ssid
                 store.password = pass
