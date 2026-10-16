@@ -52,6 +52,7 @@ class DuoActivity : ComponentActivity() {
         val battle = intent.getStringExtra(EXTRA_BATTLE)
         if (savedInstanceState == null || !Duo.active) {
             if (battle != null) startBattle(battle)
+            else if (intent.getBooleanExtra(EXTRA_ALBUMS, false)) Duo.hostAlbums(this, intent.getStringExtra(EXTRA_INVITE))
             else if (keys != null && !keys.isEmpty()) startHosting(keys.toSet())
             else Duo.join(this, codeOf(intent))
         }
@@ -169,6 +170,8 @@ class DuoActivity : ComponentActivity() {
     companion object {
         private const val EXTRA_KEYS = "keys"
         private const val EXTRA_BATTLE = "battle"
+        private const val EXTRA_ALBUMS = "albums"
+        private const val EXTRA_INVITE = "invite"
         private const val APK_TYPE = "application/vnd.android.package-archive"
 
         /** Host [keys] (the shots to cull together); with no keys, join another phone. */
@@ -182,6 +185,13 @@ class DuoActivity : ComponentActivity() {
         /** An edit battle over the shot with [key], without culling first. */
         fun battleIntent(context: Context, key: String) =
             Intent(context, DuoActivity::class.java).putExtra(EXTRA_BATTLE, key)
+
+        /**
+         * Swap shared albums (and the photos in them) with another phone, without culling; with
+         * [invite], the phone that connects joins that album first.
+         */
+        fun albumsIntent(context: Context, invite: String? = null) =
+            Intent(context, DuoActivity::class.java).putExtra(EXTRA_ALBUMS, true).apply { if (invite != null) putExtra(EXTRA_INVITE, invite) }
 
         /** Join the phone whose Together tag carried [code]. */
         fun joinIntent(context: Context, code: String) =

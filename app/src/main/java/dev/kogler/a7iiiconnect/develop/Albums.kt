@@ -3,6 +3,7 @@ package dev.kogler.a7iiiconnect.develop
 import android.content.Context
 import java.io.File
 import java.util.UUID
+import kotlin.math.abs
 
 /**
  * One shot's place in an album: added, or taken out again, at [at]. Taken-out shots are kept
@@ -14,6 +15,11 @@ data class AlbumEntry(val key: String, val at: Long, val inAlbum: Boolean)
  * A named set of shots, like a trip or a photo book. Shots are referenced by [Shot.key], never
  * copied, so a shot can be in many albums. A deleted album is kept as a [deletedAt] marker for
  * the same reason as taken-out shots.
+ *
+ * Albums are private. The phone that made one ([owner]) can invite other phones ([members], by
+ * phone id to the person's name); every member can add shots from their own library, and those
+ * reach every other member. An album goes only to its members, and only while [shared] (each
+ * phone's own say: stopping sharing keeps it here but stops sending it).
  */
 data class Album(
     val id: String,
@@ -22,7 +28,13 @@ data class Album(
     val renamedAt: Long = createdAt,
     val deletedAt: Long? = null,
     val entries: Map<String, AlbumEntry> = emptyMap(),
+    val shared: Boolean = false,
+    /** The phone that made the album ("" for one made before albums had owners: this phone). */
+    val owner: String = "",
+    val members: Map<String, String> = emptyMap(),
 ) {
+    fun ownedBy(phone: String) = owner.isEmpty() || owner == phone
+
     /** The shots in the album, in the order they were added. */
     val keys: List<String> get() = entries.values.filter { it.inAlbum }.sortedBy { it.at }.map { it.key }
     val size: Int get() = entries.values.count { it.inAlbum }
@@ -33,8 +45,8 @@ data class Album(
 /** Album rules, kept free of Android so they can be tested on the JVM. */
 object Albums {
 
-    fun create(name: String, keys: List<String>, now: Long, id: String = UUID.randomUUID().toString()): Album =
-        add(Album(id, clean(name), now), keys, now)
+    fun create(name: String, keys: List<String>, now: Long, id: String = UUID.randomUUID().toString(), owner: String = ""): Album =
+        add(Album(id, clean(name), now, owner = owner), keys, now)
 
     fun add(album: Album, keys: List<String>, now: Long): Album {
         val entries = album.entries.toMutableMap()
@@ -53,10 +65,28 @@ object Albums {
 
     fun delete(album: Album, now: Long) = album.copy(deletedAt = now)
 
+    /** Whether the album goes to its members in Together. Only this phone decides that for itself. */
+    fun share(album: Album, on: Boolean) = album.copy(shared = on)
+
+    /** The owner invites [phone] (and is a member too, so the others know whose album it is). */
+    fun invite(album: Album, me: String, myName: String, phone: String, name: String) = album.copy(
+        shared = true,
+        owner = album.owner.ifEmpty { me },
+        members = album.members + (me to myName) + (phone to clean(name)),
+    )
+
+    /** The albums [phone] may have from me: shared, with [phone] a member (deleted ones too, so it learns). */
+    fun sharedWith(albums: List<Album>, phone: String): List<Album> = albums.filter { it.shared && phone in it.members }
+
+    /** The shots [phone] may have from me: those in albums I share with it. */
+    fun sharedKeys(albums: List<Album>, phone: String): Set<String> =
+        sharedWith(albums, phone).filter { it.alive }.flatMap { it.keys }.toSet()
+
     /**
      * Puts two phones' albums together: the same album (by id) takes the newer name, stays
      * deleted if either side deleted it, and for each shot the newer add or take-out wins
-     * (a tie takes it out, so nobody's removal is lost).
+     * (a tie takes it out, so nobody's removal is lost). Whether it's shared stays as [mine] had it,
+     * so an album I stopped sharing stays private however often the other phone sends it.
      */
     fun merge(mine: List<Album>, theirs: List<Album>): List<Album> {
         val byId = LinkedHashMap<String, Album>()
@@ -74,27 +104,69 @@ object Albums {
         val entries = (a.entries.keys + b.entries.keys).associateWith { k ->
             val x = a.entries[k]
             val y = b.entries[k]
-            when {
-                x == null -> y!!
-                y == null -> x
-                x.at != y.at -> if (x.at > y.at) x else y
-                else -> if (!x.inAlbum) x else y
+            if (x == null) y!! else if (y == null) x else newer(x, y)
+        }
+        return Album(
+            a.id, named.name, minOf(a.createdAt, b.createdAt), named.renamedAt, deleted, entries, a.shared,
+            owner = a.owner.ifEmpty { b.owner }, members = b.members + a.members,
+        )
+    }
+
+    /** The later change to a shot; on a tie, taking it out. */
+    private fun newer(x: AlbumEntry, y: AlbumEntry) = when {
+        x.at != y.at -> if (x.at > y.at) x else y
+        else -> if (!x.inAlbum) x else y
+    }
+
+    /**
+     * Finds this phone's own key for a shot named by another phone: the same key, or else the same
+     * file name stem taken at (nearly) the same time. Her DSC01234.JPG is my DSC01234.ARW when she
+     * only has the JPEG; the hour of slack is the same as RAW+JPEG pairing allows.
+     */
+    fun resolver(local: Collection<String>): (String) -> String? {
+        val known = local.toSet()
+        val byStem = local.mapNotNull { k -> parse(k)?.let { (stem, t) -> Triple(stem, t, k) } }.groupBy { it.first }
+        return { key ->
+            if (key in known) key
+            else parse(key)?.let { (stem, t) ->
+                byStem[stem]?.filter { abs(it.second - t) <= MATCH_WINDOW_MS }?.minByOrNull { abs(it.second - t) }?.third
             }
         }
-        return Album(a.id, named.name, minOf(a.createdAt, b.createdAt), named.renamedAt, deleted, entries)
     }
+
+    /** Albums with their shots under this phone's keys where [resolve] finds them (the rest stay as they are). */
+    fun rekey(albums: List<Album>, resolve: (String) -> String?): List<Album> = albums.map { a ->
+        val out = LinkedHashMap<String, AlbumEntry>()
+        for (e in a.entries.values) {
+            val k = resolve(e.key) ?: e.key
+            val moved = if (k == e.key) e else e.copy(key = k)
+            out[k] = out[k]?.let { newer(it, moved) } ?: moved
+        }
+        if (out == a.entries) a else a.copy(entries = out)
+    }
+
+    /** "DSC01234.ARW@1760000000000" as its lower-case stem and capture time. */
+    private fun parse(key: String): Pair<String, Long>? {
+        val at = key.lastIndexOf('@')
+        if (at <= 0) return null
+        val time = key.substring(at + 1).toLongOrNull() ?: return null
+        return key.substring(0, at).substringBeforeLast('.').lowercase() to time
+    }
+
+    private const val MATCH_WINDOW_MS = 60 * 60 * 1000L
 
     /** Names are one line of text; an empty one becomes "Album". */
     fun clean(name: String) = name.replace(Regex("[\\t\\r\\n]+"), " ").trim().ifEmpty { "Album" }
 
     /**
      * Tab-separated lines, like the flags file:
-     * `A id created renamed deleted(0 = no) name` for each album, then
-     * `S id at +/- key` for each shot in it.
+     * `A id created renamed deleted(0 = no) name shared(1 = yes) owner` for each album, then
+     * `M id phone name` for each member and `S id at +/- key` for each shot in it.
      */
     fun encode(albums: List<Album>): String = buildString {
         for (a in albums) {
-            append("A\t${a.id}\t${a.createdAt}\t${a.renamedAt}\t${a.deletedAt ?: 0}\t${a.name}\n")
+            append("A\t${a.id}\t${a.createdAt}\t${a.renamedAt}\t${a.deletedAt ?: 0}\t${a.name}\t${if (a.shared) 1 else 0}\t${a.owner}\n")
+            for ((phone, name) in a.members) append("M\t${a.id}\t$phone\t${clean(name)}\n")
             for (e in a.entries.values.sortedBy { it.at }) append("S\t${a.id}\t${e.at}\t${if (e.inAlbum) "+" else "-"}\t${e.key}\n")
         }
     }
@@ -102,25 +174,34 @@ object Albums {
     fun decode(text: String): List<Album> {
         val albums = LinkedHashMap<String, Album>()
         val entries = HashMap<String, MutableMap<String, AlbumEntry>>()
+        val members = HashMap<String, MutableMap<String, String>>()
         for (line in text.lineSequence()) {
             val p = line.split('\t')
             runCatching {
                 when (p[0]) {
-                    "A" -> albums[p[1]] = Album(p[1], p[5], p[2].toLong(), p[3].toLong(), p[4].toLong().takeIf { it != 0L })
+                    "A" -> albums[p[1]] = Album(p[1], p[5], p[2].toLong(), p[3].toLong(), p[4].toLong().takeIf { it != 0L }, shared = p.getOrNull(6) == "1", owner = p.getOrNull(7) ?: "")
+                    "M" -> members.getOrPut(p[1]) { linkedMapOf() }[p[2]] = p[3]
                     "S" -> entries.getOrPut(p[1]) { mutableMapOf() }[p[4]] = AlbumEntry(p[4], p[2].toLong(), p[3] == "+")
                 }
             }
         }
-        return albums.values.map { it.copy(entries = entries[it.id] ?: emptyMap()) }
+        return albums.values.map { it.copy(entries = entries[it.id] ?: emptyMap(), members = members[it.id] ?: emptyMap()) }
     }
 }
 
 /** The albums on this phone, in develop/albums.txt beside the flags. */
-class AlbumStore(context: Context) {
+class AlbumStore(private val context: Context) {
+    private val prefs = context.getSharedPreferences("albums", Context.MODE_PRIVATE)
     private val file = File(File(context.filesDir, "develop").apply { mkdirs() }, "albums.txt")
 
     /** Every album, deleted ones included (they matter when phones compare albums). */
     fun load(): List<Album> = runCatching { Albums.decode(file.readText()) }.getOrDefault(emptyList())
+
+    /** This phone, as album members know it: made up once, kept. */
+    val phoneId: String = prefs.getString("phone_id", null) ?: UUID.randomUUID().toString().also { prefs.edit().putString("phone_id", it).apply() }
+
+    /** The name this phone goes by in Together. */
+    val myName: String get() = context.getSharedPreferences("duo", Context.MODE_PRIVATE).getString("name", null) ?: "Me"
 
     fun save(albums: List<Album>) {
         // Written beside and then moved over, so a crash mid-write can't lose every album.

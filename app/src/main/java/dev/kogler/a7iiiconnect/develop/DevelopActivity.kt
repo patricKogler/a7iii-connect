@@ -206,11 +206,18 @@ class DevelopActivity : ComponentActivity() {
                         onRemoveFromAlbum = { picked ->
                             showAlbum?.let { a -> changeAlbum(a.id) { Albums.remove(it, picked.map { s -> s.key }, System.currentTimeMillis()) } }
                         },
+                        me = albumStore.phoneId,
                         onAlbumAction = { action ->
                             val a = showAlbum
                             if (a != null) when (action) {
                                 AlbumAction.SLIDESHOW -> slideshow = a.id
                                 AlbumAction.SHARE -> shareAlbum(a)
+                                // A private album is shared only once you say so.
+                                AlbumAction.TOGETHER ->
+                                    if (a.shared && a.members.size > 1) startActivity(DuoActivity.albumsIntent(this))
+                                    else albumDialog = AlbumDialog.Share(a.id)
+                                AlbumAction.INVITE -> albumDialog = AlbumDialog.Share(a.id)
+                                AlbumAction.STOP_SHARING -> changeAlbum(a.id) { Albums.share(it, false) }
                                 AlbumAction.RENAME -> albumDialog = AlbumDialog.Rename(a.id)
                                 AlbumAction.DELETE -> albumDialog = AlbumDialog.Delete(a.id)
                             }
@@ -253,7 +260,7 @@ class DevelopActivity : ComponentActivity() {
                 offerByDefault = d.narrowed,
                 onDone = { name, withShots ->
                     val keys = if (!d.offer || withShots) d.keys else emptyList()
-                    val album = Albums.create(name, keys, now())
+                    val album = Albums.create(name, keys, now(), owner = albumStore.phoneId)
                     changeAlbums { it + album }
                     albumDialog = null
                     // A new album opens straight away, unless it was made while adding from the editor or the deck.
@@ -268,6 +275,30 @@ class DevelopActivity : ComponentActivity() {
                 onDone = { name, _ -> changeAlbum(d.id) { Albums.rename(it, name, now()) }; albumDialog = null },
                 onDismiss = { albumDialog = null },
             )
+            is AlbumDialog.Share -> {
+                val album = albums.find { it.id == d.id }
+                // The owner invites someone; a member who stopped sharing only starts again.
+                val inviting = album?.ownedBy(albumStore.phoneId) == true
+                AlertDialog(
+                onDismissRequest = { albumDialog = null },
+                title = { Text(if (inviting) "Invite someone into “${album?.name}”?" else "Share “${album?.name}” again?") },
+                text = {
+                    Text(
+                        if (inviting) "Connect with their phone in Together. They get this album with its photos and your edits, " +
+                            "and can add photos of their own, which you get too. Your other albums stay private."
+                        else "Your changes and photos you add go to the others in it again.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        changeAlbum(d.id) { Albums.share(it, true) }
+                        albumDialog = null
+                        startActivity(DuoActivity.albumsIntent(this, invite = if (inviting) d.id else null))
+                    }) { Text(if (inviting) "Invite" else "Share") }
+                },
+                dismissButton = { TextButton(onClick = { albumDialog = null }) { Text("Cancel") } },
+                )
+            }
             is AlbumDialog.Delete -> AlertDialog(
                 onDismissRequest = { albumDialog = null },
                 title = { Text("Delete “${albums.find { it.id == d.id }?.name}”?") },
@@ -399,6 +430,11 @@ class DevelopActivity : ComponentActivity() {
             edited = store.editedKeys(all.map { it.primary })
             marks = store.marks()
             exported = Library.exportedNames(this@DevelopActivity)
+            // Albums may have changed in Together; shots that came from the other phone get my keys.
+            val stored = albumStore.load()
+            val rekeyed = Albums.rekey(stored, Albums.resolver(all.map { it.key }))
+            if (rekeyed != stored) albumStore.save(rekeyed)
+            withContext(Dispatchers.Main) { albums = rekeyed }
         }
         shots = all
         loaded = true
@@ -444,5 +480,7 @@ private sealed interface AlbumDialog {
     /** Naming a new album: with [keys], or offering them ([offer]) ticked when [narrowed]. */
     data class Create(val keys: List<String>, val offer: Boolean, val narrowed: Boolean) : AlbumDialog
     data class Rename(val id: String) : AlbumDialog
+    /** Asking before a private album is first shared in Together. */
+    data class Share(val id: String) : AlbumDialog
     data class Delete(val id: String) : AlbumDialog
 }

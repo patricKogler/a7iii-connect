@@ -129,7 +129,7 @@ private fun TransferStrip(status: SyncStatus, onClick: () -> Unit) {
 }
 
 /** What can be done with the open album from its top bar. */
-enum class AlbumAction { SLIDESHOW, SHARE, RENAME, DELETE }
+enum class AlbumAction { SLIDESHOW, SHARE, TOGETHER, INVITE, STOP_SHARING, RENAME, DELETE }
 
 enum class QuickFilter(val label: String) {
     ALL("All"), TO_REVIEW("To review"), PICKS("Picks"), EDITED("Edited"), REJECTED("Rejected")
@@ -169,6 +169,8 @@ fun LibraryScreen(
     onNewAlbum: (shown: List<Shot>, narrowed: Boolean) -> Unit = { _, _ -> },
     onRemoveFromAlbum: (List<Shot>) -> Unit = {},
     onAlbumAction: (AlbumAction) -> Unit = {},
+    /** This phone's id, to tell my albums from ones I was invited into. */
+    me: String = "",
 ) {
     // Days picked by long-pressing their headers; Review then covers just those.
     var selectedDays by remember { mutableStateOf(emptySet<Long>()) }
@@ -204,7 +206,17 @@ fun LibraryScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
+                    val others = album?.members?.filterKeys { it != me }?.values.orEmpty()
+                    if (album != null && selectedShots.isEmpty() && selectedDays.isEmpty() && others.isNotEmpty()) {
+                        Column {
+                            Text(album.name, maxLines = 1)
+                            Text(
+                                (if (album.ownedBy(me)) "With ${others.joinToString(", ")}" else "${album.members[album.owner] ?: "Their"}'s album") +
+                                    (if (album.shared) "" else " · not sharing"),
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
+                            )
+                        }
+                    } else Text(
                         when {
                             selectedShots.isNotEmpty() -> "${selectedShots.size} selected"
                             selectedDays.isNotEmpty() -> "${selectedDays.size} ${if (selectedDays.size == 1) "day" else "days"} selected"
@@ -252,12 +264,14 @@ fun LibraryScreen(
                             Text(if (selectedShots.size >= 2) "Compare" else "Pick one more")
                         }
                     } else if (album != null) {
+                        // Room is short next to the album's name: Review is just its icon here.
                         if (due.isNotEmpty()) {
-                            TextButton(onClick = { onCull(album.name, due) }, modifier = Modifier.testTag("review")) {
-                                Icon(Icons.Rounded.Swipe, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Review ${due.size}")
+                            IconButton(onClick = { onCull(album.name, due) }, modifier = Modifier.testTag("review")) {
+                                Icon(Icons.Rounded.Swipe, "Review ${due.size}")
                             }
+                        }
+                        IconButton(onClick = { onAlbumAction(AlbumAction.TOGETHER) }, modifier = Modifier.testTag("album-together")) {
+                            Icon(Icons.Rounded.People, if (album.shared && album.members.size > 1) "Swap with ${album.members.filterKeys { it != me }.values.joinToString(", ")}" else "Share this album")
                         }
                         IconButton(onClick = { onAlbumAction(AlbumAction.SLIDESHOW) }, enabled = shown.isNotEmpty(), modifier = Modifier.testTag("album-slideshow")) {
                             Icon(Icons.Rounded.PlayArrow, "Slideshow")
@@ -268,6 +282,12 @@ fun LibraryScreen(
                         Box {
                             IconButton(onClick = { albumMenu = true }) { Icon(Icons.Rounded.MoreVert, "More") }
                             DropdownMenu(expanded = albumMenu, onDismissRequest = { albumMenu = false }) {
+                                if (album.shared && album.members.size > 1 && album.ownedBy(me)) {
+                                    DropdownMenuItem(text = { Text("Invite someone else…") }, onClick = { albumMenu = false; onAlbumAction(AlbumAction.INVITE) })
+                                }
+                                if (album.shared && album.members.size > 1) {
+                                    DropdownMenuItem(text = { Text("Stop sharing") }, onClick = { albumMenu = false; onAlbumAction(AlbumAction.STOP_SHARING) })
+                                }
                                 DropdownMenuItem(text = { Text("Rename album") }, onClick = { albumMenu = false; onAlbumAction(AlbumAction.RENAME) })
                                 DropdownMenuItem(text = { Text("Delete album") }, onClick = { albumMenu = false; onAlbumAction(AlbumAction.DELETE) })
                             }
@@ -345,7 +365,7 @@ fun LibraryScreen(
                         FilterChip(
                             selected = false,
                             onClick = { selectedShots = emptySet(); selectedDays = emptySet(); onOpenAlbum(a) },
-                            leadingIcon = { Icon(Icons.Rounded.PhotoAlbum, null, Modifier.size(16.dp)) },
+                            leadingIcon = { Icon(if (a.shared) Icons.Rounded.People else Icons.Rounded.PhotoAlbum, if (a.shared) "Shared" else null, Modifier.size(16.dp)) },
                             label = { Text("${a.name} · ${shots.count { it.key in a }}") },
                             modifier = Modifier.testTag("album-${a.id}"),
                         )
