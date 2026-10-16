@@ -1196,6 +1196,7 @@ fun EditorScreen(
                     when (tool) {
                         Tool.PRESETS -> PresetsPanel(
                             presets = Preset.BUILT_IN + presets,
+                            current = settings,
                             onApply = { commit(it.applyTo(settings)) },
                             onDelete = { store.deletePreset(it.name); presets = store.userPresets() },
                             onCreate = { dialog = "preset" },
@@ -2456,14 +2457,16 @@ private fun GeometryPanel(c: Controls) {
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
-private fun PresetsPanel(presets: List<Preset>, onApply: (Preset) -> Unit, onDelete: (Preset) -> Unit, onCreate: () -> Unit) {
+private fun PresetsPanel(presets: List<Preset>, current: Settings, onApply: (Preset) -> Unit, onDelete: (Preset) -> Unit, onCreate: () -> Unit) {
     var confirm by remember { mutableStateOf<Preset?>(null) }
-    Text("Tap to apply. Long-press your own presets to delete them.", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp))
+    Text("Tap to apply. A look replaces the last one and keeps your exposure, white balance, crop and masks. Long-press your own presets to delete them.", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp))
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         for (p in presets) {
+            val on = p.isApplied(current)
             Box(
                 Modifier.clip(RoundedCornerShape(8.dp))
                     .background(if (p.builtIn) Color(0xFF2A2A2A) else Color(0xFF263A4A))
+                    .then(if (on) Modifier.border(1.5.dp, Color.White, RoundedCornerShape(8.dp)) else Modifier)
                     .combinedClickable(onClick = { onApply(p) }, onLongClick = { if (!p.builtIn) confirm = p })
                     .padding(horizontal = 12.dp, vertical = 8.dp),
             ) { Text(p.name, color = Color.White, fontSize = 13.sp) }
