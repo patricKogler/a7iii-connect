@@ -615,14 +615,43 @@ fun EditorScreen(
     fun toneAt(channel: Int, u: Float, v: Float): Float? = probeAt(u, v)?.let { rgb ->
         if (channel == 0) 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2] else rgb[channel - 1]
     }
-    /** Two-thumb mode: the curve's target tone under the left thumb, marked on the mini curve. */
-    fun aimCurve(channel: Int, x: Float) {
-        swipeState.curveTarget = x
-        val held = swipeState.curve?.getOrNull(swipeState.curveSel)
-        if (held == null || abs(held.first - x) > 0.04f) {
-            swipeState.curve = null
-            curvePoint = x to settings.curves[channel].table(1024)[(x.coerceIn(0f, 1f) * 1023).roundToInt()]
+    /**
+     * Two-thumb mode on a curve: selects the point for tone [x] (where the left thumb landed): an
+     * existing one nearby, or a new one on the curve that goes away again if it's left unmoved.
+     * Without a tone, the middle point.
+     */
+    fun selectCurvePoint(channel: Int, x: Float?) {
+        val curve = settings.curves[channel]
+        val near = x?.let { t -> curve.points.indices.minByOrNull { abs(curve.points[it].first - t) }?.takeIf { abs(curve.points[it].first - t) < 0.06f } }
+        val (pts, i) = when {
+            near != null -> curve.points.sortedBy { it.first }.toMutableList() to near
+            x != null -> grabCurvePoint(curve, x)
+            else -> curve.points.sortedBy { it.first }.toMutableList().let { it to it.indices.minBy { i -> abs(it[i].first - 0.5f) } }
         }
+        swipeState.curve = pts
+        swipeState.curveSel = i
+        swipeState.curveAdded = near == null && x != null && i >= 0
+        swipeState.acc = 0f
+        curvePoint = pts.getOrNull(i)
+    }
+    /** Two-thumb mode: the left thumb steps through the curve's points, up to brighter ones. */
+    fun stepCurvePoint(dy: Float) {
+        val pts = swipeState.curve ?: return
+        swipeState.acc -= dy
+        val steps = (swipeState.acc / swipeRowStep).toInt()
+        if (steps == 0) return
+        swipeState.acc -= steps * swipeRowStep
+        var i = swipeState.curveSel
+        // A point added just to be selected, and never moved, goes away again.
+        if (swipeState.curveAdded && i in pts.indices) {
+            pts.removeAt(i)
+            if (steps > 0) i--
+            swipeState.curveAdded = false
+        }
+        val next = (i + steps).coerceIn(0, pts.size - 1)
+        if (next != swipeState.curveSel || pts.size != (swipeState.curve?.size ?: 0)) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        swipeState.curveSel = next
+        curvePoint = pts.getOrNull(next)
     }
     val swipe = if (swipeMode && tool != Tool.CROP && tool != Tool.MASKS && opened != null && !showBefore) SwipeAdjust(
         onStart = { horizontal ->
@@ -689,14 +718,13 @@ fun EditorScreen(
             swipeState.mode = SwipeMode.THUMBS
             swipeState.thumbDetent = null
             swipeState.curve = null
-            swipeState.curveTarget = -1f
             val path = swipeNav.resolve(menuTree, swipePath)
             val rgb = if (u >= 0f) probeAt(u, v) else null
             when {
                 path[0] == "light" && path.getOrNull(1) == "curve" -> {
                     val ch = (swipeNav.node(menuTree, path) as? SwipeCurve)?.channel ?: 0
                     navigate(listOf("light", "curve", CURVE_IDS[ch]))
-                    if (u >= 0f) toneAt(ch, u, v)?.let { aimCurve(ch, it) }
+                    selectCurvePoint(ch, if (u >= 0f) toneAt(ch, u, v) else null)
                 }
                 rgb != null && path[0] == "color" && path.getOrNull(1) == "mix" && settings.profile != Profile.MONOCHROME -> {
                     val hsv = FloatArray(3)
@@ -713,7 +741,7 @@ fun EditorScreen(
         },
         onLeft = { dx, dy, u, v, height ->
             when (val node = swipeNav.node(menuTree, swipePath)) {
-                is SwipeCurve -> if (u >= 0f) toneAt(node.channel, u, v)?.let { aimCurve(node.channel, it) }
+                is SwipeCurve -> stepCurvePoint(dy)
                 is SwipeWheel -> if (height > 0f) {
                     // Up/down turns the hue; the right thumb sets how strong it is.
                     val h = ((settings[node.hue] - dy / height * 360f) % 360f + 360f) % 360f
@@ -728,7 +756,7 @@ fun EditorScreen(
                 else -> menuMove(dx, dy)
             }
         },
-        onRight = { _, dy, height ->
+        onRight = { dx, dy, height ->
             val up = if (height > 0f) -dy / height else 0f
             when (val node = swipeNav.node(menuTree, swipePath)) {
                 is SwipeLeaf -> {
@@ -761,23 +789,20 @@ fun EditorScreen(
                     settings = next
                 }
                 is SwipeCurve -> {
-                    val target = swipeState.curveTarget
-                    if (target >= 0f) {
-                        // Grab the point at the aimed tone the first time the right thumb moves it.
-                        if (swipeState.curve == null) {
-                            val (pts, i) = grabCurvePoint(settings.curves[node.channel], target)
-                            swipeState.curve = pts
-                            swipeState.curveSel = i
-                            if (i >= 0) curveGrab[node.channel] = pts[i].first
-                        }
-                        val pts = swipeState.curve
-                        val i = swipeState.curveSel
-                        if (pts != null && i in pts.indices) {
-                            pts[i] = pts[i].first to (pts[i].second + up).coerceIn(0f, 1f)
-                            curvePoint = pts[i]
-                            dragging = true
-                            settings = settings.withCurve(node.channel, Curve(pts.toList()))
-                        }
+                    // The right thumb moves the selected point: up/down its output, sideways its input
+                    // (between its neighbours).
+                    val pts = swipeState.curve
+                    val i = swipeState.curveSel
+                    if (pts != null && i in pts.indices && height > 0f) {
+                        val lo = if (i == 0) 0f else pts[i - 1].first + 0.01f
+                        val hi = if (i == pts.size - 1) 1f else pts[i + 1].first - 0.01f
+                        val (x, y) = pts[i]
+                        pts[i] = (x + dx / height).coerceIn(lo, maxOf(lo, hi)) to (y + up).coerceIn(0f, 1f)
+                        swipeState.curveAdded = false
+                        curveGrab[node.channel] = pts[i].first
+                        curvePoint = pts[i]
+                        dragging = true
+                        settings = settings.withCurve(node.channel, Curve(pts.toList()))
                     }
                 }
                 else -> {}
@@ -1036,7 +1061,7 @@ fun EditorScreen(
                         val active = swipeAxis == 1 || swipeAxis == 4 || swipeAxis == 6
                         // While dragging a wheel, the pad or a curve, a small copy of it shows under the label.
                         if (active && (node is Swipe2D || node is SwipeCurve)) {
-                            Canvas(Modifier.align(Alignment.TopCenter).padding(top = if (split) 76.dp else 44.dp).size(96.dp)) {
+                            Canvas(Modifier.align(Alignment.TopCenter).padding(top = if (split) 76.dp else 44.dp).size(if (swipeAxis == 6 && node is SwipeCurve) 150.dp else 96.dp)) {
                                 when (node) {
                                     is SwipeWheel -> drawHueWheel(settings[node.hue], settings[node.sat])
                                     is SwipeWbPad -> node.xy(settings).let { (x, y) -> drawWbPad(x, y) }
@@ -1654,8 +1679,9 @@ private class SwipeState {
     /** A curve row's points while one is dragged, and which. */
     var curve: MutableList<Pair<Float, Float>>? = null
     var curveSel = -1
-    /** Two-thumb mode: the curve tone the left thumb aims at (-1 none), and the right thumb's slider detent and its row. */
-    var curveTarget = -1f
+    /** Two-thumb mode: the selected curve point was only added to be selected (not moved yet). */
+    var curveAdded = false
+    /** Two-thumb mode: the right thumb's slider detent, and its row. */
     var thumbDetent: Detent? = null
     var thumbRow: String? = null
 }
