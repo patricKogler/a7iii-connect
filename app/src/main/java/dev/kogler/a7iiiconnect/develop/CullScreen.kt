@@ -45,6 +45,7 @@ import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledIconButton
@@ -132,6 +133,8 @@ fun CullScreen(
     rejectedCount: Int,
     onDeleteRejected: () -> Unit,
     onBack: () -> Unit,
+    /** Puts the card's shot (or the whole stack) in an album; null hides the button. */
+    onAddToAlbum: ((List<Shot>) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var progress by remember { mutableFloatStateOf(0f) }
@@ -194,6 +197,11 @@ fun CullScreen(
                         if (top != null) "${pos + 1} of ${items.size}" else "Done",
                         color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodySmall,
                     )
+                }
+            }
+            if (onAddToAlbum != null && top != null) {
+                IconButton(onClick = { onAddToAlbum(top) }, modifier = Modifier.testTag("cull-album")) {
+                    Icon(Icons.Rounded.LibraryAdd, "Add to album", tint = Color.White)
                 }
             }
             val canUndo = duel?.canUndo == true || undo.isNotEmpty()
