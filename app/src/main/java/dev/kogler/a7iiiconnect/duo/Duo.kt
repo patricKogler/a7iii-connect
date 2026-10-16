@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Environment
+import android.provider.OpenableColumns
 import android.provider.MediaStore
 import android.provider.Settings as AndroidSettings
 import androidx.compose.runtime.getValue
@@ -14,6 +15,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.kogler.a7iiiconnect.RecentPhotos
 import dev.kogler.a7iiiconnect.develop.EditStore
+import dev.kogler.a7iiiconnect.develop.ExportOptions
 import dev.kogler.a7iiiconnect.develop.LibraryPhoto
 import dev.kogler.a7iiiconnect.develop.Mark
 import dev.kogler.a7iiiconnect.develop.Photos
@@ -33,7 +35,8 @@ import kotlin.random.Random
 
 /**
  * Together: two phones going through the same photos. The host's phone has the photos and runs the
- * game ([DuoSession]); the guest's phone gets previews, votes, and receives the keepers at the end.
+ * game ([DuoSession]); the guest's phone gets previews, votes, and at the end chooses whether it
+ * wants the keepers, and as JPEG, RAW or both ([Want]).
  * Then an edit battle: both edit the same RAW blind, and vote on the two versions side by side.
  *
  * Lives as long as the app process, so a screen rotation doesn't drop the link. All state is
@@ -42,8 +45,34 @@ import kotlin.random.Random
 object Duo : DuoLink.Listener {
     enum class Phase { LOBBY, CULL, REVEAL, DEBATE, DONE, BATTLE_PICK, BATTLE_EDIT, BATTLE_VOTE, BATTLE_RESULT, BATTLE_OVER }
 
-    private const val PROTOCOL = 1
+    private const val PROTOCOL = 2
     private const val PREVIEW_EDGE = 2560
+    /** About what a full-size JPEG rendered from an A7III RAW takes, for the size shown before choosing. */
+    private const val RENDERED_JPEG_BYTES = 10_000_000L
+
+    enum class Format { JPEG, RAW, BOTH }
+
+    /** The guest's answer to "Want the photos?": null [format] means no thanks. */
+    data class Want(val format: Format?, val alsoMine: Boolean)
+
+    /** What the guest can have: the shots both kept, and the ones only the guest kept. */
+    data class Offer(val both: Bundle, val mine: Bundle)
+
+    /** [count] shots, and how many bytes each format would take. */
+    data class Bundle(val count: Int, val jpeg: Long, val raw: Long, val all: Long) {
+        fun bytes(f: Format) = when (f) {
+            Format.JPEG -> jpeg
+            Format.RAW -> raw
+            Format.BOTH -> all
+        }
+        operator fun plus(o: Bundle) = Bundle(count + o.count, jpeg + o.jpeg, raw + o.raw, all + o.all)
+        fun toJson() = JSONArray(listOf(count, jpeg, raw, all))
+
+        companion object {
+            val EMPTY = Bundle(0, 0, 0, 0)
+            fun fromJson(a: JSONArray?) = a?.let { Bundle(it.optInt(0), it.optLong(1), it.optLong(2), it.optLong(3)) } ?: EMPTY
+        }
+    }
 
     private lateinit var app: Context
     private var link: DuoLink? = null
@@ -84,8 +113,20 @@ object Duo : DuoLink.Listener {
     /** Guest: how many cards from the top have their previews. */
     var ready by mutableIntStateOf(0); private set
     var debateItem by mutableStateOf<Int?>(null); private set
+    /** Bumped on every coin flip in the Debate. */
+    var coinTick by mutableIntStateOf(0); private set
+    /** The last coin flip: whose call won (HOST or GUEST) and what it was. Cleared by the screen. */
+    var coin by mutableStateOf<Pair<Int, Choice>?>(null)
 
-    /** The keepers going to the guest's phone: done / total. */
+    /** At the end: what the guest can have (host computes it, guest receives it). */
+    var offer by mutableStateOf<Offer?>(null); private set
+    /** The guest's answer; null until they choose. */
+    var want by mutableStateOf<Want?>(null); private set
+    private var bothShots = emptyList<Shot>()
+    private var mineShots = emptyList<Shot>()
+    private var sendJob: Job? = null
+
+    /** The files going to the guest's phone: done / total. */
     var keepers by mutableStateOf(0 to 0); private set
     /** A file on its way (label, 0..1), for the big ones: the battle RAW, the app update. */
     var transfer by mutableStateOf<Pair<String, Float>?>(null); private set
@@ -209,11 +250,13 @@ object Duo : DuoLink.Listener {
 
     private fun reset() {
         previewJob?.cancel()
+        sendJob?.cancel()
         active = false; hosting = false; connected = false; reconnecting = false; ended = false; searching = false
         phase = Phase.LOBBY; partnerName = ""; nearby.clear(); notice = null
         code = ""; joinCode = null; tagUri = null
         deck = emptyList(); preparing = 0f; session = DuoSession(emptyList()); tick = 0; matchCount = 0
-        ready = 0; debateItem = null; keepers = 0 to 0; transfer = null; update = null; partnerVersion = 0
+        ready = 0; debateItem = null; coinTick = 0; coin = null
+        offer = null; want = null; bothShots = emptyList(); mineShots = emptyList(); keepers = 0 to 0; transfer = null; update = null; partnerVersion = 0
         resetBattle(); battleOnly = false; pendingBattle = null
         if (::app.isInitialized) File(app.filesDir, "duo").deleteRecursively()
     }
@@ -271,17 +314,35 @@ object Duo : DuoLink.Listener {
         }
     }
 
-    /** Debate: settle [item] for both. */
-    fun decide(item: Int, choice: Choice) {
+    /** Debate: my call on [item] for both of us. The card is settled once we both make the same one. */
+    fun propose(item: Int, choice: Choice) {
+        if (phase != Phase.DEBATE || item != debateItem) return
+        session.propose(me, item, choice)
+        tick++
+        if (hosting) afterProposal() else link?.send(JSONObject().put("t", "propose").put("i", item).put("v", choice.token))
+    }
+
+    /** Debate, when we can't agree: a coin picks one of our two calls. */
+    fun flipCoin(item: Int) {
         if (!hosting) {
-            link?.send(JSONObject().put("t", "decide").put("i", item).put("v", choice.token))
+            link?.send(JSONObject().put("t", "flip").put("i", item))
             return
         }
         if (phase != Phase.DEBATE || item != debateItem) return
-        session.decide(item, choice)
+        val winner = Random.nextInt(2)
+        val c = session.flip(item, winner) ?: return
+        coinTick++
+        coin = winner to c
         tick++
-        debateItem = session.nextDispute
-        if (debateItem == null) finish()
+        afterProposal()
+    }
+
+    private fun afterProposal() {
+        val item = debateItem
+        if (item != null && session.decision(item) != null) {
+            debateItem = session.nextDispute
+            if (debateItem == null) finish()
+        }
         broadcast()
     }
 
@@ -295,27 +356,123 @@ object Duo : DuoLink.Listener {
         broadcast()
     }
 
-    /** End of culling: write the marks, send the guest the shots they both kept. */
+    /** End of culling: write the marks, then ask the guest whether they want the photos ([want]). */
     private fun finish() {
         phase = Phase.DONE
         val store = EditStore(app)
         val keep = mutableListOf<Shot>()
+        val mine = mutableListOf<Shot>()
         deck.forEachIndexed { i, stack ->
-            val o = session.outcome(i) ?: return@forEachIndexed
+            val o = session.outcome(i)
+            val g = session.voteOf(DuoSession.GUEST, i)
             stack.forEachIndexed { j, shot ->
-                val picked = o.vote == Choice.Vote.PICK && j == o.keep
-                store.setMark(shot.key, if (picked) Mark.PICK else Mark.REJECT)
+                val picked = o != null && o.vote == Choice.Vote.PICK && j == o.keep
+                if (o != null) store.setMark(shot.key, if (picked) Mark.PICK else Mark.REJECT)
                 if (picked) keep += shot
+                else if (g != null && g.vote == Choice.Vote.PICK && g.keep == j) mine += shot
             }
         }
-        keepers = 0 to keep.size
-        for (shot in keep) {
-            val file = shot.jpeg ?: shot.primary
-            link?.sendUri(
-                JSONObject().put("kind", "keeper").put("name", file.name).put("taken", file.takenMillis).put("mime", file.mime),
-                file.uri,
-            )
+        bothShots = keep
+        mineShots = mine
+        scope.launch {
+            offer = withContext(Dispatchers.IO) { Offer(bundle(keep), bundle(mine)) }
+            broadcast()
         }
+    }
+
+    private fun bundle(shots: List<Shot>): Bundle = shots.fold(Bundle.EMPTY) { acc, shot ->
+        val raw = shot.raw?.let { sizeOf(it) }
+        val jpeg = shot.jpeg?.let { sizeOf(it) }
+        acc + Bundle(
+            1,
+            jpeg = jpeg ?: RENDERED_JPEG_BYTES,
+            raw = raw ?: jpeg ?: 0,
+            all = (raw ?: 0) + (jpeg ?: RENDERED_JPEG_BYTES),
+        )
+    }
+
+    private fun sizeOf(photo: LibraryPhoto): Long = runCatching {
+        app.contentResolver.query(photo.uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getLong(0) else 0L
+        } ?: 0L
+    }.getOrDefault(0L)
+
+    /** Guest: my answer to "Want the photos?", remembered for next time. */
+    fun choose(answer: Want) {
+        if (hosting || phase != Phase.DONE) return
+        want = answer
+        app.getSharedPreferences("duo", Context.MODE_PRIVATE).edit()
+            .putString("want", answer.format?.name ?: "NONE").putBoolean("want_mine", answer.alsoMine).apply()
+        sendWant()
+    }
+
+    /** Guest: the answer I gave last time, as the starting point. */
+    fun lastWant(): Want {
+        val prefs = app.getSharedPreferences("duo", Context.MODE_PRIVATE)
+        val format = prefs.getString("want", null)?.let { name -> Format.entries.firstOrNull { it.name == name } }
+        return Want(format ?: Format.JPEG, prefs.getBoolean("want_mine", false))
+    }
+
+    private fun sendWant() {
+        val w = want ?: return
+        link?.send(JSONObject().put("t", "want").put("f", w.format?.name ?: "NONE").put("m", w.alsoMine))
+    }
+
+    /** Host: the guest answered. Send what they asked for, one file after another. */
+    private fun onWant(answer: Want) {
+        if (want != null) return
+        want = answer
+        val format = answer.format
+        if (format != null) {
+            val shots = bothShots + (if (answer.alsoMine) mineShots else emptyList())
+            val files = shots.flatMap { filesFor(it, format) }
+            keepers = 0 to files.size
+            sendJob = scope.launch { for (f in files) sendKeeper(f) }
+        }
+        broadcast()
+    }
+
+    /** A file to send: one of the shot's own, or [render] a JPEG from its RAW. */
+    private data class Outgoing(val photo: LibraryPhoto, val render: Boolean = false)
+
+    private fun filesFor(shot: Shot, f: Format): List<Outgoing> {
+        val jpeg = shot.jpeg?.let { Outgoing(it) } ?: Outgoing(shot.raw!!, render = true)
+        return when (f) {
+            Format.JPEG -> listOf(jpeg)
+            Format.RAW -> listOf(Outgoing(shot.primary))
+            Format.BOTH -> listOfNotNull(shot.raw?.let { Outgoing(it) }, jpeg)
+        }
+    }
+
+    private suspend fun sendKeeper(f: Outgoing) {
+        val photo = f.photo
+        if (f.render) {
+            // A RAW without a JPEG twin: develop it here, with my edit if I made one.
+            val out = File(app.cacheDir, "duo-out/${photo.stem}.JPG")
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    out.parentFile?.mkdirs()
+                    val opened = Photos.open(app, photo)
+                    val bmp = Photos.render(app, opened, EditStore(app).load(photo), ExportOptions())
+                    out.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+                    bmp.recycle()
+                    runCatching { Photos.copyExif(app, photo.uri, Uri.fromFile(out)) }
+                }.isSuccess
+            }
+            if (ok) {
+                link?.sendFile(
+                    JSONObject().put("kind", "keeper").put("name", out.name).put("taken", photo.takenMillis)
+                        .put("mime", "image/jpeg").put("tmp", out.path),
+                    out,
+                )
+                return
+            }
+            // Couldn't develop it: the RAW is better than nothing.
+        }
+        link?.sendUri(
+            JSONObject().put("kind", "keeper").put("name", photo.name).put("taken", photo.takenMillis).put("mime", photo.mime),
+            photo.uri,
+        )
     }
 
     // ---- Edit battle --------------------------------------------------------------------------
@@ -474,7 +631,16 @@ object Duo : DuoLink.Listener {
                 afterVotes()
             }
             "go" -> if (hosting) next()
-            "decide" -> if (hosting) Choice.parse(msg.getString("v"))?.let { decide(msg.getInt("i"), it) }
+            "propose" -> if (hosting && phase == Phase.DEBATE && msg.getInt("i") == debateItem) {
+                session.propose(DuoSession.GUEST, msg.getInt("i"), Choice.parse(msg.getString("v")))
+                tick++
+                afterProposal()
+            }
+            "flip" -> if (hosting) flipCoin(msg.getInt("i"))
+            "want" -> if (hosting && phase.ordinal >= Phase.DONE.ordinal) {
+                val format = Format.entries.firstOrNull { it.name == msg.optString("f") }
+                onWant(Want(format, msg.optBoolean("m")))
+            }
             "edit" -> if (hosting) {
                 battleEdits = battleEdits.toMutableList().also { it[DuoSession.GUEST] = msg.getString("s") }
                 partnerEdited = true
@@ -522,7 +688,10 @@ object Duo : DuoLink.Listener {
     override fun onProgress(meta: JSONObject, fraction: Float, outgoing: Boolean) {
         when (meta.optString("kind")) {
             "preview" -> if (outgoing && fraction >= 1f) File(meta.optString("tmp")).delete()
-            "keeper" -> if (outgoing && fraction >= 1f) keepers = (keepers.first + 1) to keepers.second
+            "keeper" -> if (outgoing && fraction >= 1f) {
+                keepers = (keepers.first + 1) to keepers.second
+                meta.optString("tmp").ifEmpty { null }?.let { File(it).delete() }
+            }
             "battle" -> transfer = if (fraction >= 1f) null
             else (if (outgoing) "Sending the RAW to $partnerName" else "Getting the RAW from $partnerName") to fraction
             "apk" -> if (!outgoing) transfer = if (fraction < 1f) "Getting the new Shootback" to fraction else null
@@ -567,10 +736,16 @@ object Duo : DuoLink.Listener {
             .put("phase", phase.name)
             .put("hv", session.encodeVotes(DuoSession.HOST))
             .put("dc", session.encodeDecisions())
+            .put("hp", session.encodeProposals(DuoSession.HOST))
+            .put("gp", session.encodeProposals(DuoSession.GUEST))
+            .put("cn", coinTick)
             .put("mc", matchCount)
             .put("debate", debateItem ?: -1)
             .put("kt", keepers.second)
             .put("bo", battleOnly)
+        coin?.let { (w, c) -> msg.put("cw", w).put("cc", c.token) }
+        offer?.let { msg.put("ob", it.both.toJson()).put("om", it.mine.toJson()) }
+        want?.let { msg.put("w", it.format?.name ?: "NONE") }
         if (phase == Phase.BATTLE_VOTE || phase == Phase.BATTLE_RESULT) {
             msg.put("be", JSONArray(battleEdits.map { it ?: "" }))
         }
@@ -611,7 +786,23 @@ object Duo : DuoLink.Listener {
         battleOnly = msg.optBoolean("bo")
         session.loadVotes(DuoSession.HOST, msg.optString("hv"))
         session.loadDecisions(msg.optString("dc"))
+        session.loadProposals(DuoSession.HOST, msg.optString("hp"))
+        // My own call may still be on its way to the host: keep it until the host has it.
+        val hostHasMine = msg.optString("gp").split(',').getOrNull(msg.optInt("debate", -1))
+        val mineHere = debateItem?.let { session.proposalOf(DuoSession.GUEST, it) }
+        if (mineHere == null || hostHasMine == mineHere.token || msg.optInt("debate", -1) != debateItem) {
+            session.loadProposals(DuoSession.GUEST, msg.optString("gp"))
+        }
         tick++
+        val cn = msg.optInt("cn")
+        if (cn > coinTick) {
+            val c = Choice.parse(msg.optString("cc"))
+            if (c != null) coin = msg.optInt("cw") to c
+        }
+        coinTick = cn
+        msg.optJSONArray("ob")?.let { offer = Offer(Bundle.fromJson(it), Bundle.fromJson(msg.optJSONArray("om"))) }
+        // The host missed my answer (the link dropped): again.
+        if (newPhase == Phase.DONE && want != null && !msg.has("w")) sendWant()
         val mc = msg.optInt("mc")
         if (mc > matchCount) matchTick++
         matchCount = mc

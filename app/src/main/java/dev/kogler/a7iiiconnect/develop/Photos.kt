@@ -339,7 +339,7 @@ object Photos {
         }
     }.getOrNull()
 
-    private fun copyExif(context: Context, from: Uri, to: Uri) {
+    internal fun copyExif(context: Context, from: Uri, to: Uri) {
         val src = context.contentResolver.openInputStream(from)!!.use { ExifInterface(it) }
         context.contentResolver.openFileDescriptor(to, "rw")!!.use { pfd ->
             val dst = ExifInterface(pfd.fileDescriptor)

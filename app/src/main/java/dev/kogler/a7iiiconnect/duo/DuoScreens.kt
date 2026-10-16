@@ -57,6 +57,7 @@ import androidx.compose.material.icons.rounded.QuestionMark
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -65,7 +66,11 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -167,6 +172,7 @@ fun DuoScreen(onExit: () -> Unit, onShareApp: () -> Unit, onInstall: (File) -> U
                 Banner("${Duo.partnerName} has a newer Shootback", action = "Install") { onInstall(apk) }
             }
         }
+        CoinResult()
         Duo.notice?.let { text ->
             LaunchedEffect(text) { delay(3500); if (Duo.notice == text) Duo.notice = null }
             Surface(
@@ -600,14 +606,81 @@ private fun ColumnScope.Debate(onClose: () -> Unit) {
             }
         }
     }
+    // What each of us wants done with it now; the card moves on once both say the same.
+    val myCall = s.proposalOf(Duo.me, item)
+    val theirCall = s.proposalOf(Duo.partner, item)
+    Text(
+        when {
+            s.isStuck(item) -> "${Duo.partnerName} says ${callLabel(theirCall!!, stack.size)}. Agree, or let a coin decide"
+            theirCall != null -> "${Duo.partnerName} says ${callLabel(theirCall, stack.size)}"
+            myCall != null -> "Waiting for ${Duo.partnerName}"
+            else -> "Talk it over, then both tap the same call"
+        },
+        color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        textAlign = TextAlign.Center,
+    )
     Row(
         Modifier.fillMaxWidth().padding(vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RoundButton(Icons.Rounded.Close, "Out", RejectRed, 64, "debate-out") { Duo.decide(item, Choice(Choice.Vote.REJECT)) }
-        RoundButton(Icons.Rounded.QuestionMark, "Decide later", SkipBlue, 48, "debate-later") { Duo.decide(item, Choice(Choice.Vote.MAYBE)) }
-        RoundButton(Icons.Rounded.Check, "Keep", PickGreen, 64, "debate-keep") { Duo.decide(item, Choice(Choice.Vote.PICK, idx)) }
+        val out = Choice(Choice.Vote.REJECT)
+        val later = Choice(Choice.Vote.MAYBE)
+        val keep = Choice(Choice.Vote.PICK, idx)
+        CallButton(myCall == out, theirCall == out) {
+            RoundButton(Icons.Rounded.Close, "Out", RejectRed, 64, "debate-out") { Duo.propose(item, out) }
+        }
+        CallButton(myCall == later, theirCall == later) {
+            RoundButton(Icons.Rounded.QuestionMark, "Decide later", SkipBlue, 48, "debate-later") { Duo.propose(item, later) }
+        }
+        CallButton(myCall == keep, theirCall == keep) {
+            RoundButton(Icons.Rounded.Check, "Keep", PickGreen, 64, "debate-keep") { Duo.propose(item, keep) }
+        }
+    }
+    if (s.isStuck(item)) {
+        OutlinedButton(onClick = { Duo.flipCoin(item) }, modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp)) {
+            Text("Flip a coin")
+        }
+    }
+}
+
+private fun callLabel(c: Choice, stackSize: Int) = when (c.vote) {
+    Choice.Vote.REJECT -> "out"
+    Choice.Vote.MAYBE -> "decide later"
+    Choice.Vote.PICK -> if (stackSize > 1) "keep photo ${c.keep + 1}" else "keep"
+}
+
+/** A Debate button with who picked it: a white ring for me, a dot with their initial for them. */
+@Composable
+private fun CallButton(mine: Boolean, theirs: Boolean, button: @Composable () -> Unit) {
+    Box(contentAlignment = Alignment.Center) {
+        Box(Modifier.border(3.dp, if (mine) Color.White else Color.Transparent, CircleShape).padding(5.dp)) { button() }
+        if (theirs) Box(Modifier.align(Alignment.TopEnd)) { Avatar(Duo.partnerName, PartnerColor, 22) }
+    }
+}
+
+/** "Heads!": which call the coin picked, on both phones. */
+@Composable
+private fun CoinResult() {
+    val (winner, call) = Duo.coin ?: return
+    val tick = Duo.coinTick
+    LaunchedEffect(tick) { delay(2800); if (Duo.coinTick == tick) Duo.coin = null }
+    val spin = remember(tick) { Animatable(0f) }
+    LaunchedEffect(tick) { spin.animateTo(1f, tween(900)) }
+    val name = if (winner == Duo.me) "Your" else "${Duo.partnerName}'s"
+    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.7f)).clickable { Duo.coin = null }, contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(
+                Modifier.size(96.dp).graphicsLayer { rotationY = spin.value * 1080f }.clip(CircleShape).background(Gold),
+                contentAlignment = Alignment.Center,
+            ) { Text("?", color = Color.Black, fontSize = 44.sp, fontWeight = FontWeight.Black) }
+            Spacer(Modifier.height(20.dp))
+            if (spin.value >= 1f) {
+                Text("$name call wins", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Text(callLabel(call, 1).replaceFirstChar { it.uppercase() }, color = Gold, fontSize = 18.sp)
+            }
+        }
     }
 }
 
@@ -651,19 +724,36 @@ private fun Done(onClose: () -> Unit) {
             Spacer(Modifier.height(8.dp))
             Text("$kept kept · $out out · ${s.score}% in sync", color = Color.White.copy(alpha = 0.75f))
             Spacer(Modifier.height(24.dp))
-            if (total > 0) {
-                Text(
-                    when {
-                        sent >= total && Duo.hosting -> "${Duo.partnerName} has the $total keepers"
-                        sent >= total -> "The $total keepers are in your Photos"
-                        Duo.hosting -> "Sending the keepers to ${Duo.partnerName}: $sent of $total"
-                        else -> "Getting the keepers: $sent of $total"
-                    },
-                    color = Color.White,
-                )
-                Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(progress = { sent / total.toFloat() }, modifier = Modifier.fillMaxWidth(0.7f))
-                Spacer(Modifier.height(32.dp))
+            val offer = Duo.offer
+            val want = Duo.want
+            when {
+                total > 0 -> {
+                    Text(
+                        when {
+                            sent >= total && Duo.hosting -> "${Duo.partnerName} has the photos"
+                            sent >= total -> "The photos are in your Photos"
+                            Duo.hosting -> "Sending ${wantLabel(want)} to ${Duo.partnerName}: $sent of $total"
+                            else -> "Getting your photos: $sent of $total"
+                        },
+                        color = Color.White,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(progress = { sent / total.toFloat() }, modifier = Modifier.fillMaxWidth(0.7f))
+                    Spacer(Modifier.height(32.dp))
+                }
+                offer == null || offer.both.count + offer.mine.count == 0 -> {}
+                want != null && want.format == null -> {
+                    Text(if (Duo.hosting) "${Duo.partnerName} passed on the photos" else "No photos this time", color = Color.White.copy(alpha = 0.6f))
+                    Spacer(Modifier.height(32.dp))
+                }
+                Duo.hosting && want == null -> {
+                    Text("${Duo.partnerName} is choosing which photos to take", color = Color.White.copy(alpha = 0.6f))
+                    Spacer(Modifier.height(32.dp))
+                }
+                !Duo.hosting && want == null && offer != null -> {
+                    WantPhotos(offer)
+                    Spacer(Modifier.height(24.dp))
+                }
             }
             if (Duo.hosting) {
                 Button(
@@ -682,6 +772,59 @@ private fun Done(onClose: () -> Unit) {
         }
     }
 }
+
+private fun wantLabel(w: Duo.Want?) = when (w?.format) {
+    Duo.Format.RAW -> "the RAWs"
+    Duo.Format.BOTH -> "RAWs and JPEGs"
+    else -> "the JPEGs"
+}
+
+/** Guest, at the end: whether to take the photos home, which ones, and in what format. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WantPhotos(offer: Duo.Offer) {
+    val last = remember { Duo.lastWant() }
+    var format by remember { mutableStateOf(last.format ?: Duo.Format.JPEG) }
+    var alsoMine by remember { mutableStateOf(last.alsoMine && offer.mine.count > 0) }
+    val bundle = if (alsoMine) offer.both + offer.mine else offer.both
+    Surface(color = Color(0xFF1C1C1E), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("Want the photos?", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "${offer.both.count} you both kept" + if (alsoMine) " + ${offer.mine.count} only you kept" else "",
+                color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp,
+            )
+            if (offer.mine.count > 0) {
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Also the ${offer.mine.count} only I kept", color = Color.White, modifier = Modifier.weight(1f))
+                    Switch(checked = alsoMine, onCheckedChange = { alsoMine = it })
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                val options = listOf(Duo.Format.JPEG to "JPEG", Duo.Format.RAW to "RAW", Duo.Format.BOTH to "Both")
+                options.forEachIndexed { i, (f, label) ->
+                    SegmentedButton(
+                        selected = format == f,
+                        onClick = { format = f },
+                        shape = SegmentedButtonDefaults.itemShape(i, options.size),
+                    ) { Text(label) }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text("About ${megabytes(bundle.bytes(format))}", color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp)
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TextButton(onClick = { Duo.choose(Duo.Want(null, alsoMine)) }) { Text("No thanks") }
+                Button(onClick = { Duo.choose(Duo.Want(format, alsoMine)) }, enabled = bundle.count > 0) { Text("Get ${bundle.count} photos") }
+            }
+        }
+    }
+}
+
+private fun megabytes(bytes: Long): String =
+    if (bytes >= 1_000_000_000) String.format(java.util.Locale.US, "%.1f GB", bytes / 1e9) else "${(bytes / 1_000_000).coerceAtLeast(1)} MB"
 
 /** Battle only: after the result. Same photo again, or done. */
 @Composable
