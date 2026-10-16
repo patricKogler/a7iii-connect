@@ -61,6 +61,13 @@ object Albums {
         return album.copy(entries = entries)
     }
 
+    /**
+     * Undoes a [remove] straight away: the shot's entry as it was, so it keeps its place in the
+     * album (null: it was never in it). Only for undo before the phones swap albums again.
+     */
+    fun restore(album: Album, key: String, entry: AlbumEntry?): Album =
+        album.copy(entries = if (entry == null) album.entries - key else album.entries + (key to entry))
+
     fun rename(album: Album, name: String, now: Long) = album.copy(name = clean(name), renamedAt = now)
 
     fun delete(album: Album, now: Long) = album.copy(deletedAt = now)
