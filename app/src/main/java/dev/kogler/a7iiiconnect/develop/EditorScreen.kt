@@ -341,6 +341,8 @@ fun EditorScreen(
     // Swipe mode's curve rows: the input of the point last grabbed per channel, and the one being dragged.
     val curveGrab = remember { FloatArray(4) { -1f } }
     var curvePoint by remember { mutableStateOf<Pair<Float, Float>?>(null) }
+    // The dragged curve point is pushed past the top or bottom: letting go removes it.
+    var curveRemoving by remember { mutableStateOf(false) }
     // A small render with the curves off, so a long-press can read the tone or color under the finger.
     var probe by remember { mutableStateOf<Probe?>(null) }
     var swipeAxis by remember { mutableIntStateOf(0) }
@@ -573,6 +575,7 @@ fun EditorScreen(
         swipeState.mode = SwipeMode.CURVE
         swipeState.curve = pts
         swipeState.curveSel = i
+        swipeState.curveY = Float.NaN
         curvePoint = pts.getOrNull(i)
         if (i >= 0) curveGrab[channel] = pts[i].first
     }
@@ -617,8 +620,48 @@ fun EditorScreen(
     fun toneAt(channel: Int, u: Float, v: Float): Float? = probeAt(u, v)?.let { rgb ->
         if (channel == 0) 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2] else rgb[channel - 1]
     }
+    /** Removes the point pushed off the curve (the photo already shows the curve without it). */
+    fun dropRemovedPoint() {
+        val pts = swipeState.curve
+        val i = swipeState.curveSel
+        if (curveRemoving && pts != null && i in pts.indices) {
+            val x = pts.removeAt(i).first
+            // A later sideways swipe would otherwise add it back.
+            for (c in curveGrab.indices) if (curveGrab[c] == x) curveGrab[c] = -1f
+            swipeState.curveSel = (i - 1).coerceAtLeast(0)
+            curvePoint = pts.getOrNull(swipeState.curveSel)
+        }
+        curveRemoving = false
+        swipeState.curveY = Float.NaN
+    }
+    /**
+     * Moves the selected point of [channel]'s curve by [dx] across (between its neighbours) and
+     * [dy] up. Pushed well past the top or bottom, a middle point turns into "release to remove",
+     * like dragging it off the graph in the panel.
+     */
+    fun moveCurvePoint(channel: Int, dx: Float, dy: Float) {
+        val pts = swipeState.curve ?: return
+        val i = swipeState.curveSel
+        if (i !in pts.indices) return
+        if (swipeState.curveY.isNaN()) swipeState.curveY = pts[i].second
+        swipeState.curveY += dy
+        val y = swipeState.curveY
+        val out = i != 0 && i != pts.size - 1 && (y < -CURVE_REMOVE || y > 1 + CURVE_REMOVE)
+        if (out != curveRemoving) {
+            curveRemoving = out
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        }
+        val lo = if (i == 0) 0f else pts[i - 1].first + 0.01f
+        val hi = if (i == pts.size - 1) 1f else pts[i + 1].first - 0.01f
+        pts[i] = (pts[i].first + dx).coerceIn(lo, maxOf(lo, hi)) to y.coerceIn(0f, 1f)
+        curveGrab[channel] = pts[i].first
+        curvePoint = pts[i]
+        dragging = true
+        settings = settings.withCurve(channel, Curve(if (out) pts.filterIndexed { j, _ -> j != i } else pts.toList()))
+    }
     /** Two-thumb mode on a curve: selects the existing point nearest tone [x] (where the left thumb landed), or the middle one. */
     fun selectCurvePoint(channel: Int, x: Float?) {
+        dropRemovedPoint()
         val pts = settings.curves[channel].points.sortedBy { it.first }.toMutableList()
         val i = pts.indices.minBy { abs(pts[it].first - (x ?: 0.5f)) }
         swipeState.curve = pts
@@ -628,10 +671,12 @@ fun EditorScreen(
     }
     /** Two-thumb mode: the left thumb, held still, adds a point at tone [x] on the curve and selects it. */
     fun addCurvePoint(channel: Int, x: Float) {
+        dropRemovedPoint()
         val (pts, i) = grabCurvePoint(Curve(swipeState.curve ?: settings.curves[channel].points), x)
         if (i < 0) return
         swipeState.curve = pts
         swipeState.curveSel = i
+        swipeState.curveY = Float.NaN
         swipeState.acc = 0f
         curvePoint = pts[i]
         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -644,10 +689,12 @@ fun EditorScreen(
         swipeState.acc -= dy
         val steps = (swipeState.acc / swipeRowStep).toInt()
         if (steps == 0) return
+        dropRemovedPoint()
         swipeState.acc -= steps * swipeRowStep
         val next = (swipeState.curveSel + steps).coerceIn(0, pts.size - 1)
         if (next != swipeState.curveSel) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         swipeState.curveSel = next
+        swipeState.curveY = Float.NaN
         curvePoint = pts.getOrNull(next)
     }
     // Kept while the original shows: a held finger shows it, and a second thumb then starts two-thumb editing.
@@ -793,18 +840,7 @@ fun EditorScreen(
                 is SwipeCurve -> {
                     // The right thumb moves the selected point: up/down its output, sideways its input
                     // (between its neighbours).
-                    val pts = swipeState.curve
-                    val i = swipeState.curveSel
-                    if (pts != null && i in pts.indices && height > 0f) {
-                        val lo = if (i == 0) 0f else pts[i - 1].first + 0.01f
-                        val hi = if (i == pts.size - 1) 1f else pts[i + 1].first - 0.01f
-                        val (x, y) = pts[i]
-                        pts[i] = (x + dx / height).coerceIn(lo, maxOf(lo, hi)) to (y + up).coerceIn(0f, 1f)
-                        curveGrab[node.channel] = pts[i].first
-                        curvePoint = pts[i]
-                        dragging = true
-                        settings = settings.withCurve(node.channel, Curve(pts.toList()))
-                    }
+                    if (height > 0f) moveCurvePoint(node.channel, dx / height, up)
                 }
                 else -> {}
             }
@@ -835,15 +871,7 @@ fun EditorScreen(
                     }
                 }
                 SwipeMode.CURVE -> {
-                    val pts = swipeState.curve
-                    val i = swipeState.curveSel
-                    if (node is SwipeCurve && pts != null && i in pts.indices && width > 0f) {
-                        val (x, y) = pts[i]
-                        pts[i] = x to (y + (if (swipeState.vertical) -dy else dx) / width).coerceIn(0f, 1f)
-                        curvePoint = pts[i]
-                        dragging = true
-                        settings = settings.withCurve(node.channel, Curve(pts.toList()))
-                    }
+                    if (node is SwipeCurve && width > 0f) moveCurvePoint(node.channel, 0f, (if (swipeState.vertical) -dy else dx) / width)
                 }
                 SwipeMode.SLIDER -> {
                     val d = swipeState.detent
@@ -861,6 +889,7 @@ fun EditorScreen(
             }
         },
         onEnd = {
+            dropRemovedPoint()
             if (dragging) { dragging = false; commit(settings) }
             // Letting go on a folder picks its remembered (or first) row.
             if ((swipeState.mode == SwipeMode.MENU || swipeState.mode == SwipeMode.THUMBS) && swipeNav.node(menuTree, swipePath) is SwipeFolder) navigate(swipeNav.descend(menuTree, swipePath))
@@ -1018,7 +1047,7 @@ fun EditorScreen(
                         is SwipeWheel -> if (settings[n.sat] == 0f) "–" else "${settings[n.hue].roundToInt()}° · ${settings[n.sat].roundToInt()}"
                         is SwipeWbPad -> if (n.neutral(settings)) "As shot" else
                             "${((settings.temperature ?: 0f) / 50f).roundToInt() * 50} · ${(settings.tint ?: 0f).roundToInt()}"
-                        is SwipeCurve -> curvePoint?.takeIf { swipeAxis == 1 || swipeAxis == 4 || swipeAxis == 6 }
+                        is SwipeCurve -> if (curveRemoving) "Release to remove" else curvePoint?.takeIf { swipeAxis == 1 || swipeAxis == 4 || swipeAxis == 6 }
                             ?.let { (x, y) -> "in ${(x * 255).roundToInt()} → out ${(y * 255).roundToInt()}" }
                             ?: settings.curves[n.channel].let { if (it.isIdentity) "–" else "${it.points.size - 2} pts" }
                         is SwipeLeaf -> n.get(settings).let { v -> n.format?.invoke(v) ?: n.param?.let { formatParam(it, v) } ?: "" }
@@ -1708,6 +1737,8 @@ private class SwipeState {
     /** A curve row's points while one is dragged, and which. */
     var curve: MutableList<Pair<Float, Float>>? = null
     var curveSel = -1
+    /** The dragged point's output, unclamped, so pushing it past the top or bottom can remove it. */
+    var curveY = Float.NaN
     /** Two-thumb mode: the right thumb's slider detent, and its row. */
     var thumbDetent: Detent? = null
     var thumbRow: String? = null
@@ -2016,6 +2047,9 @@ private fun LightPanel(c: Controls, onAuto: (() -> Unit)?, curve: Boolean, chann
 }
 
 private val CURVE_COLORS = listOf(Color.White, Color(0xFFFF5050), Color(0xFF50E050), Color(0xFF5090FF))
+
+/** How far past the top or bottom (in output, 0..1) a swiped curve point is pushed before letting go removes it. */
+private const val CURVE_REMOVE = 0.15f
 
 @Composable
 private fun CurvePanel(c: Controls, channel: Int, onChannel: (Int) -> Unit) {
