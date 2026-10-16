@@ -650,7 +650,8 @@ fun EditorScreen(
         swipeState.curveSel = next
         curvePoint = pts.getOrNull(next)
     }
-    val swipe = if (swipeMode && tool != Tool.CROP && tool != Tool.MASKS && opened != null && !showBefore) SwipeAdjust(
+    // Kept while the original shows: a held finger shows it, and a second thumb then starts two-thumb editing.
+    val swipe = if (swipeMode && tool != Tool.CROP && tool != Tool.MASKS && opened != null) SwipeAdjust(
         onStart = { horizontal ->
             chrome = false
             if (horizontal) {
@@ -1539,12 +1540,15 @@ private fun ZoomableImage(
                         ev.changes.firstOrNull()?.let { last = it.uptimeMillis }
                         val pressed = ev.changes.filter { it.pressed }
                         if (pressed.isEmpty()) break
-                        if (pressed.size > 1 && (axis == 0 || axis == 2 || axis == 4) && adjust != null) {
+                        // Any one-finger state can become two thumbs: the first thumb often rests (showing the
+                        // original after a moment) or drifts a little before the second lands.
+                        if (pressed.size > 1 && axis != 3 && axis != 6 && adjust != null) {
                             // Two thumbs on opposite halves edit (left picks, right changes); otherwise it's a pinch.
                             val a = pressed[0]; val b = pressed[1]
                             val half = size.width / 2f
                             if ((a.position.x < half) != (b.position.x < half) && abs(a.position.x - b.position.x) > size.width * 0.3f) {
-                                if (axis != 0) adjust?.onEnd?.invoke()
+                                if (axis == 1 || axis == 2 || axis == 4) adjust?.onEnd?.invoke()
+                                if (axis == 5) holding(false)
                                 val (l, r) = if (a.position.x < b.position.x) a to b else b to a
                                 leftId = l.id; rightId = r.id
                                 leftAt = l.position; leftStill = last; leftDrift = 0f; leftHeld = false
