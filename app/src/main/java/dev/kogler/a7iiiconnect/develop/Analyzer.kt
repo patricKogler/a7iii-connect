@@ -74,8 +74,9 @@ class Analyzer(private val context: Context) : Closeable {
                 val points = listOf(FaceLandmark.RIGHT_EYE, FaceLandmark.LEFT_EYE, FaceLandmark.NOSE_BASE, FaceLandmark.MOUTH_RIGHT, FaceLandmark.MOUTH_LEFT)
                     .map { f.getLandmark(it)?.position }
                 val big = (box[2] - box[0]) * full.width >= MIN_FACE_PX
-                val embedding = if (embedder != null && big && !turned && points.all { it != null }) runCatching {
-                    embedder.embed(full, points.map { PointF(it!!.x / scale, it.y / scale) })
+                val recogniser = embedder
+                val embedding = if (recogniser != null && big && !turned && points.all { it != null }) runCatching {
+                    recogniser.embed(full, points.map { PointF(it!!.x / scale, it.y / scale) })
                 }.onFailure { Log.w(TAG, "face embedding failed", it) }.getOrNull() else null
                 FaceInfo(box, eyes, f.smilingProbability, sharp, embedding)
             }
