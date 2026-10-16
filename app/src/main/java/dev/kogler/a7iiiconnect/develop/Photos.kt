@@ -33,6 +33,7 @@ import dev.kogler.a7iiiconnect.develop.engine.sensorBounds
 import java.io.FileInputStream
 import java.text.SimpleDateFormat
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /** A photo opened for editing: a screen-sized preview, plus the full raw kept for export. */
 class OpenedPhoto(
@@ -61,26 +62,53 @@ private const val DRAFT_EDGE = 1024
 
 object Photos {
 
-    private val thumbs = object : LruCache<Long, Bitmap>(48 * 1024 * 1024) {
+    private val thumbs = object : LruCache<Long, Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 5).coerceAtMost(96L * 1024 * 1024).toInt(),
+    ) {
         override fun sizeOf(key: Long, value: Bitmap) = value.byteCount
     }
 
     fun cachedThumbnail(photo: LibraryPhoto): Bitmap? = thumbs.get(photo.id)
 
-    /** Grid thumbnail: the JPEG embedded in a raw, or the system thumbnail for a JPEG. */
+    /**
+     * Grid thumbnail: the JPEG embedded in a raw, or the system thumbnail for a JPEG. Its shorter
+     * edge covers a whole grid cell, so the square crop in the grid never gets stretched.
+     */
     fun thumbnail(context: Context, photo: LibraryPhoto): Bitmap? {
         thumbs.get(photo.id)?.let { return it }
+        val edge = thumbEdge(context)
         val bmp = runCatching {
-            if (photo.isRaw) embeddedPreview(context, photo.uri, 400)
-            else runCatching { context.contentResolver.loadThumbnail(photo.uri, Size(400, 400), null) }
-                .getOrElse { decodeJpeg(context, photo.uri, 400) }
-        }.getOrNull() ?: return null
+            if (photo.isRaw) embeddedPreview(context, photo.uri, edge, shortEdge = true)
+            else runCatching { context.contentResolver.loadThumbnail(photo.uri, Size(edge * 3 / 2, edge * 3 / 2), null) }
+                .getOrElse { decodeJpeg(context, photo.uri, edge, shortEdge = true) }
+        }.getOrNull()?.let { fitShortEdge(it, edge) } ?: return null
         thumbs.put(photo.id, bmp)
         return bmp
     }
 
-    /** The camera's own JPEG inside the ARW (1616x1080 on the A7III), turned upright. */
-    fun embeddedPreview(context: Context, uri: Uri, maxEdge: Int): Bitmap? {
+    /** Pixels across one library grid cell (100 dp minimum, as many columns as fit the phone held upright). */
+    private fun thumbEdge(context: Context): Int {
+        val dm = context.resources.displayMetrics
+        val across = minOf(dm.widthPixels, dm.heightPixels)
+        val columns = (across / (100 * dm.density)).toInt().coerceAtLeast(1)
+        return (across / columns).coerceIn(256, 512)
+    }
+
+    /** Scales [bmp] down (filtered) so its shorter edge is [edge]; smaller pictures are left as they are. */
+    private fun fitShortEdge(bmp: Bitmap, edge: Int): Bitmap {
+        val short = minOf(bmp.width, bmp.height)
+        if (short <= edge) return bmp
+        val k = edge.toFloat() / short
+        val out = Bitmap.createScaledBitmap(bmp, (bmp.width * k).roundToInt().coerceAtLeast(1), (bmp.height * k).roundToInt().coerceAtLeast(1), true)
+        if (out !== bmp) bmp.recycle()
+        return out
+    }
+
+    /**
+     * The camera's own JPEG inside the ARW (1616x1080 on the A7III), turned upright, subsampled so
+     * its longer edge (or shorter, with [shortEdge]) stays at least [maxEdge].
+     */
+    fun embeddedPreview(context: Context, uri: Uri, maxEdge: Int, shortEdge: Boolean = false): Bitmap? {
         context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
             FileInputStream(pfd.fileDescriptor).channel.use { ch ->
                 val src = ChannelSource(ch)
@@ -89,7 +117,7 @@ object Photos {
                 val bytes = src.read(range.first, (range.last - range.first + 1).toInt())
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, maxEdge) }
+                val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, maxEdge, shortEdge) }
                 val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return null
                 return rotate(bmp, info.orientation)
             }
@@ -105,11 +133,11 @@ object Photos {
         shot.jpeg?.let { decodeJpeg(context, it.uri, maxEdge) } ?: shot.raw?.let { embeddedPreview(context, it.uri, maxEdge) }
     }.getOrNull()
 
-    /** Upright JPEG, subsampled so its longer edge is at least [maxEdge] (or the full size). */
-    private fun decodeJpeg(context: Context, uri: Uri, maxEdge: Int): Bitmap? {
+    /** Upright JPEG, subsampled so its longer edge (or shorter, with [shortEdge]) is at least [maxEdge] (or the full size). */
+    private fun decodeJpeg(context: Context, uri: Uri, maxEdge: Int, shortEdge: Boolean = false): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         context.contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it, null, bounds) }
-        val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, maxEdge) }
+        val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, maxEdge, shortEdge) }
         val bmp = context.contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it, null, opts) } ?: return null
         return rotate(bmp, exifOrientation(context, uri))
     }
@@ -380,9 +408,10 @@ object Photos {
         return Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
     }
 
-    private fun sampleSize(w: Int, h: Int, maxEdge: Int): Int {
+    private fun sampleSize(w: Int, h: Int, maxEdge: Int, shortEdge: Boolean = false): Int {
+        val edge = if (shortEdge) minOf(w, h) else maxOf(w, h)
         var s = 1
-        while (maxOf(w, h) / (s * 2) >= maxEdge) s *= 2
+        while (edge / (s * 2) >= maxEdge) s *= 2
         return s
     }
 
