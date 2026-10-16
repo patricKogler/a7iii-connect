@@ -129,7 +129,7 @@ private fun TransferStrip(status: SyncStatus, onClick: () -> Unit) {
 }
 
 /** What can be done with the open album from its top bar. */
-enum class AlbumAction { SLIDESHOW, SHARE, TOGETHER, RENAME, DELETE }
+enum class AlbumAction { SLIDESHOW, SHARE, TOGETHER, STOP_SHARING, RENAME, DELETE }
 
 enum class QuickFilter(val label: String) {
     ALL("All"), TO_REVIEW("To review"), PICKS("Picks"), EDITED("Edited"), REJECTED("Rejected")
@@ -259,7 +259,7 @@ fun LibraryScreen(
                             }
                         }
                         IconButton(onClick = { onAlbumAction(AlbumAction.TOGETHER) }, modifier = Modifier.testTag("album-together")) {
-                            Icon(Icons.Rounded.People, "Swap albums with another phone")
+                            Icon(Icons.Rounded.People, if (album.shared) "Swap shared albums with another phone" else "Share this album in Together")
                         }
                         IconButton(onClick = { onAlbumAction(AlbumAction.SLIDESHOW) }, enabled = shown.isNotEmpty(), modifier = Modifier.testTag("album-slideshow")) {
                             Icon(Icons.Rounded.PlayArrow, "Slideshow")
@@ -270,6 +270,9 @@ fun LibraryScreen(
                         Box {
                             IconButton(onClick = { albumMenu = true }) { Icon(Icons.Rounded.MoreVert, "More") }
                             DropdownMenu(expanded = albumMenu, onDismissRequest = { albumMenu = false }) {
+                                if (album.shared) {
+                                    DropdownMenuItem(text = { Text("Stop sharing") }, onClick = { albumMenu = false; onAlbumAction(AlbumAction.STOP_SHARING) })
+                                }
                                 DropdownMenuItem(text = { Text("Rename album") }, onClick = { albumMenu = false; onAlbumAction(AlbumAction.RENAME) })
                                 DropdownMenuItem(text = { Text("Delete album") }, onClick = { albumMenu = false; onAlbumAction(AlbumAction.DELETE) })
                             }
@@ -347,7 +350,7 @@ fun LibraryScreen(
                         FilterChip(
                             selected = false,
                             onClick = { selectedShots = emptySet(); selectedDays = emptySet(); onOpenAlbum(a) },
-                            leadingIcon = { Icon(Icons.Rounded.PhotoAlbum, null, Modifier.size(16.dp)) },
+                            leadingIcon = { Icon(if (a.shared) Icons.Rounded.People else Icons.Rounded.PhotoAlbum, if (a.shared) "Shared" else null, Modifier.size(16.dp)) },
                             label = { Text("${a.name} · ${shots.count { it.key in a }}") },
                             modifier = Modifier.testTag("album-${a.id}"),
                         )

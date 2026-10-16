@@ -26,8 +26,9 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Albums over Together, whatever else the two phones are doing. As soon as they connect each
- * sends its albums (a few kilobytes) and puts the other's together with its own ([Albums.merge]),
+ * Shared albums over Together, whatever else the two phones are doing. Only albums the owner
+ * shared ([Album.shared]) ever leave a phone, and only shots in them. As soon as they connect each
+ * sends its shared albums (a few kilobytes) and puts the other's together with its own ([Albums.merge]),
  * so both have the same albums at once. Then each asks for the album shots it hasn't got: every
  * missing shot comes as a JPEG first, so the albums are whole quickly, and the RAWs follow. What
  * doesn't make it before the phones part is asked for again next time.
@@ -54,11 +55,11 @@ object AlbumSync {
         getting = 0 to 0; asked = false; sending = 0 to 0
     }
 
-    /** Connected: my albums go over. */
+    /** Connected: my shared albums go over. */
     fun start(app: Context, link: DuoLink?) {
         reset()
         scope.launch {
-            val text = withContext(Dispatchers.IO) { Albums.encode(AlbumStore(app).load()) }
+            val text = withContext(Dispatchers.IO) { Albums.encode(AlbumStore(app).load().filter { it.shared }) }
             link?.send(JSONObject().put("t", "albums").put("a", text))
         }
     }
@@ -72,11 +73,12 @@ object AlbumSync {
                 val store = AlbumStore(app)
                 val all = Albums.merge(
                     Albums.rekey(store.load(), resolve),
-                    Albums.rekey(Albums.decode(msg.optString("a")), resolve),
+                    // Shared with me, so mine to share back (unless I stop sharing one).
+                    Albums.rekey(Albums.decode(msg.optString("a")).map { it.copy(shared = true) }, resolve),
                 )
                 store.save(all)
-                val alive = all.filter { it.alive }
-                val wanted = alive.flatMap { it.keys }.toSet()
+                val alive = all.filter { it.alive && it.shared }
+                val wanted = Albums.sharedKeys(all)
                 // Shots I haven't got at all, or have only one file of (the other phone may have both).
                 val byKey = shots.associateBy { it.key }
                 (alive.size to wanted.size) to wanted.mapNotNull { k ->
@@ -105,13 +107,15 @@ object AlbumSync {
                 val shots = Library.shots(Library.load(app))
                 val resolve = Albums.resolver(shots.map { it.key })
                 val byKey = shots.associateBy { it.key }
+                // Only shots in albums I share, whatever is asked for.
+                val allowed = Albums.sharedKeys(Albums.rekey(AlbumStore(app).load(), resolve))
                 val edits = EditStore(app)
                 val first = mutableListOf<Pair<JSONObject, Uri>>()
                 val later = mutableListOf<Pair<JSONObject, Uri>>()
                 val list = msg.optJSONArray("l") ?: JSONArray()
                 for (i in 0 until list.length()) {
                     val o = list.optJSONObject(i) ?: continue
-                    val shot = resolve(o.optString("k"))?.let { byKey[it] } ?: continue
+                    val shot = resolve(o.optString("k"))?.takeIf { it in allowed }?.let { byKey[it] } ?: continue
                     val has = o.optString("has")
                     // My edit rides along with the shot's first file, so it arrives with the picture.
                     val edit = edits.load(shot.primary).takeIf { !it.isDefault }?.encode()

@@ -110,4 +110,35 @@ class AlbumsTest {
         // Nothing to move: the same album back.
         assertTrue(Albums.rekey(listOf(lisbon), Albums.resolver(emptyList())).single() === lisbon)
     }
+
+    @Test
+    fun albumsArePrivateUntilShared() {
+        val hike = Albums.create("Hike", listOf("h@1"), now = 10, id = "h")
+        assertFalse(hike.shared)
+        assertTrue(Albums.sharedKeys(listOf(lisbon, hike)).isEmpty())
+        val shared = Albums.share(lisbon, true)
+        assertEquals(setOf("a@1", "b@2"), Albums.sharedKeys(listOf(shared, hike)))
+        assertTrue(Albums.decode(Albums.encode(listOf(shared))).single().shared)
+        // A deleted album shares nothing.
+        assertTrue(Albums.sharedKeys(listOf(Albums.delete(shared, now = 20))).isEmpty())
+    }
+
+    @Test
+    fun mergeKeepsMyChoiceAboutSharing() {
+        // I stopped sharing it; her phone sends it again as shared.
+        val mine = Albums.share(lisbon, false)
+        val hers = Albums.add(Albums.share(lisbon, true), listOf("c@3"), now = 300)
+        val merged = Albums.merge(listOf(mine), listOf(hers)).single()
+        assertFalse(merged.shared)
+        assertEquals(listOf("a@1", "b@2", "c@3"), merged.keys)
+    }
+
+    @Test
+    fun readsAlbumsWrittenBeforeSharing() {
+        val old = "A\tx\t100\t100\t0\tLisbon\nS\tx\t100\t+\ta@1\n"
+        val a = Albums.decode(old).single()
+        assertEquals("Lisbon", a.name)
+        assertFalse(a.shared)
+        assertEquals(listOf("a@1"), a.keys)
+    }
 }

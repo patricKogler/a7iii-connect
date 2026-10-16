@@ -320,7 +320,7 @@ private fun AlbumsTogether(onDone: () -> Unit) {
         if (AlbumSync.merged) {
             Spacer(Modifier.height(8.dp))
             Text(
-                "${AlbumSync.albumCount} ${if (AlbumSync.albumCount == 1) "album" else "albums"} · ${AlbumSync.shotCount} shots",
+                "${AlbumSync.albumCount} shared ${if (AlbumSync.albumCount == 1) "album" else "albums"} · ${AlbumSync.shotCount} shots",
                 color = Color.White.copy(alpha = 0.7f),
             )
         }
@@ -361,7 +361,7 @@ private fun Lobby(onClose: () -> Unit, onShareApp: () -> Unit) {
             when {
                 !hosting -> "Go through someone's photos with them"
                 Duo.battleOnly -> "You both edit the same photo, then vote blind"
-                Duo.albumsOnly -> "You both get every album, and the photos in them"
+                Duo.albumsOnly -> "You both get the albums you share, and the photos in them"
                 Duo.deck.isEmpty() -> "Getting the photos ready… ${(Duo.preparing * 100).toInt()}%"
                 else -> "${Duo.deck.sumOf { it.size }} shots ready to share"
             },

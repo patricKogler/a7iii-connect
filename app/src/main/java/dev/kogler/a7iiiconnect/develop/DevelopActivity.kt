@@ -211,7 +211,9 @@ class DevelopActivity : ComponentActivity() {
                             if (a != null) when (action) {
                                 AlbumAction.SLIDESHOW -> slideshow = a.id
                                 AlbumAction.SHARE -> shareAlbum(a)
-                                AlbumAction.TOGETHER -> startActivity(DuoActivity.albumsIntent(this))
+                                // A private album is shared only once you say so.
+                                AlbumAction.TOGETHER -> if (a.shared) startActivity(DuoActivity.albumsIntent(this)) else albumDialog = AlbumDialog.Share(a.id)
+                                AlbumAction.STOP_SHARING -> changeAlbum(a.id) { Albums.share(it, false) }
                                 AlbumAction.RENAME -> albumDialog = AlbumDialog.Rename(a.id)
                                 AlbumAction.DELETE -> albumDialog = AlbumDialog.Delete(a.id)
                             }
@@ -268,6 +270,24 @@ class DevelopActivity : ComponentActivity() {
                 confirm = "Rename",
                 onDone = { name, _ -> changeAlbum(d.id) { Albums.rename(it, name, now()) }; albumDialog = null },
                 onDismiss = { albumDialog = null },
+            )
+            is AlbumDialog.Share -> AlertDialog(
+                onDismissRequest = { albumDialog = null },
+                title = { Text("Share “${albums.find { it.id == d.id }?.name}”?") },
+                text = {
+                    Text(
+                        "Its photos and your edits go to the phone you connect with in Together, and their changes come back. " +
+                            "Your other albums stay private. You can stop sharing any time.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        changeAlbum(d.id) { Albums.share(it, true) }
+                        albumDialog = null
+                        startActivity(DuoActivity.albumsIntent(this))
+                    }) { Text("Share") }
+                },
+                dismissButton = { TextButton(onClick = { albumDialog = null }) { Text("Cancel") } },
             )
             is AlbumDialog.Delete -> AlertDialog(
                 onDismissRequest = { albumDialog = null },
@@ -450,5 +470,7 @@ private sealed interface AlbumDialog {
     /** Naming a new album: with [keys], or offering them ([offer]) ticked when [narrowed]. */
     data class Create(val keys: List<String>, val offer: Boolean, val narrowed: Boolean) : AlbumDialog
     data class Rename(val id: String) : AlbumDialog
+    /** Asking before a private album is first shared in Together. */
+    data class Share(val id: String) : AlbumDialog
     data class Delete(val id: String) : AlbumDialog
 }
