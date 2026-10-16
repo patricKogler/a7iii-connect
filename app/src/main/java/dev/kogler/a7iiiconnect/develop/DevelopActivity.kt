@@ -211,6 +211,7 @@ class DevelopActivity : ComponentActivity() {
                         sheetOpen = sheetOpen,
                         onSheetOpen = { sheetOpen = it },
                         onCompare = { picked -> comparing = picked.map { it.key } },
+                        onMarkShots = { picked, mark -> store.setMarks(picked.map { it.key }, mark); marks = store.marks() },
                         albums = albums.filter { it.alive }.sortedByDescending { it.createdAt },
                         album = showAlbum,
                         onOpenAlbum = { openAlbum = it?.id },
