@@ -307,11 +307,16 @@ class EditorScreenshots {
         val stacks = Similar.stacks(context, shots)
         check(stacks.map { s -> s.map { it.primary.id } } == listOf(listOf(1L, 2L, 3L), listOf(4L))) { "stacks: $stacks" }
 
-        // Half a second later but a different picture (the scene upside down): a burst of its own.
+        // Half a second later but a different picture (turned to a green and white wall): its own stack.
         val other = File(context.cacheDir, "DSC09413.JPG")
-        val bmp = TestScenes.landscape(3000, 2000)
-        val flipped = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, android.graphics.Matrix().apply { postRotate(180f) }, true)
-        other.outputStream().use { flipped.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+        val wall = Bitmap.createBitmap(1500, 1000, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(wall)
+        val paint = android.graphics.Paint()
+        for (y in 0 until 4) for (x in 0 until 6) {
+            paint.color = if ((x + y) % 2 == 0) 0xFF2E7D32.toInt() else 0xFFF5F5F5.toInt()
+            canvas.drawRect(x * 250f, y * 250f, x * 250f + 250f, y * 250f + 250f, paint)
+        }
+        other.outputStream().use { wall.compress(Bitmap.CompressFormat.JPEG, 92, it) }
         val turned = Shot(null, LibraryPhoto(5L, Uri.fromFile(other), "DSC05.JPG", "image/jpeg", t + 1_000))
         val split = Similar.stacks(context, listOf(at(1, t), at(2, t + 500), turned))
         check(split.map { s -> s.map { it.primary.id } } == listOf(listOf(1L, 2L), listOf(5L))) { "stacks: $split" }
