@@ -41,10 +41,10 @@
         android:usesCleartextTraffic="true"
         android:largeHeap="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
-        <!-- Fetch the subject-mask model with the app where Play allows it, not on first use. -->
+        <!-- Fetch the ML Kit models with the app where Play allows it, not on first use. -->
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
-            android:value="subject_segment" />
+            android:value="subject_segment,face,ica,ocr" />
         <activity
             android:name=".MainActivity"
             android:exported="false"

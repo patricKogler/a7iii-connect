@@ -8,7 +8,35 @@ data class ShotFacts(
     val exported: Boolean = false,
     /** Where it was taken, when the shot has coordinates and the place has been named. */
     val place: String? = null,
-)
+    /** What looking at the shot found (faces, focus, what's in it, text), once it has been. */
+    val insight: ShotInsight? = null,
+    /** [Person.key]s of the people in it. */
+    val people: Set<String> = emptySet(),
+    /** Names of the people in it, for search. */
+    val names: List<String> = emptyList(),
+) {
+    /** Lower-case words search looks through: what's in it, its text, the place, the lens, who. */
+    val words: List<String> by lazy {
+        val i = insight
+        val parts = mutableListOf<String>()
+        if (i != null) {
+            parts += i.labels
+            parts += i.text
+            if (i.faces.isNotEmpty()) parts += "person people face portrait"
+            if (i.faces.size >= 3) parts += "group"
+        }
+        place?.let { parts += it }
+        meta?.lens?.let { parts += it }
+        parts += names
+        parts.joinToString(" ").lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
+    }
+
+    /** Every word of [query] starts a word of the shot ("dogs" finds Dog too). */
+    fun found(query: String): Boolean = query.lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }.all { q ->
+        val stem = if (q.length > 3 && q.endsWith('s')) q.dropLast(1) else q
+        words.any { it.startsWith(q) || it.startsWith(stem) }
+    }
+}
 
 /** Plain-language filters for the basic sheet; each is a fixed combination of the exact ones. */
 enum class FilterPreset(val label: String) {
@@ -54,6 +82,10 @@ data class ShotFilter(
     val located: Boolean? = null,
     val files: Set<FileKind> = emptySet(),
     val exported: Boolean? = null,
+    /** Words to look for in what's in the photo, its text, place, lens and people. */
+    val query: String? = null,
+    /** [Person.key]s: shots with any of them. */
+    val people: Set<String> = emptySet(),
 ) {
     val isEmpty get() = this == ShotFilter()
 
@@ -76,11 +108,15 @@ data class ShotFilter(
         if (located != null && (m?.located ?: false) != located) return false
         if (files.isNotEmpty() && kindOf(f.shot) !in files) return false
         if (exported != null && f.exported != exported) return false
+        if (people.isNotEmpty() && people.none { it in f.people }) return false
+        if (!query.isNullOrBlank() && !f.found(query)) return false
         return true
     }
 
     /** What's set, one removable chip each, for the row above the grid. */
-    fun chips(): List<Pair<String, ShotFilter>> = buildList {
+    fun chips(personName: (String) -> String = { it }): List<Pair<String, ShotFilter>> = buildList {
+        query?.takeIf { it.isNotBlank() }?.let { add("\u201c${it.trim()}\u201d" to copy(query = null)) }
+        people.forEach { add(personName(it) to copy(people = people - it)) }
         presets.forEach { add(it.label to copy(presets = presets - it)) }
         lenses.forEach { add(it to copy(lenses = lenses - it)) }
         framing.forEach { add(it.label to copy(framing = framing - it)) }
@@ -174,6 +210,8 @@ object SavedFilters {
         f.located?.let { put("located", it) }
         names("files", f.files)
         f.exported?.let { put("exported", it) }
+        f.query?.takeIf { it.isNotBlank() }?.let { put("query", it) }
+        if (f.people.isNotEmpty()) put("people", org.json.JSONArray(f.people.toList()))
     }
 
     fun decode(o: org.json.JSONObject): ShotFilter {
@@ -198,6 +236,8 @@ object SavedFilters {
             located = bool("located"),
             files = strings("files").mapNotNull { n -> FileKind.entries.find { it.name == n } }.toSet(),
             exported = bool("exported"),
+            query = o.optString("query").takeIf { it.isNotBlank() },
+            people = strings("people").toSet(),
         )
     }
 }

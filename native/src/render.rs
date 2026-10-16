@@ -85,7 +85,7 @@ fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// A grey map over the upright photo (the subject), sampled by fractions of its size.
+/// A grey map over the upright photo (the subject, or the sky), sampled by fractions of its size.
 pub struct Subject<'a> {
     pub width: usize,
     pub height: usize,
@@ -116,6 +116,7 @@ pub struct Masks<'a> {
     pub src_h: f32,
     pub p: &'a [f32],
     pub subject: Option<Subject<'a>>,
+    pub sky: Option<Subject<'a>>,
 }
 
 impl Masks<'_> {
@@ -125,6 +126,13 @@ impl Masks<'_> {
 
     fn subject_at(&self, x: f32, y: f32) -> f32 {
         match &self.subject {
+            Some(s) => s.at(x / self.src_w, y / self.src_h),
+            None => 0.0,
+        }
+    }
+
+    fn sky_at(&self, x: f32, y: f32) -> f32 {
+        match &self.sky {
             Some(s) => s.at(x / self.src_w, y / self.src_h),
             None => 0.0,
         }
@@ -146,7 +154,8 @@ impl Masks<'_> {
                 let ry = (-qx * p[6] + qy * p[5]) / p[4];
                 1.0 - smooth(1.0 - p[7], 1.0, (rx * rx + ry * ry).sqrt())
             }
-            _ => self.subject_at(x, y),
+            3 => self.subject_at(x, y),
+            _ => self.sky_at(x, y),
         };
         if p[8] > 0.5 {
             w = 1.0 - w;

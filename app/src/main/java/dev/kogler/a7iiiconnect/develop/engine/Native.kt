@@ -28,6 +28,7 @@ object Native {
         guideSize: IntArray?, base: FloatArray?, medium: FloatArray?, dark: FloatArray?, air: FloatArray?,
         src: ShortArray, srcInfo: DoubleArray, grid: FloatArray, gridInfo: FloatArray, vig: FloatArray?,
         frame: DoubleArray, masks: FloatArray?, subjectSize: IntArray?, subject: FloatArray?,
+        skySize: IntArray?, sky: FloatArray?,
         y0: Int, y1: Int, out: IntArray,
     ): Boolean
 }
