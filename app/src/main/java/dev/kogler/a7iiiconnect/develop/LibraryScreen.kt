@@ -23,6 +23,26 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.material.icons.rounded.UnfoldMore
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.IntOffset
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -496,9 +516,13 @@ fun LibraryScreen(
                         }
                     }
                 }
-            } else {
+            } else Box(Modifier.fillMaxSize()) {
+                val grid = rememberLazyGridState()
+                // The day of every grid item, header and shots alike, for the fast scroller's label.
+                val dayAt = remember(days) { days.flatMap { (day, dayShots) -> List(dayShots.size + 1) { day } } }
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = 100.dp),
+                    state = grid,
                     contentPadding = PaddingValues(4.dp),
                     horizontalArrangement = Arrangement.spacedBy(3.dp),
                     verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -543,6 +567,87 @@ fun LibraryScreen(
                             )
                         }
                     }
+                }
+                FastScroller(grid, dayAt, Modifier.align(Alignment.TopEnd))
+            }
+        }
+    }
+}
+
+/**
+ * A handle on the grid's right edge that shows up while scrolling: drag it to fly through the
+ * library, with the day you'd land on shown beside it.
+ */
+@Composable
+private fun FastScroller(state: LazyGridState, dayAt: List<Long>, modifier: Modifier = Modifier) {
+    val info = state.layoutInfo
+    val total = info.totalItemsCount
+    val onScreen = info.visibleItemsInfo.size
+    // Only worth it once there are a few screens to get through.
+    if (onScreen == 0 || total < onScreen * 3) return
+    val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    var dragging by remember { mutableStateOf(false) }
+    var dragFraction by remember { mutableFloatStateOf(0f) }
+    var shown by remember { mutableStateOf(false) }
+    val active = dragging || state.isScrollInProgress
+    LaunchedEffect(active) {
+        if (active) shown = true else { delay(1500); shown = false }
+    }
+    val alpha by animateFloatAsState(if (shown) 1f else 0f, tween(if (shown) 150 else 400), label = "fast-scroll")
+    if (alpha == 0f && !shown) return
+    val last = (total - onScreen).coerceAtLeast(1)
+    val fraction = if (dragging) dragFraction else (state.firstVisibleItemIndex.toFloat() / last).coerceIn(0f, 1f)
+    val target = (fraction * last).roundToInt().coerceIn(0, total - 1)
+    val day = dayAt.getOrNull(target)
+    LaunchedEffect(day) { if (dragging) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+    BoxWithConstraints(modifier.fillMaxHeight().alpha(alpha)) {
+        val handle = 52.dp
+        val travel = with(LocalDensity.current) { (maxHeight - handle).toPx() }.coerceAtLeast(1f)
+        val y = (fraction * travel).roundToInt()
+        // The drag outlives recompositions (a row more or less on screen), so it reads these fresh.
+        val lastNow by rememberUpdatedState(last)
+        val totalNow by rememberUpdatedState(total)
+        val travelNow by rememberUpdatedState(travel)
+        Row(
+            Modifier.offset { IntOffset(0, y) },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (dragging && day != null) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shadowElevation = 4.dp,
+                ) {
+                    Text(
+                        dayLabel(day), style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+            }
+            Surface(
+                shape = RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shadowElevation = 2.dp,
+                modifier = Modifier.size(width = 32.dp, height = handle).testTag("fast-scroll").pointerInput(Unit) {
+                    detectVerticalDragGestures(
+                        onDragStart = {
+                            dragFraction = (state.firstVisibleItemIndex.toFloat() / lastNow).coerceIn(0f, 1f)
+                            dragging = true
+                        },
+                        onDragEnd = { dragging = false },
+                        onDragCancel = { dragging = false },
+                    ) { change, dy ->
+                        change.consume()
+                        dragFraction = (dragFraction + dy / travelNow).coerceIn(0f, 1f)
+                        val to = (dragFraction * lastNow).roundToInt().coerceIn(0, totalNow - 1)
+                        scope.launch { state.scrollToItem(to) }
+                    }
+                },
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.UnfoldMore, "Quick scroll", Modifier.size(20.dp))
                 }
             }
         }
