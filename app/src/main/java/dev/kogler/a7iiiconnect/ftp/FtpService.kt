@@ -76,15 +76,18 @@ class FtpService : Service() {
         acquireLocks()
         val ftp = FtpServer(PORT, MediaStoreSink(this), SyncState::log) { name, _ ->
             FtpState.update { it.copy(received = it.received + 1, lastFile = name) }
+            FtpTile.refresh(this)
             nm.notify(NOTIFICATION_ID, notification())
         }
         try {
             ftp.start()
             server = ftp
             FtpState.update { it.copy(running = true, addresses = addresses(), error = null) }
+            FtpTile.refresh(this)
         } catch (e: Exception) {
             SyncState.log("FTP: can't start: $e")
             FtpState.update { it.copy(running = false, error = "Couldn't open port $PORT: ${e.message}") }
+            FtpTile.refresh(this)
             stopSelf()
         }
         return START_STICKY
@@ -95,6 +98,7 @@ class FtpService : Service() {
         server = null
         releaseLocks()
         FtpState.update { it.copy(running = false) }
+        FtpTile.refresh(this)
         SyncState.log("FTP: stopped")
         super.onDestroy()
     }
