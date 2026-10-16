@@ -30,7 +30,7 @@ jobs:
         timeout-minutes: 15
         run: |
           set -o pipefail
-          ./gradlew --no-daemon testDebugUnitTest --tests '*EditorScreenshots*' --tests '*CameraScreenshots*' --tests '*GpuParityTest*' 2>&1 | tee test.log
+          ./gradlew --no-daemon testDebugUnitTest --tests '*EditorScreenshots*' --tests '*CameraScreenshots*' --tests '*GpuParityTest*' --tests '*DuelTest*' --tests '*LookTest*' 2>&1 | tee test.log
       - name: Report errors
         if: failure()
         run: |

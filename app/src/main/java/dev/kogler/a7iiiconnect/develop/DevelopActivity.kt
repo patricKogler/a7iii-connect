@@ -55,6 +55,8 @@ class DevelopActivity : ComponentActivity() {
     private var editing by mutableStateOf<Long?>(null)
     /** The deck's title and the keys of the shots dealt into it, while it is open. */
     private var culling by mutableStateOf<Pair<String, List<String>>?>(null)
+    /** The keys of the shots picked in the library to compare head to head, while that's open. */
+    private var comparing by mutableStateOf<List<String>?>(null)
     private var deleting = emptyList<Shot>()
     private var loaded = false
     private lateinit var store: EditStore
@@ -89,6 +91,7 @@ class DevelopActivity : ComponentActivity() {
         editing = savedInstanceState?.getLong(KEY_EDITING, -1L)?.takeIf { it >= 0 }
             ?: intent.getLongExtra(EXTRA_PHOTO_ID, -1L).takeIf { it >= 0 }
         culling = savedInstanceState?.getStringArrayList(KEY_CULLING)?.let { (savedInstanceState.getString(KEY_DECK_TITLE) ?: "Review") to it }
+        comparing = savedInstanceState?.getStringArrayList(KEY_COMPARING)
         if (savedInstanceState == null) handleIntent(intent)
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
@@ -99,6 +102,7 @@ class DevelopActivity : ComponentActivity() {
                 val current = editing
                 val index = shots.indexOfFirst { current != null && it.contains(current) }
                 val deck = culling
+                val compare = comparing
                 when {
                     current != null && index >= 0 -> {
                         BackHandler { closeEditor() }
@@ -122,6 +126,16 @@ class DevelopActivity : ComponentActivity() {
                             rejectedCount = shots.count { marks[it.key]?.rejected == true },
                             onDeleteRejected = { deleteRejected() },
                             onBack = { culling = null },
+                        )
+                    }
+                    compare != null -> {
+                        BackHandler { comparing = null }
+                        val byKey = shots.associateBy { it.key }
+                        CompareScreen(
+                            shots = compare.mapNotNull { byKey[it] },
+                            marks = marks,
+                            onMark = { shot, mark -> store.setMark(shot.key, mark); marks = store.marks() },
+                            onBack = { comparing = null },
                         )
                     }
                     else -> LibraryScreen(
@@ -152,6 +166,7 @@ class DevelopActivity : ComponentActivity() {
                         },
                         sheetOpen = sheetOpen,
                         onSheetOpen = { sheetOpen = it },
+                        onCompare = { picked -> comparing = picked.map { it.key } },
                     )
                 }
             }
@@ -224,6 +239,7 @@ class DevelopActivity : ComponentActivity() {
             outState.putString(KEY_DECK_TITLE, title)
             outState.putStringArrayList(KEY_CULLING, ArrayList(keys))
         }
+        comparing?.let { outState.putStringArrayList(KEY_COMPARING, ArrayList(it)) }
     }
 
     private suspend fun reload() {
@@ -262,6 +278,7 @@ class DevelopActivity : ComponentActivity() {
         private const val KEY_EDITING = "editing"
         private const val KEY_CULLING = "culling"
         private const val KEY_DECK_TITLE = "deck_title"
+        private const val KEY_COMPARING = "comparing"
 
         fun intent(context: Context, photoId: Long? = null) = Intent(context, DevelopActivity::class.java).apply {
             if (photoId != null) putExtra(EXTRA_PHOTO_ID, photoId)

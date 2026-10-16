@@ -45,6 +45,7 @@ import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledIconButton
@@ -112,7 +113,7 @@ internal val RejectRed = Color(0xFFFF5A5F)
 internal val SkipBlue = Color(0xFF8AB4F8)
 
 private const val CULL_EDGE = 2048
-private const val MAX_ZOOM = 8f
+internal const val MAX_ZOOM = 8f
 
 /** One decision, with the marks it replaced so undo can put them back. */
 private class Step(val pos: Int, val previous: List<Pair<Shot, Mark?>>)
@@ -120,7 +121,7 @@ private class Step(val pos: Int, val previous: List<Pair<Shot, Mark?>>)
 /**
  * Tinder-style culling: right picks, left rejects, up skips. Usually deals the shots still to
  * review; dealt picks again, it narrows them down. Bursts and near-duplicates come as one
- * "pick the best" stack.
+ * stack, settled two at a time ([HeadToHead]).
  * Double-tap or pinch to check focus; while zoomed in a drag pans instead of deciding.
  */
 @Composable
@@ -146,8 +147,6 @@ fun CullScreen(
     val decided = remember { mutableStateMapOf<String, Verdict>() }
     // A button press flies the top card out; the card itself animates and then reports back.
     var fling by remember { mutableStateOf<Verdict?>(null) }
-    // Which shot of the current stack is shown (and kept by ✓).
-    var chosen by remember { mutableIntStateOf(0) }
 
     fun markFor(v: Verdict): Mark = when (v) {
         Verdict.PICK -> Mark.PICK
@@ -162,7 +161,6 @@ fun CullScreen(
             if (v != Verdict.SKIP) onMark(shot, markFor(v))
         }
         fling = null
-        chosen = 0
         pos++
     }
 
@@ -173,12 +171,19 @@ fun CullScreen(
             decided.remove(shot.key)
         }
         fling = null
-        chosen = 0
         pos = step.pos
     }
 
     val items = deck
     val top = items?.getOrNull(pos)
+    // A stack of similar shots is settled head to head; once it's down to the keepers, it's recorded.
+    val duel = remember(top) { top?.takeIf { it.size > 1 }?.let { Duel(it) } }
+    LaunchedEffect(duel, duel?.done) {
+        if (duel != null && duel.done && top != null) {
+            val kept = duel.kept.toSet()
+            record(top.map { it to if (it in kept) Verdict.PICK else Verdict.REJECT })
+        }
+    }
 
     Column(Modifier.fillMaxSize().background(Color.Black).statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -192,8 +197,9 @@ fun CullScreen(
                     )
                 }
             }
-            IconButton(onClick = { undoLast() }, enabled = undo.isNotEmpty(), modifier = Modifier.testTag("cull-undo")) {
-                Icon(Icons.AutoMirrored.Rounded.Undo, "Undo", tint = if (undo.isNotEmpty()) Color.White else Color.White.copy(alpha = 0.3f))
+            val canUndo = duel?.canUndo == true || undo.isNotEmpty()
+            IconButton(onClick = { if (duel?.canUndo == true) duel.undo() else undoLast() }, enabled = canUndo, modifier = Modifier.testTag("cull-undo")) {
+                Icon(Icons.AutoMirrored.Rounded.Undo, "Undo", tint = if (canUndo) Color.White else Color.White.copy(alpha = 0.3f))
             }
         }
 
@@ -220,16 +226,18 @@ fun CullScreen(
         }
 
         Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-            if (top.size > 1) {
-                StackCard(
-                    stack = top,
-                    chosen = chosen.coerceIn(top.indices),
-                    onChoose = { chosen = it },
-                    onSplit = {
-                        deck = items.subList(0, pos) + top.map { listOf(it) } + items.subList(pos + 1, items.size)
-                        chosen = 0
-                    },
-                )
+            if (duel != null) {
+                HeadToHead(duel, Modifier.fillMaxSize().testTag("cull-stack"), header = {
+                    Row(Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("${top.size} similar shots", color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Text("${duel.round + 1} of ${duel.rounds} · tap the better one", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
+                        }
+                        TextButton(onClick = {
+                            deck = items.subList(0, pos) + top.map { listOf(it) } + items.subList(pos + 1, items.size)
+                        }) { Text("Not similar") }
+                    }
+                })
             } else {
                 // The next two cards wait underneath (already loaded), the top one is live.
                 for (i in min(pos + 2, items.size - 1) downTo pos) {
@@ -252,14 +260,11 @@ fun CullScreen(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (top.size > 1) {
-                // A stack: ✓ keeps the shown shot and lets the rest go; ✕ lets them all go.
-                val keep = top[chosen.coerceIn(top.indices)]
+            if (duel != null) {
+                // A stack: two at a time until one is left (or a few, with "Keep both"); ✕ lets them all go.
                 RoundButton(Icons.Rounded.Close, "None of these", RejectRed, 64, "cull-reject") { record(top.map { it to Verdict.REJECT }) }
                 RoundButton(Icons.Rounded.ArrowUpward, "Skip", SkipBlue, 48, "cull-skip") { record(top.map { it to Verdict.SKIP }) }
-                RoundButton(Icons.Rounded.Check, "Keep this one", PickGreen, 64, "cull-pick") {
-                    record(top.map { it to if (it == keep) Verdict.PICK else Verdict.REJECT })
-                }
+                RoundButton(Icons.Rounded.DoneAll, "Keep both", PickGreen, 64, "cull-keep-both") { duel.keepBoth() }
             } else {
                 RoundButton(Icons.Rounded.Close, "Reject", RejectRed, 64, "cull-reject") { if (fling == null) fling = Verdict.REJECT }
                 RoundButton(Icons.Rounded.ArrowUpward, "Skip", SkipBlue, 48, "cull-skip") { if (fling == null) fling = Verdict.SKIP }
@@ -270,7 +275,7 @@ fun CullScreen(
 }
 
 /**
- * Similar shots shown together: one big photo and a strip of the others. Swipe sideways or tap the
+ * Similar shots shown together (used by Together): one big photo and a strip of the others. Swipe sideways or tap the
  * strip to flip between them; zoom stays where it is, so focus can be compared frame to frame.
  */
 @Composable
@@ -582,7 +587,7 @@ private fun Stamp(text: String, color: Color, angle: Float, modifier: Modifier) 
 }
 
 @Composable
-private fun CardInfo(shot: Shot, modifier: Modifier) {
+internal fun CardInfo(shot: Shot, modifier: Modifier) {
     val kind = when {
         shot.raw != null && shot.jpeg != null -> "RAW+JPEG"
         shot.raw != null -> "RAW"
@@ -610,14 +615,14 @@ private fun fitRect(box: IntSize, iw: Int, ih: Int): Rect {
 }
 
 /** Keeps a zoomed card from being dragged past its edges. */
-private fun clampPan(p: Offset, scale: Float, size: IntSize): Offset {
+internal fun clampPan(p: Offset, scale: Float, size: IntSize): Offset {
     val mx = size.width * (scale - 1) / 2
     val my = size.height * (scale - 1) / 2
     return Offset(p.x.coerceIn(-mx, mx), p.y.coerceIn(-my, my))
 }
 
 @Composable
-private fun rememberCullImage(shot: Shot): ImageBitmap? {
+internal fun rememberCullImage(shot: Shot): ImageBitmap? {
     val context = LocalContext.current
     val image by produceState<ImageBitmap?>(null, shot.key) {
         value = withContext(Dispatchers.IO) { Photos.cullImage(context, shot, CULL_EDGE)?.asImageBitmap() }
@@ -627,7 +632,7 @@ private fun rememberCullImage(shot: Shot): ImageBitmap? {
 
 /** Zoomed in and settled: the visible part of the JPEG decoded at full detail, in content coordinates. */
 @Composable
-private fun rememberSharpTile(shot: Shot, image: ImageBitmap?, scale: Float, pan: Offset, size: IntSize): Pair<Rect, ImageBitmap>? {
+internal fun rememberSharpTile(shot: Shot, image: ImageBitmap?, scale: Float, pan: Offset, size: IntSize): Pair<Rect, ImageBitmap>? {
     val context = LocalContext.current
     var tile by remember(shot.key) { mutableStateOf<Pair<Rect, ImageBitmap>?>(null) }
     LaunchedEffect(shot.key, scale, pan, image, size) {
@@ -659,7 +664,7 @@ private fun rememberSharpTile(shot: Shot, image: ImageBitmap?, scale: Float, pan
 
 /** The photo fitted to the box, zoomed by [scale] and [pan], with the sharp [tile] on top. */
 @Composable
-private fun ZoomedPhoto(shot: Shot, image: ImageBitmap?, tile: Pair<Rect, ImageBitmap>?, scale: Float, pan: Offset) {
+internal fun ZoomedPhoto(shot: Shot, image: ImageBitmap?, tile: Pair<Rect, ImageBitmap>?, scale: Float, pan: Offset) {
     Box(
         Modifier.fillMaxSize().graphicsLayer {
             scaleX = scale; scaleY = scale

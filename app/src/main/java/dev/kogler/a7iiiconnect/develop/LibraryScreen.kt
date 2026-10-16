@@ -4,8 +4,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Compare
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -144,9 +147,15 @@ fun LibraryScreen(
     onDeleteSaved: (SavedFilter) -> Unit = {},
     sheetOpen: Boolean = false,
     onSheetOpen: (Boolean) -> Unit = {},
+    onCompare: (List<Shot>) -> Unit = {},
 ) {
     // Days picked by long-pressing their headers; Review then covers just those.
     var selectedDays by remember { mutableStateOf(emptySet<Long>()) }
+    // Shots picked by long-pressing them, to compare head to head.
+    var selectedShots by remember { mutableStateOf(emptySet<String>()) }
+    BackHandler(enabled = selectedShots.isNotEmpty() || selectedDays.isNotEmpty()) {
+        selectedShots = emptySet(); selectedDays = emptySet()
+    }
     val facts = remember(shots, meta, places, edited, exported) {
         shots.map { ShotFacts(it, meta[it.key], it.key in edited, Photos.exportName(it.primary).lowercase() in exported, places[it.key]) }
     }
@@ -169,31 +178,55 @@ fun LibraryScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (selectedDays.isEmpty()) "Photos" else "${selectedDays.size} ${if (selectedDays.size == 1) "day" else "days"} selected") },
+                title = {
+                    Text(
+                        when {
+                            selectedShots.isNotEmpty() -> "${selectedShots.size} selected"
+                            selectedDays.isNotEmpty() -> "${selectedDays.size} ${if (selectedDays.size == 1) "day" else "days"} selected"
+                            else -> "Photos"
+                        },
+                    )
+                },
                 navigationIcon = {
-                    if (selectedDays.isNotEmpty()) {
-                        IconButton(onClick = { selectedDays = emptySet() }) { Icon(Icons.Rounded.Close, "Clear selection") }
+                    if (selectedDays.isNotEmpty() || selectedShots.isNotEmpty()) {
+                        IconButton(onClick = { selectedDays = emptySet(); selectedShots = emptySet() }) { Icon(Icons.Rounded.Close, "Clear selection") }
                     }
                 },
                 actions = {
-                    // Together: the same shots as Review, for the selected days or else the newest
-                    // day with shots in it. Nothing to review: join someone else's photos.
-                    IconButton(onClick = {
-                        val newest = due.maxOfOrNull { dayOf(it.takenMillis) }
-                        onTogether(if (selectedDays.isNotEmpty()) due else due.filter { dayOf(it.takenMillis) == newest })
-                    }) { Icon(Icons.Rounded.People, "Together") }
-                    if (due.isNotEmpty()) {
+                    if (selectedShots.isNotEmpty()) {
+                        // Selected shots in the order they were taken, for a fair head to head.
                         TextButton(
-                            onClick = { onCull(if (revisit) filter.label else "Review", due) },
-                            modifier = Modifier.testTag("review"),
+                            onClick = {
+                                onCompare(shots.filter { it.key in selectedShots }.sortedBy { it.takenMillis })
+                                selectedShots = emptySet()
+                            },
+                            enabled = selectedShots.size >= 2,
+                            modifier = Modifier.testTag("compare"),
                         ) {
-                            Icon(Icons.Rounded.Swipe, null, Modifier.size(18.dp))
+                            Icon(Icons.Rounded.Compare, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Review ${due.size}")
+                            Text(if (selectedShots.size >= 2) "Compare" else "Pick one more")
                         }
-                    }
-                    IconButton(onClick = onCamera, modifier = Modifier.testTag("camera")) {
-                        Icon(Icons.Rounded.PhotoCamera, "Camera")
+                    } else {
+                        // Together: the same shots as Review, for the selected days or else the newest
+                        // day with shots in it. Nothing to review: join someone else's photos.
+                        IconButton(onClick = {
+                            val newest = due.maxOfOrNull { dayOf(it.takenMillis) }
+                            onTogether(if (selectedDays.isNotEmpty()) due else due.filter { dayOf(it.takenMillis) == newest })
+                        }) { Icon(Icons.Rounded.People, "Together") }
+                        if (due.isNotEmpty()) {
+                            TextButton(
+                                onClick = { onCull(if (revisit) filter.label else "Review", due) },
+                                modifier = Modifier.testTag("review"),
+                            ) {
+                                Icon(Icons.Rounded.Swipe, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Review ${due.size}")
+                            }
+                        }
+                        IconButton(onClick = onCamera, modifier = Modifier.testTag("camera")) {
+                            Icon(Icons.Rounded.PhotoCamera, "Camera")
+                        }
                     }
                 },
             )
@@ -298,7 +331,10 @@ fun LibraryScreen(
                 ) {
                     for ((day, dayShots) in days) {
                         item(key = "day-$day", span = { GridItemSpan(maxLineSpan) }) {
-                            val toggle = { selectedDays = if (day in selectedDays) selectedDays - day else selectedDays + day }
+                            val toggle = {
+                                selectedShots = emptySet()
+                                selectedDays = if (day in selectedDays) selectedDays - day else selectedDays + day
+                            }
                             DayHeader(
                                 day, dayShots.size, dayShots.count { it.key !in marks },
                                 selected = day in selectedDays,
@@ -309,10 +345,18 @@ fun LibraryScreen(
                             )
                         }
                         items(dayShots, key = { it.key }) { shot ->
+                            val toggle = {
+                                selectedDays = emptySet()
+                                selectedShots = if (shot.key in selectedShots) selectedShots - shot.key else selectedShots + shot.key
+                            }
                             // The JPEG twin's system thumbnail is cached and quick; it looks like the RAW's preview.
                             Thumb(
                                 shot.jpeg ?: shot.primary,
-                                Modifier.aspectRatio(1f).clickable { onOpen(shot) },
+                                Modifier.aspectRatio(1f).testTag("thumb-${shot.key}").combinedClickable(
+                                    onClick = { if (selectedShots.isNotEmpty()) toggle() else onOpen(shot) },
+                                    onLongClick = toggle,
+                                ),
+                                selected = shot.key in selectedShots,
                                 label = when {
                                     shot.raw != null && shot.jpeg != null -> "RAW+J"
                                     shot.raw != null -> "RAW"
@@ -377,6 +421,7 @@ fun Thumb(
     edited: Boolean = false,
     exported: Boolean = false,
     mark: Mark? = null,
+    selected: Boolean = false,
 ) {
     val context = LocalContext.current
     val bitmap by produceState<ImageBitmap?>(Photos.cachedThumbnail(photo)?.asImageBitmap(), photo.id) {
@@ -411,6 +456,13 @@ fun Thumb(
             mark == null -> {}
             mark.rejected -> Badge(Icons.Rounded.Close, "Rejected", Modifier.align(Alignment.TopEnd).padding(4.dp), tint = Color(0xFFFF5A5F))
             else -> Badge(Icons.Rounded.Check, "Picked", Modifier.align(Alignment.TopEnd).padding(4.dp), tint = Color(0xFF3DDC84))
+        }
+        if (selected) {
+            Box(Modifier.fillMaxSize().border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp)))
+            Icon(
+                Icons.Rounded.CheckCircle, "Selected", tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.align(Alignment.TopStart).padding(4.dp).size(22.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape),
+            )
         }
     }
 }
