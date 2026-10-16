@@ -65,6 +65,7 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.BlurOn
 import androidx.compose.material.icons.outlined.Crop
 import androidx.compose.material.icons.outlined.Grain
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Lens
 import androidx.compose.material.icons.outlined.Palette
@@ -173,6 +174,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -198,10 +200,15 @@ private enum class Tool(val label: String, val icon: ImageVector, val groups: Li
     OPTICS("Optics", Icons.Outlined.Lens, listOf(Group.OPTICS)),
     GEOMETRY("Geometry", Icons.Outlined.Transform, listOf(Group.GEOMETRY)),
     MASKS("Masks", Icons.Outlined.Layers, emptyList()),
+    /** Opened from the top bar, not the strip. */
+    VERSIONS("Versions", Icons.Outlined.History, emptyList()),
 }
 
 /** Whether [t]'s panel has changed anything (the dot on its icon). */
 private fun Tool.changed(s: Settings) = if (this == Tool.MASKS) s.masks.isNotEmpty() else groups.any { !s.isDefault(it) }
+
+/** Checkpoints made before presets are capped; saved ones are kept until deleted. */
+private const val MAX_AUTO_CHECKPOINTS = 10
 
 /** Groups that move pixels around; a before/after split keeps them so both halves line up. */
 private val FRAMING = setOf(Group.CROP, Group.GEOMETRY, Group.OPTICS)
@@ -234,10 +241,13 @@ private class SwipeAdjust(
     val onEnd: () -> Unit,
 )
 
-/** Undo/redo history of one photo's settings. */
-private class History(initial: Settings) {
-    private val steps = mutableListOf(initial)
-    private var at = 0
+/** Undo/redo history of one version's settings, kept by [EditStore.saveHistory]. */
+private class History(saved: List<Settings>, start: Int) {
+    constructor(initial: Settings) : this(listOf(initial), 0)
+
+    val steps = saved.toMutableList()
+    var at = start.coerceIn(0, steps.size - 1)
+        private set
     var version by mutableIntStateOf(0)
         private set
 
@@ -327,6 +337,16 @@ fun EditorScreen(
     var viewport by remember { mutableStateOf<Viewport?>(null) }
     var tile by remember { mutableStateOf<Tile?>(null) }
     var presets by remember { mutableStateOf(store.userPresets()) }
+    var versions by remember { mutableStateOf(Versions(listOf(Version(0, "Version 1")), 0)) }
+    var checkpoints by remember { mutableStateOf(emptyList<Checkpoint>()) }
+
+    // This version's undo history from last time, carried on to the edit as it is now.
+    fun loadHistory(): History {
+        checkpoints = store.checkpoints(photo, versions.active)
+        val (steps, at) = store.history(photo, versions.active) ?: return History(settings)
+        return History(steps, at).also { it.push(settings) }
+    }
+    fun saveHistory() = store.saveHistory(photo, versions.active, history.steps, history.at)
     var split by remember { mutableStateOf(false) }
     var splitAt by remember { mutableFloatStateOf(0.5f) }
     var splitPanelOnly by remember { mutableStateOf(false) }
@@ -376,8 +396,9 @@ fun EditorScreen(
         opened = null; rendered = null; before = null; compareImage = null; loadError = null; tile = null
         maskIndex = 0; subjectStatus = SubjectStatus.Ready; skyStatus = SubjectStatus.Ready
         guides.clear()
+        versions = store.versions(photo)
         settings = store.load(photo)
-        history = History(settings)
+        history = loadHistory()
         placeholder = Photos.cachedThumbnail(photo)?.asImageBitmap()
         if (photo.isRaw) {
             withContext(Dispatchers.IO) { runCatching { Photos.embeddedPreview(context, photo.uri, 1600) }.getOrNull() }
@@ -501,6 +522,31 @@ fun EditorScreen(
         settings = s
         history.push(s)
         store.save(photo, s)
+    }
+
+    // Undo history is written once the edits pause (and on leaving the photo or version).
+    LaunchedEffect(photo.id, history) {
+        snapshotFlow { history.version }.drop(1).collectLatest {
+            delay(1500)
+            withContext(Dispatchers.IO) { saveHistory() }
+        }
+    }
+
+    fun switchVersion(change: () -> Unit) {
+        store.save(photo, settings)
+        saveHistory()
+        change()
+        versions = store.versions(photo)
+        settings = store.load(photo)
+        history = loadHistory()
+        tile = null
+    }
+
+    fun addCheckpoint(name: String, auto: Boolean) {
+        val autos = checkpoints.filter { it.auto }
+        val kept = if (auto && autos.size >= MAX_AUTO_CHECKPOINTS) checkpoints - autos.last() else checkpoints
+        checkpoints = listOf(Checkpoint(name, System.currentTimeMillis(), settings, auto)) + kept
+        store.saveCheckpoints(photo, versions.active, checkpoints)
     }
 
     fun undo() { settings = history.undo(); store.save(photo, settings) }
@@ -916,6 +962,7 @@ fun EditorScreen(
     fun go(i: Int) {
         if (i == index || i !in photos.indices) return
         store.save(photo, settings)
+        saveHistory()
         index = i
         onPhotoChanged(photos[i])
     }
@@ -930,7 +977,7 @@ fun EditorScreen(
                 runCatching {
                     if (s.masks.any { it.usesSubject }) SubjectFinder.find(context, store, o)
                     if (s.masks.any { it.usesSky }) SkyFinder.find(store, o)
-                    Photos.export(context, o, s, options) { p -> exportProgress = p }
+                    Photos.export(context, o, s, options, versions.active) { p -> exportProgress = p }
                 }
             }
             exportProgress = null
@@ -949,13 +996,18 @@ fun EditorScreen(
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             // Top bar
             if (!fullscreen) Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { store.save(photo, settings); onBack() }) {
+                IconButton(onClick = { store.save(photo, settings); saveHistory(); onBack() }) {
                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = Color.White)
                 }
-                Text(
-                    photo.name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f),
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(photo.name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+                    if (versions.list.size > 1) {
+                        Text(versions.current.name, color = Color.Gray, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                IconButton(onClick = { selectTool(if (tool == Tool.VERSIONS) null else Tool.VERSIONS) }) {
+                    Icon(Icons.Outlined.History, "Versions and checkpoints", tint = if (tool == Tool.VERSIONS) MaterialTheme.colorScheme.primary else Color.White)
+                }
                 Box {
                     IconButton(onClick = { shareMenu = true }, enabled = opened != null && exportProgress == null) {
                         Icon(Icons.Rounded.Share, "Export", tint = Color.White)
@@ -1145,7 +1197,7 @@ fun EditorScreen(
                             Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)
                                 .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(24.dp)).padding(horizontal = 4.dp),
                         ) {
-                            for (t in Tool.entries.filter { it != Tool.CROP && it != Tool.PRESETS }) {
+                            for (t in Tool.entries.filter { it != Tool.CROP && it != Tool.PRESETS && it != Tool.VERSIONS }) {
                                 val sel = t == tool || (tool == null && t == Tool.LIGHT)
                                 val c = if (sel) MaterialTheme.colorScheme.primary else Color.White
                                 Box(
@@ -1210,9 +1262,32 @@ fun EditorScreen(
                         Tool.PRESETS -> PresetsPanel(
                             presets = Preset.BUILT_IN + presets,
                             current = settings,
-                            onApply = { commit(it.applyTo(settings)) },
+                            onApply = { p ->
+                                // A checkpoint keeps your own work before a look replaces it (not when
+                                // swapping one preset for another, which undo already covers).
+                                val next = p.applyTo(settings)
+                                if (next != settings && (Preset.BUILT_IN + presets).none { it.isApplied(settings) }) {
+                                    addCheckpoint("Before ${p.name}", auto = true)
+                                }
+                                commit(next)
+                            },
                             onDelete = { store.deletePreset(it.name); presets = store.userPresets() },
                             onCreate = { dialog = "preset" },
+                        )
+                        Tool.VERSIONS -> VersionsPanel(
+                            versions = versions,
+                            checkpoints = checkpoints,
+                            current = settings,
+                            onSwitch = { id -> switchVersion { store.switchVersion(photo, id) } },
+                            onAdd = { copy -> switchVersion { store.addVersion(photo, if (copy) settings else Settings()) } },
+                            onRename = { id, name -> store.renameVersion(photo, id, name); versions = store.versions(photo) },
+                            onDelete = { id -> switchVersion { store.deleteVersion(photo, id) } },
+                            onSaveCheckpoint = { name -> addCheckpoint(name, auto = false) },
+                            onRestore = { commit(it.settings) },
+                            onDeleteCheckpoint = { c ->
+                                checkpoints = checkpoints - c
+                                store.saveCheckpoints(photo, versions.active, checkpoints)
+                            },
                         )
                         Tool.CROP -> CropPanel(ctl, o, aspect = cropAspect, onAspect = { a ->
                             cropAspect = a
@@ -1283,7 +1358,7 @@ fun EditorScreen(
 
             // Tool strip: every tool fits on screen; a dot marks the ones with edits.
             if (!fullscreen) Row(Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 2.dp)) {
-                for (t in Tool.entries) {
+                for (t in Tool.entries.filter { it != Tool.VERSIONS }) {
                     val selected = tool == t
                     val changed = t.changed(settings)
                     Column(

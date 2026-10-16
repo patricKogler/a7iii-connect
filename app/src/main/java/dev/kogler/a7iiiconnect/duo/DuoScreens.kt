@@ -1171,7 +1171,7 @@ private fun BattleResult(renders: BattleRenders?, onClose: () -> Unit) {
                     saving = true
                     scope.launch {
                         val ok = withContext(Dispatchers.Default) {
-                            runCatching { Photos.export(context, renders.opened!!, Duo.battleSettings(winner)!!, ExportOptions(), {}) }.isSuccess
+                            runCatching { Photos.export(context, renders.opened!!, Duo.battleSettings(winner)!!, ExportOptions()) {} }.isSuccess
                         }
                         Duo.notice = if (ok) "Saved to your phone's pictures" else "Couldn't save the picture"
                         saving = false
