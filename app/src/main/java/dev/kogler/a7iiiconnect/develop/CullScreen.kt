@@ -117,13 +117,16 @@ private const val CULL_EDGE = 2048
 internal const val MAX_ZOOM = 8f
 
 /** One decision, with the marks it replaced so undo can put them back. */
-private class Step(val pos: Int, val previous: List<Pair<Shot, Mark?>>)
+private class Step(val pos: Int, val previous: List<Pair<Shot, Mark?>>, val verdicts: List<Pair<Shot, Verdict>>)
 
 /**
  * Tinder-style culling: right picks, left rejects, up skips. Usually deals the shots still to
  * review; dealt picks again, it narrows them down. Bursts and near-duplicates come as one
  * stack, settled two at a time ([HeadToHead]).
  * Double-tap or pinch to check focus; while zoomed in a drag pans instead of deciding.
+ *
+ * Dealt an album's shots, [takeOut] makes a reject take the shot out of the album (and undo put
+ * it back) instead of marking it rejected in the library; picks are still marked as picks.
  */
 @Composable
 fun CullScreen(
@@ -136,6 +139,8 @@ fun CullScreen(
     onBack: () -> Unit,
     /** Puts the card's shot (or the whole stack) in an album; null hides the button. */
     onAddToAlbum: ((List<Shot>) -> Unit)? = null,
+    /** Culling an album: rejected shots go out of it (true) or back in on undo (false). */
+    takeOut: ((Shot, Boolean) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var progress by remember { mutableFloatStateOf(0f) }
@@ -168,10 +173,14 @@ fun CullScreen(
     }
 
     fun record(verdicts: List<Pair<Shot, Verdict>>) {
-        undo += Step(pos, verdicts.map { (shot, _) -> shot to marks[shot.key] })
+        undo += Step(pos, verdicts.map { (shot, _) -> shot to marks[shot.key] }, verdicts)
         for ((shot, v) in verdicts) {
             decided[shot.key] = v
-            if (v != Verdict.SKIP) onMark(shot, markFor(v))
+            when {
+                v == Verdict.SKIP -> {}
+                v == Verdict.REJECT && takeOut != null -> takeOut(shot, true)
+                else -> onMark(shot, markFor(v))
+            }
         }
         fling = null
         pos++
@@ -183,6 +192,7 @@ fun CullScreen(
             onMark(shot, previous)
             decided.remove(shot.key)
         }
+        if (takeOut != null) for ((shot, v) in step.verdicts) if (v == Verdict.REJECT) takeOut(shot, false)
         fling = null
         pos = step.pos
     }
@@ -235,10 +245,11 @@ fun CullScreen(
                 picked = decided.values.count { it == Verdict.PICK },
                 rejected = decided.values.count { it == Verdict.REJECT },
                 skipped = decided.values.count { it == Verdict.SKIP },
-                rejectedCount = rejectedCount,
+                rejectedCount = if (takeOut != null) 0 else rejectedCount,
                 onDeleteRejected = onDeleteRejected,
                 onBack = onBack,
                 modifier = Modifier.weight(1f),
+                album = takeOut != null,
             )
             return@Column
         }
@@ -265,7 +276,7 @@ fun CullScreen(
                             shot = shot,
                             depth = i - pos,
                             fling = if (i == pos) fling else null,
-                            rejectLabel = "REJECT",
+                            rejectLabel = if (takeOut != null) "OUT" else "REJECT",
                             onDecided = { record(listOf(shot to it)) },
                             notes = Best.notes(shot, insights),
                         )
@@ -285,7 +296,7 @@ fun CullScreen(
                 RoundButton(Icons.Rounded.ArrowUpward, "Skip", SkipBlue, 48, "cull-skip") { record(top.map { it to Verdict.SKIP }) }
                 KeepBoth("cull-keep-both") { duel.keepBoth() }
             } else {
-                RoundButton(Icons.Rounded.Close, "Reject", RejectRed, 64, "cull-reject") { if (fling == null) fling = Verdict.REJECT }
+                RoundButton(Icons.Rounded.Close, if (takeOut != null) "Take out of album" else "Reject", RejectRed, 64, "cull-reject") { if (fling == null) fling = Verdict.REJECT }
                 RoundButton(Icons.Rounded.ArrowUpward, "Skip", SkipBlue, 48, "cull-skip") { if (fling == null) fling = Verdict.SKIP }
                 RoundButton(Icons.Rounded.Check, "Pick", PickGreen, 64, "cull-pick") { if (fling == null) fling = Verdict.PICK }
             }
@@ -409,7 +420,7 @@ internal fun RoundButton(icon: androidx.compose.ui.graphics.vector.ImageVector, 
 @Composable
 private fun Summary(
     picked: Int, rejected: Int, skipped: Int, rejectedCount: Int,
-    onDeleteRejected: () -> Unit, onBack: () -> Unit, modifier: Modifier,
+    onDeleteRejected: () -> Unit, onBack: () -> Unit, modifier: Modifier, album: Boolean = false,
 ) {
     Column(
         modifier.fillMaxWidth().padding(24.dp),
@@ -420,7 +431,7 @@ private fun Summary(
         Spacer(Modifier.height(12.dp))
         Text(
             listOfNotNull(
-                "$picked picked", "$rejected rejected",
+                "$picked picked", if (album) "$rejected taken out" else "$rejected rejected",
                 if (skipped > 0) "$skipped skipped" else null,
             ).joinToString(" · "),
             color = Color.White.copy(alpha = 0.7f),
@@ -433,7 +444,7 @@ private fun Summary(
             ) { Text("Delete $rejectedCount rejected") }
             Spacer(Modifier.height(12.dp))
         }
-        OutlinedButton(onClick = onBack) { Text("Back to library") }
+        OutlinedButton(onClick = onBack) { Text(if (album) "Back to album" else "Back to library") }
     }
 }
 

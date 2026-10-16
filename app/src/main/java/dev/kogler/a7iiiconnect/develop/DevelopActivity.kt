@@ -71,6 +71,10 @@ class DevelopActivity : ComponentActivity() {
     private var albumDialog by mutableStateOf<AlbumDialog?>(null)
     /** The album playing as a slideshow, by id. */
     private var slideshow by mutableStateOf<String?>(null)
+    /** The album the deck was dealt from: rejecting there takes shots out of it. */
+    private var cullAlbum by mutableStateOf<String?>(null)
+    /** What each shot taken out in the deck had in the album, for undo. */
+    private val takenOut = HashMap<String, AlbumEntry?>()
     /** Shots done and in all while an album is got ready to share. */
     private var sharing by mutableStateOf<Pair<Int, Int>?>(null)
     private var loaded = false
@@ -105,6 +109,7 @@ class DevelopActivity : ComponentActivity() {
         albums = albumStore.load()
         openAlbum = savedInstanceState?.getString(KEY_ALBUM)
         slideshow = savedInstanceState?.getString(KEY_SLIDESHOW)
+        cullAlbum = savedInstanceState?.getString(KEY_CULL_ALBUM)
         saved = SavedFilters.load(this)
         GpsService.resumeIfEnabled(this)
         editing = savedInstanceState?.getLong(KEY_EDITING, -1L)?.takeIf { it >= 0 }
@@ -159,6 +164,9 @@ class DevelopActivity : ComponentActivity() {
                             onDeleteRejected = { deleteRejected() },
                             onBack = { culling = null },
                             onAddToAlbum = { picked -> albumDialog = AlbumDialog.Pick(picked.map { it.key }) },
+                            takeOut = cullAlbum?.takeIf { id -> albums.any { it.id == id && it.alive } }?.let { id ->
+                                { shot, out -> takeOut(id, shot.key, out) }
+                            },
                         )
                     }
                     compare != null -> {
@@ -177,7 +185,7 @@ class DevelopActivity : ComponentActivity() {
                         marks = marks,
                         exported = exported,
                         onOpen = { editing = it.primary.id },
-                        onCull = { title, deck -> culling = title to deck.map { it.key } },
+                        onCull = { title, deck -> cullAlbum = openAlbum; takenOut.clear(); culling = title to deck.map { it.key } },
                         onTogether = { deck -> startActivity(DuoActivity.intent(this, deck.map { it.key })) },
                         onDeleteRejected = { deleteRejected() },
                         transfer = transfer,
@@ -252,6 +260,19 @@ class DevelopActivity : ComponentActivity() {
     }
 
     private fun changeAlbum(id: String, change: (Album) -> Album) = changeAlbums { all -> all.map { if (it.id == id) change(it) else it } }
+
+    /** A reject in an album's deck takes the shot out of that album only; undo puts it back where it was. */
+    private fun takeOut(id: String, key: String, out: Boolean) = changeAlbum(id) { album ->
+        if (out) {
+            takenOut[key] = album.entries[key]
+            Albums.remove(album, listOf(key), System.currentTimeMillis())
+        } else if (key in takenOut) {
+            Albums.restore(album, key, takenOut.remove(key))
+        } else {
+            // Undone after the app was away (and forgot its place): back in, at the end.
+            Albums.add(album, listOf(key), System.currentTimeMillis())
+        }
+    }
 
     @androidx.compose.runtime.Composable
     private fun AlbumDialogs() {
@@ -433,6 +454,7 @@ class DevelopActivity : ComponentActivity() {
         comparing?.let { outState.putStringArrayList(KEY_COMPARING, ArrayList(it)) }
         openAlbum?.let { outState.putString(KEY_ALBUM, it) }
         slideshow?.let { outState.putString(KEY_SLIDESHOW, it) }
+        cullAlbum?.let { outState.putString(KEY_CULL_ALBUM, it) }
     }
 
     private suspend fun reload() {
@@ -493,6 +515,7 @@ class DevelopActivity : ComponentActivity() {
         private const val KEY_COMPARING = "comparing"
         private const val KEY_ALBUM = "album"
         private const val KEY_SLIDESHOW = "slideshow"
+        private const val KEY_CULL_ALBUM = "cull_album"
 
         fun intent(context: Context, photoId: Long? = null) = Intent(context, DevelopActivity::class.java).apply {
             if (photoId != null) putExtra(EXTRA_PHOTO_ID, photoId)

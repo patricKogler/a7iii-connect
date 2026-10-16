@@ -223,9 +223,10 @@ fun LibraryScreen(
     val days = shown.groupBy { dayOf(it.takenMillis) }
     val scope = if (selectedDays.isEmpty()) shown else shown.filter { dayOf(it.takenMillis) in selectedDays }
     // Review deals what's on screen: the shots still to review, or on Picks (or Rejected) those
-    // shots again, to narrow them down (or rescue some).
+    // shots again, to narrow them down (or rescue some). In an album it deals all its shots on
+    // screen, to narrow the album down.
     val revisit = filter == QuickFilter.PICKS || filter == QuickFilter.REJECTED
-    val due = if (revisit) scope else scope.filter { it.key !in marks }
+    val due = if (revisit || album != null) scope else scope.filter { it.key !in marks }
     Scaffold(
         topBar = {
             TopAppBar(

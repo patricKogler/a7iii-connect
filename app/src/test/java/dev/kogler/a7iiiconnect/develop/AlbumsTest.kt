@@ -26,6 +26,15 @@ class AlbumsTest {
     }
 
     @Test
+    fun undoPutsATakenOutShotBackInItsPlace() {
+        val out = Albums.remove(lisbon, listOf("a@1"), now = 200)
+        assertEquals(lisbon, Albums.restore(out, "a@1", lisbon.entries["a@1"]))
+        assertEquals(listOf("a@1", "b@2"), Albums.restore(out, "a@1", lisbon.entries["a@1"]).keys)
+        // A shot that wasn't in the album before goes again, without a trace.
+        assertEquals(lisbon.entries.keys, Albums.restore(Albums.add(lisbon, listOf("c@3"), now = 300), "c@3", null).entries.keys)
+    }
+
+    @Test
     fun readsWhatItWrites() {
         val albums = listOf(
             Albums.remove(lisbon, listOf("b@2"), now = 150),
