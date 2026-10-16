@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.kogler.a7iiiconnect.develop.AlbumStore
 import dev.kogler.a7iiiconnect.develop.EditStore
 import dev.kogler.a7iiiconnect.develop.ExportOptions
 import dev.kogler.a7iiiconnect.develop.LibraryPhoto
@@ -182,12 +183,13 @@ object Duo : DuoLink.Listener {
         battleOnly = true
     }
 
-    /** Host: swap albums with the other phone, nothing else. */
-    fun hostAlbums(context: Context) {
+    /** Host: swap shared albums with the other phone, nothing else; [invite] it into that album first. */
+    fun hostAlbums(context: Context, invite: String?) {
         init(context)
         if (active) return
         host(context)
         albumsOnly = true
+        AlbumSync.invite = invite
     }
 
     /** Host, battle only: the photo to fight over. The battle starts as soon as the other phone is here. */
@@ -264,7 +266,7 @@ object Duo : DuoLink.Listener {
         ready = 0; debateItem = null; coinTick = 0; coin = null
         offer = null; want = null; bothShots = emptyList(); mineShots = emptyList(); keepers = 0 to 0; transfer = null; update = null; partnerVersion = 0
         resetBattle(); battleOnly = false; pendingBattle = null; albumsOnly = false
-        AlbumSync.reset()
+        AlbumSync.reset(); AlbumSync.invite = null
         if (::app.isInitialized) File(app.filesDir, "duo").deleteRecursively()
     }
 
@@ -586,8 +588,11 @@ object Duo : DuoLink.Listener {
         }
         if (!incoming) joinCode = endpointName.substringAfterLast('|', "").ifEmpty { null }
         partnerName = endpointName.substringBeforeLast('|')
-        link?.send(JSONObject().put("t", "hello").put("name", myName).put("v", versionCode()).put("p", PROTOCOL))
-        AlbumSync.start(app, link)
+        AlbumSync.reset()
+        link?.send(
+            JSONObject().put("t", "hello").put("name", myName).put("v", versionCode()).put("p", PROTOCOL)
+                .put("pid", AlbumStore(app).phoneId),
+        )
         if (hosting && deck.isNotEmpty()) {
             if (phase == Phase.LOBBY) phase = Phase.CULL
             sendDeck()
@@ -615,6 +620,7 @@ object Duo : DuoLink.Listener {
             "hello" -> {
                 partnerName = msg.optString("name", partnerName)
                 partnerVersion = msg.optLong("v")
+                AlbumSync.onHello(app, link, msg.optString("pid"), partnerName, myName)
                 // Whoever has the newer app sends it over.
                 if (versionCode() > partnerVersion) {
                     link?.sendFile(JSONObject().put("kind", "apk").put("v", versionCode()), File(app.applicationInfo.sourceDir))

@@ -112,15 +112,35 @@ class AlbumsTest {
     }
 
     @Test
-    fun albumsArePrivateUntilShared() {
-        val hike = Albums.create("Hike", listOf("h@1"), now = 10, id = "h")
+    fun albumsGoOnlyToInvitedPhones() {
+        val hike = Albums.create("Hike", listOf("h@1"), now = 10, id = "h", owner = "me")
         assertFalse(hike.shared)
-        assertTrue(Albums.sharedKeys(listOf(lisbon, hike)).isEmpty())
-        val shared = Albums.share(lisbon, true)
-        assertEquals(setOf("a@1", "b@2"), Albums.sharedKeys(listOf(shared, hike)))
-        assertTrue(Albums.decode(Albums.encode(listOf(shared))).single().shared)
-        // A deleted album shares nothing.
-        assertTrue(Albums.sharedKeys(listOf(Albums.delete(shared, now = 20))).isEmpty())
+        assertTrue(Albums.sharedKeys(listOf(lisbon, hike), "anna").isEmpty())
+        val withAnna = Albums.invite(hike, "me", "Patrick", "anna", "Anna")
+        assertTrue(withAnna.shared)
+        assertEquals(mapOf("me" to "Patrick", "anna" to "Anna"), withAnna.members)
+        assertEquals(setOf("h@1"), Albums.sharedKeys(listOf(withAnna, lisbon), "anna"))
+        // Someone else connecting gets nothing.
+        assertTrue(Albums.sharedWith(listOf(withAnna), "ben").isEmpty())
+        // Stopped sharing: nothing goes, even to Anna.
+        assertTrue(Albums.sharedKeys(listOf(Albums.share(withAnna, false)), "anna").isEmpty())
+        // A deleted album shares no shots, but still goes over so Anna learns it's gone.
+        val gone = Albums.delete(withAnna, now = 20)
+        assertTrue(Albums.sharedKeys(listOf(gone), "anna").isEmpty())
+        assertEquals(listOf(gone), Albums.sharedWith(listOf(gone), "anna"))
+        assertEquals(withAnna, Albums.decode(Albums.encode(listOf(withAnna))).single())
+    }
+
+    @Test
+    fun aMembersShotsReachTheOwner() {
+        val mine = Albums.invite(Albums.create("Hike", listOf("h@1"), now = 10, id = "h", owner = "me"), "me", "Patrick", "anna", "Anna")
+        // Anna's copy, after she added a shot from her own library.
+        val hers = Albums.add(mine, listOf("anna1@5"), now = 30)
+        val merged = Albums.merge(listOf(mine), listOf(hers)).single()
+        assertEquals(listOf("h@1", "anna1@5"), merged.keys)
+        assertEquals("me", merged.owner)
+        assertTrue(merged.ownedBy("me"))
+        assertFalse(merged.ownedBy("anna"))
     }
 
     @Test
@@ -139,6 +159,8 @@ class AlbumsTest {
         val a = Albums.decode(old).single()
         assertEquals("Lisbon", a.name)
         assertFalse(a.shared)
+        assertTrue(a.members.isEmpty())
+        assertTrue(a.ownedBy("anyone"))
         assertEquals(listOf("a@1"), a.keys)
     }
 }

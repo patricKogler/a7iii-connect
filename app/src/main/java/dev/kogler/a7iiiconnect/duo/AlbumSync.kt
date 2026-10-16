@@ -26,9 +26,10 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Shared albums over Together, whatever else the two phones are doing. Only albums the owner
- * shared ([Album.shared]) ever leave a phone, and only shots in them. As soon as they connect each
- * sends its shared albums (a few kilobytes) and puts the other's together with its own ([Albums.merge]),
+ * Shared albums over Together, whatever else the two phones are doing. An album only ever goes to
+ * the phones its owner invited ([Album.members]), and only shots in it are served. As soon as the
+ * phones know who's who ("hello"), each sends the albums it shares with the other (a few
+ * kilobytes) and puts the other's together with its own ([Albums.merge]),
  * so both have the same albums at once. Then each asks for the album shots it hasn't got: every
  * missing shot comes as a JPEG first, so the albums are whole quickly, and the RAWs follow. What
  * doesn't make it before the phones part is asked for again next time.
@@ -48,18 +49,37 @@ object AlbumSync {
     val busy get() = asked || getting.first < getting.second || sending.first < sending.second
     val inSync get() = merged && !busy
 
+    /** The album, by id, whose owner asked to invite the phone that connects next. */
+    var invite: String? = null
+    /** The other phone's id (from its hello); nothing is shared before it's known. */
+    private var partner = ""
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     fun reset() {
         merged = false; albumCount = 0; shotCount = 0
         getting = 0 to 0; asked = false; sending = 0 to 0
+        partner = ""
     }
 
-    /** Connected: my shared albums go over. */
-    fun start(app: Context, link: DuoLink?) {
-        reset()
+    /**
+     * The other phone said who it is: if I was inviting it into an album, it's a member now. Then
+     * the albums I share with it go over. An app too old to say who it is gets nothing.
+     */
+    fun onHello(app: Context, link: DuoLink?, phone: String, name: String, myName: String) {
+        if (phone.isEmpty()) return
+        partner = phone
+        val inviting = invite
         scope.launch {
-            val text = withContext(Dispatchers.IO) { Albums.encode(AlbumStore(app).load().filter { it.shared }) }
+            val text = withContext(Dispatchers.IO) {
+                val store = AlbumStore(app)
+                var all = store.load()
+                if (inviting != null) {
+                    all = all.map { if (it.id == inviting && it.ownedBy(store.phoneId)) Albums.invite(it, store.phoneId, myName, phone, name) else it }
+                    store.save(all)
+                }
+                Albums.encode(Albums.sharedWith(all, phone))
+            }
             link?.send(JSONObject().put("t", "albums").put("a", text))
         }
     }
@@ -77,8 +97,8 @@ object AlbumSync {
                     Albums.rekey(Albums.decode(msg.optString("a")).map { it.copy(shared = true) }, resolve),
                 )
                 store.save(all)
-                val alive = all.filter { it.alive && it.shared }
-                val wanted = Albums.sharedKeys(all)
+                val alive = Albums.sharedWith(all, partner).filter { it.alive }
+                val wanted = Albums.sharedKeys(all, partner)
                 // Shots I haven't got at all, or have only one file of (the other phone may have both).
                 val byKey = shots.associateBy { it.key }
                 (alive.size to wanted.size) to wanted.mapNotNull { k ->
@@ -107,8 +127,8 @@ object AlbumSync {
                 val shots = Library.shots(Library.load(app))
                 val resolve = Albums.resolver(shots.map { it.key })
                 val byKey = shots.associateBy { it.key }
-                // Only shots in albums I share, whatever is asked for.
-                val allowed = Albums.sharedKeys(Albums.rekey(AlbumStore(app).load(), resolve))
+                // Only shots in albums I share with this phone, whatever is asked for.
+                val allowed = Albums.sharedKeys(Albums.rekey(AlbumStore(app).load(), resolve), partner)
                 val edits = EditStore(app)
                 val first = mutableListOf<Pair<JSONObject, Uri>>()
                 val later = mutableListOf<Pair<JSONObject, Uri>>()
