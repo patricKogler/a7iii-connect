@@ -58,13 +58,51 @@ class DuoSessionTest {
     }
 
     @Test
+    fun debateSettlesOnlyWhenBothAgree() {
+        val s = DuoSession(listOf(1, 3))
+        s.vote(HOST, 0, pick); s.vote(GUEST, 0, out)
+        s.vote(HOST, 1, Choice(Vote.PICK, 0)); s.vote(GUEST, 1, Choice(Vote.PICK, 2))
+        assertEquals(0, s.nextDispute)
+        assertFalse(s.propose(HOST, 0, pick))
+        assertFalse(s.isStuck(0))
+        assertNull(s.outcome(0))
+        assertFalse(s.propose(GUEST, 0, maybe))
+        assertTrue(s.isStuck(0))
+        assertEquals(0, s.nextDispute)
+        // She comes round.
+        assertTrue(s.propose(GUEST, 0, pick))
+        assertFalse(s.isStuck(0))
+        assertEquals(pick, s.outcome(0))
+        assertEquals(1, s.nextDispute)
+        // Different shots of the same stack are different calls.
+        s.propose(HOST, 1, Choice(Vote.PICK, 0))
+        assertFalse(s.propose(GUEST, 1, Choice(Vote.PICK, 2)))
+        assertTrue(s.isStuck(1))
+    }
+
+    @Test
+    fun coinPicksOneOfTheTwoCalls() {
+        val s = DuoSession(listOf(1, 1))
+        s.vote(HOST, 0, pick); s.vote(GUEST, 0, out)
+        assertNull(s.flip(0, GUEST))
+        s.propose(HOST, 0, pick); s.propose(GUEST, 0, out)
+        assertEquals(out, s.flip(0, GUEST))
+        assertEquals(out, s.outcome(0))
+        assertFalse(s.isStuck(1))
+        assertNull(s.flip(1, HOST))
+    }
+
+    @Test
     fun votesSurviveTheWire() {
         val s = DuoSession(listOf(1, 2, 1))
         s.vote(HOST, 1, Choice(Vote.PICK, 1)); s.vote(HOST, 2, maybe)
         s.decide(0, out)
+        s.propose(HOST, 2, pick)
         val t = DuoSession(listOf(1, 2, 1))
         t.loadVotes(HOST, s.encodeVotes(HOST))
         t.loadDecisions(s.encodeDecisions())
+        t.loadProposals(HOST, s.encodeProposals(HOST))
+        assertEquals(pick, t.proposalOf(HOST, 2))
         assertEquals("-,p1,m", t.encodeVotes(HOST))
         assertEquals(out, t.decision(0))
         assertEquals(2, t.progress(HOST))
