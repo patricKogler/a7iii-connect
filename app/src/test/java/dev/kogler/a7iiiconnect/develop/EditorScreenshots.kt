@@ -371,6 +371,64 @@ class EditorScreenshots {
         shot("43-compare-done")
     }
 
+    @Test
+    fun albums() {
+        val context: Context = RuntimeEnvironment.getApplication()
+        val file = File(context.cacheDir, "DSC09412.JPG")
+        writeLandscape(file)
+        val t = 1_760_000_000_000L
+        val shots = Library.shots((0 until 8).map { i ->
+            LibraryPhoto(500L + i, Uri.fromFile(file), "DSC097${10 + i}.JPG", "image/jpeg", t - i * 900_000L)
+        })
+        var albums by mutableStateOf(listOf(Albums.create("Hallstatt", shots.takeLast(2).map { it.key }, now = 1, id = "h")))
+        var open by mutableStateOf<Album?>(null)
+        var picking by mutableStateOf<List<String>?>(null)
+        var playing by mutableStateOf(false)
+        val store = EditStore(context)
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            MaterialTheme(colorScheme = darkColorScheme()) {
+                val a = open?.let { o -> albums.find { it.id == o.id } }
+                if (playing && a != null) {
+                    AlbumSlideshow(a.name, shots.filter { it.key in a }.sortedBy { it.takenMillis }, emptySet(), store, onBack = { playing = false })
+                } else {
+                    LibraryScreen(
+                        shots = shots, edited = emptySet(), marks = emptyMap(), exported = emptySet(),
+                        onOpen = {}, onCull = { _, _ -> }, onTogether = {}, onDeleteRejected = {},
+                        transfer = SyncStatus(), onCamera = {},
+                        albums = albums, album = a, onOpenAlbum = { open = it },
+                        onAddToAlbum = { picked -> picking = picked.map { it.key } },
+                        onAlbumAction = { if (it == AlbumAction.SLIDESHOW) playing = true },
+                    )
+                }
+                picking?.let { keys ->
+                    AlbumPicker(albums, keys.size, onPick = { p ->
+                        albums = albums.map { if (it.id == p.id) Albums.add(it, keys, now = 2) else it }
+                        picking = null
+                    }, onNew = {}, onDismiss = { picking = null })
+                }
+            }
+        }
+        repeat(20) { step() }
+        shot("50-library-albums")
+        for (i in 0 until 3) {
+            compose.onNodeWithTag("thumb-${shots[i].key}").performTouchInput { longClick() }
+            repeat(4) { step() }
+        }
+        compose.onNodeWithTag("album-add").performClick()
+        repeat(10) { step() }
+        sheetShot("51-add-to-album")
+        compose.onNodeWithText("Hallstatt").performClick()
+        repeat(10) { step() }
+        check(albums.single().size == 5) { "added: ${albums.single().keys}" }
+        compose.onNodeWithTag("album-h").performClick()
+        repeat(20) { step() }
+        shot("52-album-open")
+        compose.onNodeWithTag("album-slideshow").performClick()
+        repeat(30) { step() }
+        shot("53-slideshow")
+    }
+
     private fun tool(name: String) {
         compose.onNodeWithTag("tool-$name").performClick()
         settle()

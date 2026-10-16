@@ -16,6 +16,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -58,6 +61,16 @@ class DevelopActivity : ComponentActivity() {
     /** The keys of the shots picked in the library to compare head to head, while that's open. */
     private var comparing by mutableStateOf<List<String>?>(null)
     private var deleting = emptyList<Shot>()
+    private lateinit var albumStore: AlbumStore
+    /** Every album, deleted ones included (kept for comparing with another phone). */
+    private var albums by mutableStateOf(emptyList<Album>())
+    /** The album open in the library, by id. */
+    private var openAlbum by mutableStateOf<String?>(null)
+    private var albumDialog by mutableStateOf<AlbumDialog?>(null)
+    /** The album playing as a slideshow, by id. */
+    private var slideshow by mutableStateOf<String?>(null)
+    /** Shots done and in all while an album is got ready to share. */
+    private var sharing by mutableStateOf<Pair<Int, Int>?>(null)
     private var loaded = false
     private lateinit var store: EditStore
     private var transfer by mutableStateOf(SyncStatus())
@@ -86,6 +99,10 @@ class DevelopActivity : ComponentActivity() {
         enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         super.onCreate(savedInstanceState)
         store = EditStore(this)
+        albumStore = AlbumStore(this)
+        albums = albumStore.load()
+        openAlbum = savedInstanceState?.getString(KEY_ALBUM)
+        slideshow = savedInstanceState?.getString(KEY_SLIDESHOW)
         saved = SavedFilters.load(this)
         GpsService.resumeIfEnabled(this)
         editing = savedInstanceState?.getLong(KEY_EDITING, -1L)?.takeIf { it >= 0 }
@@ -103,6 +120,8 @@ class DevelopActivity : ComponentActivity() {
                 val index = shots.indexOfFirst { current != null && it.contains(current) }
                 val deck = culling
                 val compare = comparing
+                val playing = slideshow?.let { id -> albums.find { it.id == id && it.alive } }
+                val showAlbum = openAlbum?.let { id -> albums.find { it.id == id && it.alive } }
                 when {
                     current != null && index >= 0 -> {
                         BackHandler { closeEditor() }
@@ -113,6 +132,17 @@ class DevelopActivity : ComponentActivity() {
                             onBack = { closeEditor() },
                             onPhotoChanged = { editing = it.id },
                             onBattle = { p -> shots.firstOrNull { it.contains(p.id) }?.let { startActivity(DuoActivity.battleIntent(this, it.key)) } },
+                            onAddToAlbum = { p -> shots.firstOrNull { it.contains(p.id) }?.let { albumDialog = AlbumDialog.Pick(listOf(it.key)) } },
+                        )
+                    }
+                    playing != null -> {
+                        BackHandler { slideshow = null }
+                        AlbumSlideshow(
+                            name = playing.name,
+                            shots = albumShots(playing),
+                            edited = edited,
+                            store = store,
+                            onBack = { slideshow = null },
                         )
                     }
                     deck != null -> {
@@ -126,6 +156,7 @@ class DevelopActivity : ComponentActivity() {
                             rejectedCount = shots.count { marks[it.key]?.rejected == true },
                             onDeleteRejected = { deleteRejected() },
                             onBack = { culling = null },
+                            onAddToAlbum = { picked -> albumDialog = AlbumDialog.Pick(picked.map { it.key }) },
                         )
                     }
                     compare != null -> {
@@ -167,9 +198,125 @@ class DevelopActivity : ComponentActivity() {
                         sheetOpen = sheetOpen,
                         onSheetOpen = { sheetOpen = it },
                         onCompare = { picked -> comparing = picked.map { it.key } },
+                        albums = albums.filter { it.alive }.sortedByDescending { it.createdAt },
+                        album = showAlbum,
+                        onOpenAlbum = { openAlbum = it?.id },
+                        onAddToAlbum = { picked -> albumDialog = AlbumDialog.Pick(picked.map { it.key }) },
+                        onNewAlbum = { shown, narrowed -> albumDialog = AlbumDialog.Create(shown.map { it.key }, offer = true, narrowed = narrowed) },
+                        onRemoveFromAlbum = { picked ->
+                            showAlbum?.let { a -> changeAlbum(a.id) { Albums.remove(it, picked.map { s -> s.key }, System.currentTimeMillis()) } }
+                        },
+                        onAlbumAction = { action ->
+                            val a = showAlbum
+                            if (a != null) when (action) {
+                                AlbumAction.SLIDESHOW -> slideshow = a.id
+                                AlbumAction.SHARE -> shareAlbum(a)
+                                AlbumAction.RENAME -> albumDialog = AlbumDialog.Rename(a.id)
+                                AlbumAction.DELETE -> albumDialog = AlbumDialog.Delete(a.id)
+                            }
+                        },
                     )
                 }
+                AlbumDialogs()
+                sharing?.let { (done, total) -> AlbumShareProgress(done, total) }
             }
+        }
+    }
+
+    /** The album's shots that are on this phone, oldest first, like a story. */
+    private fun albumShots(album: Album): List<Shot> = shots.filter { it.key in album }.sortedBy { it.takenMillis }
+
+    private fun changeAlbums(change: (List<Album>) -> List<Album>) {
+        albums = change(albums)
+        albumStore.save(albums)
+    }
+
+    private fun changeAlbum(id: String, change: (Album) -> Album) = changeAlbums { all -> all.map { if (it.id == id) change(it) else it } }
+
+    @androidx.compose.runtime.Composable
+    private fun AlbumDialogs() {
+        fun now() = System.currentTimeMillis()
+        when (val d = albumDialog) {
+            null -> {}
+            is AlbumDialog.Pick -> AlbumPicker(
+                albums = albums.filter { it.alive }.sortedByDescending { it.createdAt },
+                count = d.keys.size,
+                onPick = { a -> changeAlbum(a.id) { Albums.add(it, d.keys, now()) }; albumDialog = null },
+                onNew = { albumDialog = AlbumDialog.Create(d.keys, offer = false, narrowed = false) },
+                onDismiss = { albumDialog = null },
+            )
+            is AlbumDialog.Create -> AlbumNameDialog(
+                title = "New album",
+                initial = "",
+                confirm = "Create",
+                offer = if (d.offer) d.keys.size else 0,
+                offerByDefault = d.narrowed,
+                onDone = { name, withShots ->
+                    val keys = if (!d.offer || withShots) d.keys else emptyList()
+                    val album = Albums.create(name, keys, now())
+                    changeAlbums { it + album }
+                    albumDialog = null
+                    // A new album opens straight away, unless it was made while adding from the editor or the deck.
+                    if (d.offer) openAlbum = album.id
+                },
+                onDismiss = { albumDialog = null },
+            )
+            is AlbumDialog.Rename -> AlbumNameDialog(
+                title = "Rename album",
+                initial = albums.find { it.id == d.id }?.name ?: "",
+                confirm = "Rename",
+                onDone = { name, _ -> changeAlbum(d.id) { Albums.rename(it, name, now()) }; albumDialog = null },
+                onDismiss = { albumDialog = null },
+            )
+            is AlbumDialog.Delete -> AlertDialog(
+                onDismissRequest = { albumDialog = null },
+                title = { Text("Delete “${albums.find { it.id == d.id }?.name}”?") },
+                text = { Text("The photos stay in your library; only the album goes.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        changeAlbum(d.id) { Albums.delete(it, now()) }
+                        if (openAlbum == d.id) openAlbum = null
+                        albumDialog = null
+                    }) { Text("Delete") }
+                },
+                dismissButton = { TextButton(onClick = { albumDialog = null }) { Text("Cancel") } },
+            )
+        }
+    }
+
+    /**
+     * Shares the album's shots as JPEGs: edited ones developed and saved to the edits folder
+     * first (replacing an earlier export), the rest as the camera's JPEG.
+     */
+    private fun shareAlbum(album: Album) {
+        if (sharing != null) return
+        val list = albumShots(album)
+        if (list.isEmpty()) return
+        sharing = 0 to list.size
+        lifecycleScope.launch {
+            val options = store.exportOptions
+            val uris = ArrayList<android.net.Uri>()
+            for ((i, shot) in list.withIndex()) {
+                val uri = withContext(Dispatchers.Default) {
+                    runCatching {
+                        val jpeg = shot.jpeg
+                        if (shot.key !in edited && jpeg != null) jpeg.uri
+                        else Photos.export(this@DevelopActivity, Photos.open(this@DevelopActivity, shot.primary), store.load(shot.primary), options) {}
+                    }.getOrNull()
+                }
+                if (uri != null) uris += uri
+                sharing = i + 1 to list.size
+            }
+            sharing = null
+            if (uris.isNotEmpty()) {
+                val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                    type = "image/jpeg"
+                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(Intent.createChooser(send, "Share ${album.name}"))
+            }
+            reload()
         }
     }
 
@@ -240,6 +387,8 @@ class DevelopActivity : ComponentActivity() {
             outState.putStringArrayList(KEY_CULLING, ArrayList(keys))
         }
         comparing?.let { outState.putStringArrayList(KEY_COMPARING, ArrayList(it)) }
+        openAlbum?.let { outState.putString(KEY_ALBUM, it) }
+        slideshow?.let { outState.putString(KEY_SLIDESHOW, it) }
     }
 
     private suspend fun reload() {
@@ -279,9 +428,21 @@ class DevelopActivity : ComponentActivity() {
         private const val KEY_CULLING = "culling"
         private const val KEY_DECK_TITLE = "deck_title"
         private const val KEY_COMPARING = "comparing"
+        private const val KEY_ALBUM = "album"
+        private const val KEY_SLIDESHOW = "slideshow"
 
         fun intent(context: Context, photoId: Long? = null) = Intent(context, DevelopActivity::class.java).apply {
             if (photoId != null) putExtra(EXTRA_PHOTO_ID, photoId)
         }
     }
+}
+
+/** The album dialog open over Photos, the editor or the deck. */
+private sealed interface AlbumDialog {
+    /** Choosing an album for [keys]. */
+    data class Pick(val keys: List<String>) : AlbumDialog
+    /** Naming a new album: with [keys], or offering them ([offer]) ticked when [narrowed]. */
+    data class Create(val keys: List<String>, val offer: Boolean, val narrowed: Boolean) : AlbumDialog
+    data class Rename(val id: String) : AlbumDialog
+    data class Delete(val id: String) : AlbumDialog
 }

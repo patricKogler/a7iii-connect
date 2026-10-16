@@ -69,6 +69,15 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.IosShare
 import androidx.compose.material.icons.rounded.People
 import androidx.compose.material.icons.rounded.Swipe
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.LibraryAdd
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.PhotoAlbum
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.RemoveCircleOutline
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.TextButton
@@ -119,6 +128,9 @@ private fun TransferStrip(status: SyncStatus, onClick: () -> Unit) {
     }
 }
 
+/** What can be done with the open album from its top bar. */
+enum class AlbumAction { SLIDESHOW, SHARE, RENAME, DELETE }
+
 enum class QuickFilter(val label: String) {
     ALL("All"), TO_REVIEW("To review"), PICKS("Picks"), EDITED("Edited"), REJECTED("Rejected")
 }
@@ -148,11 +160,22 @@ fun LibraryScreen(
     sheetOpen: Boolean = false,
     onSheetOpen: (Boolean) -> Unit = {},
     onCompare: (List<Shot>) -> Unit = {},
+    /** Albums to show as chips (not the deleted ones), and the one open, if any. */
+    albums: List<Album> = emptyList(),
+    album: Album? = null,
+    onOpenAlbum: (Album?) -> Unit = {},
+    onAddToAlbum: (List<Shot>) -> Unit = {},
+    /** "New album": the shots on screen, and whether a filter or a day narrowed them down. */
+    onNewAlbum: (shown: List<Shot>, narrowed: Boolean) -> Unit = { _, _ -> },
+    onRemoveFromAlbum: (List<Shot>) -> Unit = {},
+    onAlbumAction: (AlbumAction) -> Unit = {},
 ) {
     // Days picked by long-pressing their headers; Review then covers just those.
     var selectedDays by remember { mutableStateOf(emptySet<Long>()) }
-    // Shots picked by long-pressing them, to compare head to head.
+    // Shots picked by long-pressing them, to compare head to head or put in an album.
     var selectedShots by remember { mutableStateOf(emptySet<String>()) }
+    var albumMenu by remember { mutableStateOf(false) }
+    BackHandler(enabled = album != null) { onOpenAlbum(null) }
     BackHandler(enabled = selectedShots.isNotEmpty() || selectedDays.isNotEmpty()) {
         selectedShots = emptySet(); selectedDays = emptySet()
     }
@@ -160,7 +183,9 @@ fun LibraryScreen(
         shots.map { ShotFacts(it, meta[it.key], it.key in edited, Photos.exportName(it.primary).lowercase() in exported, places[it.key]) }
     }
     // The sheet's metadata filter narrows everything on screen, Review included.
-    val filtered = if (sheetFilter.isEmpty) shots else facts.filter { sheetFilter.matches(it) }.map { it.shot }
+    val matching = if (sheetFilter.isEmpty) shots else facts.filter { sheetFilter.matches(it) }.map { it.shot }
+    // An open album shows just its shots; the filters still narrow them down.
+    val filtered = if (album == null) matching else matching.filter { it.key in album }
     val shown = when (filter) {
         QuickFilter.ALL -> filtered
         QuickFilter.TO_REVIEW -> filtered.filter { it.key !in marks }
@@ -183,6 +208,7 @@ fun LibraryScreen(
                         when {
                             selectedShots.isNotEmpty() -> "${selectedShots.size} selected"
                             selectedDays.isNotEmpty() -> "${selectedDays.size} ${if (selectedDays.size == 1) "day" else "days"} selected"
+                            album != null -> album.name
                             else -> "Photos"
                         },
                     )
@@ -190,9 +216,27 @@ fun LibraryScreen(
                 navigationIcon = {
                     if (selectedDays.isNotEmpty() || selectedShots.isNotEmpty()) {
                         IconButton(onClick = { selectedDays = emptySet(); selectedShots = emptySet() }) { Icon(Icons.Rounded.Close, "Clear selection") }
+                    } else if (album != null) {
+                        IconButton(onClick = { onOpenAlbum(null) }, modifier = Modifier.testTag("album-close")) {
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, "All photos")
+                        }
                     }
                 },
                 actions = {
+                    if (selectedShots.isNotEmpty() || selectedDays.isNotEmpty()) {
+                        // The selected shots, or every shot on screen from the selected days.
+                        val picked = if (selectedShots.isNotEmpty()) shots.filter { it.key in selectedShots } else scope
+                        if (album != null) {
+                            IconButton(
+                                onClick = { onRemoveFromAlbum(picked); selectedShots = emptySet(); selectedDays = emptySet() },
+                                modifier = Modifier.testTag("album-remove"),
+                            ) { Icon(Icons.Rounded.RemoveCircleOutline, "Remove from album") }
+                        }
+                        IconButton(
+                            onClick = { onAddToAlbum(picked); selectedShots = emptySet(); selectedDays = emptySet() },
+                            modifier = Modifier.testTag("album-add"),
+                        ) { Icon(Icons.Rounded.LibraryAdd, "Add to album") }
+                    }
                     if (selectedShots.isNotEmpty()) {
                         // Selected shots in the order they were taken, for a fair head to head.
                         TextButton(
@@ -206,6 +250,27 @@ fun LibraryScreen(
                             Icon(Icons.Rounded.Compare, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
                             Text(if (selectedShots.size >= 2) "Compare" else "Pick one more")
+                        }
+                    } else if (album != null) {
+                        if (due.isNotEmpty()) {
+                            TextButton(onClick = { onCull(album.name, due) }, modifier = Modifier.testTag("review")) {
+                                Icon(Icons.Rounded.Swipe, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Review ${due.size}")
+                            }
+                        }
+                        IconButton(onClick = { onAlbumAction(AlbumAction.SLIDESHOW) }, enabled = shown.isNotEmpty(), modifier = Modifier.testTag("album-slideshow")) {
+                            Icon(Icons.Rounded.PlayArrow, "Slideshow")
+                        }
+                        IconButton(onClick = { onAlbumAction(AlbumAction.SHARE) }, enabled = shown.isNotEmpty(), modifier = Modifier.testTag("album-share")) {
+                            Icon(Icons.Rounded.IosShare, "Share album")
+                        }
+                        Box {
+                            IconButton(onClick = { albumMenu = true }) { Icon(Icons.Rounded.MoreVert, "More") }
+                            DropdownMenu(expanded = albumMenu, onDismissRequest = { albumMenu = false }) {
+                                DropdownMenuItem(text = { Text("Rename album") }, onClick = { albumMenu = false; onAlbumAction(AlbumAction.RENAME) })
+                                DropdownMenuItem(text = { Text("Delete album") }, onClick = { albumMenu = false; onAlbumAction(AlbumAction.DELETE) })
+                            }
                         }
                     } else {
                         // Together: the same shots as Review, for the selected days or else the newest
@@ -262,6 +327,31 @@ fun LibraryScreen(
                     FilterChip(selected = filter == f, onClick = { onQuickFilter(f) }, label = { Text(f.label) })
                 }
             }
+            // Albums get a row of their own: saved filters fill themselves, albums are put together by hand.
+            if (album == null) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val narrowed = filter != QuickFilter.ALL || !sheetFilter.isEmpty || selectedDays.isNotEmpty()
+                    AssistChip(
+                        onClick = { onNewAlbum(scope, narrowed) },
+                        leadingIcon = { Icon(Icons.Rounded.Add, null, Modifier.size(18.dp)) },
+                        label = { Text("New album") },
+                        modifier = Modifier.testTag("album-create"),
+                    )
+                    for (a in albums) {
+                        FilterChip(
+                            selected = false,
+                            onClick = { selectedShots = emptySet(); selectedDays = emptySet(); onOpenAlbum(a) },
+                            leadingIcon = { Icon(Icons.Rounded.PhotoAlbum, null, Modifier.size(16.dp)) },
+                            label = { Text("${a.name} · ${shots.count { it.key in a }}") },
+                            modifier = Modifier.testTag("album-${a.id}"),
+                        )
+                    }
+                }
+            }
             // What the sheet filters on, each removable; a saved filter shows as its own chip instead.
             if (!sheetFilter.isEmpty && saved.none { it.filter == sheetFilter }) {
                 Row(
@@ -306,6 +396,7 @@ fun LibraryScreen(
                     Text(
                         when {
                             shots.isEmpty() -> "Photos from the camera will show up here"
+                            album != null && album.size == 0 -> "Nothing in this album yet. Long-press shots in Photos to add them."
                             filter == QuickFilter.TO_REVIEW && sheetFilter.isEmpty -> "All reviewed"
                             !sheetFilter.isEmpty -> "No photos match these filters"
                             else -> "Nothing here"
