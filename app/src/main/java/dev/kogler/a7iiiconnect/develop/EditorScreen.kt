@@ -212,19 +212,18 @@ private fun compareBase(s: Settings, panel: Tool?): Settings {
     return (own ?: (Group.entries - FRAMING)).fold(if (own == null) s.copy(masks = emptyList()) else s) { acc, g -> acc.reset(g) }
 }
 
-/** Sliders that swipe mode cycles through; a closed panel (or Presets) swipes Light. */
-private fun swipeParams(t: Tool?): List<Param> = when (t) {
-    Tool.CROP, Tool.MASKS -> emptyList()
-    Tool.COLOR -> listOf(P.VIBRANCE, P.SATURATION)
-    Tool.EFFECTS -> listOf(P.TEXTURE, P.CLARITY, P.DEHAZE, P.VIGNETTE, P.GRAIN)
-    Tool.DETAIL -> listOf(P.SHARPEN, P.NOISE, P.COLOR_NOISE)
-    Tool.OPTICS -> listOf(P.DEFRINGE, P.MANUAL_DISTORTION, P.MANUAL_VIGNETTING)
-    Tool.GEOMETRY -> listOf(P.VERTICAL, P.HORIZONTAL, P.ROTATE, P.SCALE)
-    else -> listOf(P.EXPOSURE, P.CONTRAST, P.HIGHLIGHTS, P.SHADOWS, P.WHITES, P.BLACKS)
-}
+/** Tools whose sliders are in swipe mode's menu; the menu's top-level ids are their names. */
+private val SWIPE_TOOLS = listOf(Tool.LIGHT, Tool.COLOR, Tool.EFFECTS, Tool.DETAIL, Tool.OPTICS, Tool.GEOMETRY)
+private val Tool.swipeId get() = name.lowercase()
 
-/** Swipe mode's gesture callbacks: [onMove] gets dx as a fraction of the width and dy in px. */
-private class SwipeAdjust(val onStart: (horizontal: Boolean) -> Unit, val onMove: (dx: Float, dy: Float) -> Unit, val onEnd: () -> Unit)
+/** Swipe mode's gesture callbacks: [onMove] gets the finger's motion in px and the photo's width. */
+private class SwipeAdjust(
+    val onStart: (horizontal: Boolean) -> Unit,
+    /** The finger held still at ([u], [v]) of the photo: true if that targets something to drag. */
+    val onTarget: (u: Float, v: Float) -> Boolean,
+    val onMove: (dx: Float, dy: Float, width: Float) -> Unit,
+    val onEnd: () -> Unit,
+)
 
 /** Undo/redo history of one photo's settings. */
 private class History(initial: Settings) {
@@ -322,7 +321,19 @@ fun EditorScreen(
     var splitPanelOnly by remember { mutableStateOf(false) }
     var compareImage by remember { mutableStateOf<ImageBitmap?>(null) }
     var swipeMode by remember { mutableStateOf(store.swipeAdjust) }
-    var swipeKey by remember { mutableStateOf(P.EXPOSURE.key) }
+    // Where swipe mode is in its menu (see SwipeMenu.kt); the panel's chips follow it and set it.
+    var swipePath by remember { mutableStateOf(listOf("light", P.EXPOSURE.key)) }
+    val swipeNav = remember { SwipeNav() }
+    var lightCurve by remember { mutableStateOf(false) }
+    var colorMode by remember { mutableIntStateOf(0) }
+    var mixBand by remember { mutableIntStateOf(0) }
+    var gradeZone by remember { mutableIntStateOf(0) }
+    var curveChannel by remember { mutableIntStateOf(-1) }
+    // Swipe mode's curve rows: the input of the point last grabbed per channel, and the one being dragged.
+    val curveGrab = remember { FloatArray(4) { -1f } }
+    var curvePoint by remember { mutableStateOf<Pair<Float, Float>?>(null) }
+    // A small render with the curves off, so a long-press can read the tone or color under the finger.
+    var probe by remember { mutableStateOf<Probe?>(null) }
     var swipeAxis by remember { mutableIntStateOf(0) }
     val swipeState = remember { SwipeState() }
     // Saved, so full screen survives anything that rebuilds the screen.
@@ -409,6 +420,17 @@ fun EditorScreen(
         }
     }
 
+    // Swipe mode's probe: re-rendered (small, on the CPU) once the settings settle.
+    LaunchedEffect(opened, swipeMode) {
+        val o = opened ?: return@LaunchedEffect
+        if (!swipeMode) { probe = null; return@LaunchedEffect }
+        snapshotFlow { if (dragging) null else settings.copy(curves = List(4) { Curve() }) }
+            .filterNotNull().distinctUntilChanged().collectLatest { s ->
+                delay(300)
+                probe = withContext(Dispatchers.Default) { runCatching { probeOf(o, s, guides) }.getOrNull() }
+            }
+    }
+
     // Split view: render the "before" half on the CPU whenever it would look different.
     val compareGuides = remember { GuideCache() }
     LaunchedEffect(split, opened) {
@@ -484,44 +506,214 @@ fun EditorScreen(
     }
     BackHandler(enabled = fullscreen) { fullscreen = false }
 
-    // Swipe mode (Snapseed): up/down on the photo picks a slider, left/right changes it.
-    val swipeList = swipeParams(tool)
-    val swipeStep = with(density) { 36.dp.toPx() }
-    val swipe = if (swipeMode && swipeList.isNotEmpty() && opened != null && !showBefore) SwipeAdjust(
+    // Swipe mode (Snapseed): up/down on the photo opens the menu and picks a row, sliding right
+    // opens a folder and left goes back; left/right then changes the picked row. Holding still
+    // targets what's under the finger: a curve point, a mixer band, a grading zone.
+    val menuTree = swipeTree(
+        settings,
+        opened?.preview?.asShot?.let { it.first.toFloat() to it.second.toFloat() } ?: (5500f to 0f),
+        isRaw = opened?.raw != null, hasLensProfile = opened?.preview?.lens != null,
+    )
+    fun navigate(path: List<String>) {
+        swipePath = path
+        swipeNav.remember(path, menuTree)
+        // The open panel follows the menu: its tool, then its chips.
+        val t = SWIPE_TOOLS.firstOrNull { it.swipeId == path[0] } ?: return
+        if (tool != null && tool in SWIPE_TOOLS && tool != t) tool = t
+        when (t) {
+            Tool.LIGHT -> {
+                lightCurve = path.getOrNull(1) == "curve"
+                if (lightCurve) path.getOrNull(2)?.let { curveChannel = CURVE_IDS.indexOf(it) }
+            }
+            Tool.COLOR -> when (path.getOrNull(1)) {
+                "mix" -> {
+                    colorMode = 1
+                    P.MIX_BANDS.indexOfFirst { it.first == path.getOrNull(2) }.takeIf { it >= 0 }?.let { mixBand = it }
+                }
+                "grading" -> {
+                    colorMode = 2
+                    val row = path.getOrNull(2)
+                    P.GRADE_ZONES.indexOfFirst { row == it || row == "grade.$it.lum" }.takeIf { it >= 0 }?.let { gradeZone = it }
+                }
+                null -> {}
+                else -> colorMode = 0
+            }
+            else -> {}
+        }
+    }
+    fun selectTool(t: Tool?) {
+        tool = t
+        if (t != null && t in SWIPE_TOOLS) navigate(swipeNav.descend(menuTree, listOf(t.swipeId)))
+    }
+    val swipeRowStep = with(density) { 36.dp.toPx() }
+    val swipeDrill = with(density) { 40.dp.toPx() }
+
+    /** The probe's color (0..1 RGB) at ([u], [v]) of the photo, or null before it's rendered. */
+    fun probeAt(u: Float, v: Float): FloatArray? {
+        val p = probe ?: return null
+        val c = p.pixels[(v * p.height).toInt().coerceIn(0, p.height - 1) * p.width + (u * p.width).toInt().coerceIn(0, p.width - 1)]
+        return floatArrayOf(((c shr 16) and 0xff) / 255f, ((c shr 8) and 0xff) / 255f, (c and 0xff) / 255f)
+    }
+    fun startCurve(channel: Int, x: Float) {
+        val (pts, i) = grabCurvePoint(settings.curves[channel], x)
+        swipeState.mode = SwipeMode.CURVE
+        swipeState.curve = pts
+        swipeState.curveSel = i
+        curvePoint = pts.getOrNull(i)
+        if (i >= 0) curveGrab[channel] = pts[i].first
+    }
+    /** Starts changing the row at [path]: sideways, or up/down when [vertical]. */
+    fun startRow(path: List<String>, vertical: Boolean) {
+        swipeState.vertical = vertical
+        when (val node = swipeNav.node(menuTree, path)) {
+            is SwipeLeaf -> {
+                swipeState.mode = SwipeMode.SLIDER
+                swipeState.detent = Detent(node.min, node.max, node.default).apply { start(node.get(settings)) }
+            }
+            is Swipe2D -> {
+                swipeState.mode = SwipeMode.PAD
+                swipeState.pad = node.xy(settings)
+            }
+            is SwipeCurve -> startCurve(node.channel, curveGrab[node.channel].takeIf { it >= 0f } ?: 0.5f)
+            else -> swipeState.mode = SwipeMode.NONE
+        }
+    }
+    val swipe = if (swipeMode && tool != Tool.CROP && tool != Tool.MASKS && opened != null && !showBefore) SwipeAdjust(
         onStart = { horizontal ->
             chrome = false
-            val i = swipeList.indexOfFirst { it.key == swipeKey }.coerceAtLeast(0)
-            val p = swipeList[i]
-            swipeKey = p.key
-            swipeState.startIndex = i
-            swipeState.acc = 0f
-            swipeState.detent = Detent(p.min, p.max, p.default).apply { start(settings[p]) }
-            swipeAxis = if (horizontal) 1 else 2
-        },
-        onMove = { dx, dy ->
-            if (swipeAxis == 2) {
-                swipeState.acc += dy
-                val i = (swipeState.startIndex + (swipeState.acc / swipeStep).toInt()).coerceIn(0, swipeList.size - 1)
-                if (swipeList[i].key != swipeKey) {
-                    swipeKey = swipeList[i].key
-                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                }
+            if (horizontal) {
+                val path = swipeNav.descend(menuTree, swipePath)
+                if (path != swipePath) navigate(path)
+                startRow(path, vertical = false)
+                swipeAxis = 1
             } else {
-                val p = swipeList.firstOrNull { it.key == swipeKey }
-                val d = swipeState.detent
-                if (p != null && d != null) {
-                    // The photo's width is half the slider's range.
-                    val next = d.move(dx * (p.max - p.min) / 2)
-                    if (next != settings[p]) {
-                        if (next == p.default) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        dragging = true
-                        settings = settings.with(p, next)
+                val path = swipeNav.resolve(menuTree, swipePath)
+                if (path != swipePath) navigate(path)
+                swipeState.mode = SwipeMode.MENU
+                swipeState.acc = 0f
+                swipeState.sideways = 0f
+                swipeState.startIndex = swipeNav.folderAt(menuTree, path.dropLast(1)).children.indexOfFirst { it.id == path.last() }.coerceAtLeast(0)
+                swipeAxis = 2
+            }
+        },
+        onTarget = { u, v ->
+            val rgb = probeAt(u, v)
+            val path = swipeNav.resolve(menuTree, swipePath)
+            val lum = rgb?.let { 0.2126f * it[0] + 0.7152f * it[1] + 0.0722f * it[2] } ?: 0f
+            val targeted = when {
+                rgb == null -> false
+                // Tone curve: grab (or add) the point for this pixel's tone, then drag it up or down.
+                path[0] == "light" && path.getOrNull(1) == "curve" -> {
+                    val ch = (swipeNav.node(menuTree, path) as? SwipeCurve)?.channel ?: 0
+                    navigate(listOf("light", "curve", CURVE_IDS[ch]))
+                    startCurve(ch, if (ch == 0) lum else rgb[ch - 1])
+                    swipeState.vertical = true
+                    swipeState.curveSel >= 0
+                }
+                // Mixer: the band of this pixel's color, then up/down changes its hue, saturation or luminance.
+                path[0] == "color" && path.getOrNull(1) == "mix" && settings.profile != Profile.MONOCHROME -> {
+                    val hsv = FloatArray(3)
+                    android.graphics.Color.RGBToHSV((rgb[0] * 255).toInt(), (rgb[1] * 255).toInt(), (rgb[2] * 255).toInt(), hsv)
+                    val p = swipeNav.descend(menuTree, listOf("color", "mix", P.MIX_BANDS[bandOf(hsv[0])].first))
+                    navigate(p)
+                    startRow(p, vertical = true)
+                    true
+                }
+                // Grading: the zone of this pixel's brightness, then drag its wheel.
+                path[0] == "color" && path.getOrNull(1) == "grading" -> {
+                    val p = listOf("color", "grading", P.GRADE_ZONES[zoneOf(lum)])
+                    navigate(p)
+                    startRow(p, vertical = false)
+                    true
+                }
+                else -> false
+            }
+            if (targeted) {
+                chrome = false
+                swipeAxis = 4
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            }
+            targeted
+        },
+        onMove = { dx, dy, width ->
+            val node = swipeNav.node(menuTree, swipePath)
+            when (swipeState.mode) {
+                SwipeMode.MENU -> {
+                    val folderPath = swipePath.dropLast(1)
+                    val rows = swipeNav.folderAt(menuTree, folderPath).children
+                    swipeState.acc += dy
+                    swipeState.sideways += dx
+                    val i = (swipeState.startIndex + (swipeState.acc / swipeRowStep).toInt()).coerceIn(0, rows.size - 1)
+                    if (rows[i].id != swipePath.last()) {
+                        navigate(folderPath + rows[i].id)
+                        swipeState.sideways = 0f
+                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    }
+                    // Sideways while the menu is open: right opens the highlighted folder, left goes back.
+                    val into = swipeState.sideways > swipeDrill && swipeNav.node(menuTree, swipePath) is SwipeFolder
+                    val out = swipeState.sideways < -swipeDrill && swipePath.size > 1
+                    if (into || out) {
+                        val next = if (into) swipeNav.into(menuTree, swipePath) else folderPath
+                        navigate(next)
+                        swipeState.startIndex = swipeNav.folderAt(menuTree, next.dropLast(1)).children.indexOfFirst { it.id == next.last() }.coerceAtLeast(0)
+                        swipeState.acc = 0f
+                        swipeState.sideways = 0f
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                     }
                 }
+                SwipeMode.PAD -> {
+                    // The dot follows the finger, the photo's width spanning the wheel or pad.
+                    val start = swipeState.pad
+                    if (node is Swipe2D && start != null && width > 0f) {
+                        var x = start.first + dx / width * 2
+                        var y = start.second - dy / width * 2
+                        if (node.round) {
+                            val r = hypot(x, y)
+                            if (r > 1f) { x /= r; y /= r }
+                        } else {
+                            x = x.coerceIn(-1f, 1f); y = y.coerceIn(-1f, 1f)
+                        }
+                        swipeState.pad = x to y
+                        val next = node.moveTo(settings, x, y)
+                        if (next != settings) {
+                            if (node.neutral(next) && !node.neutral(settings)) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            dragging = true
+                            settings = next
+                        }
+                    }
+                }
+                SwipeMode.CURVE -> {
+                    val pts = swipeState.curve
+                    val i = swipeState.curveSel
+                    if (node is SwipeCurve && pts != null && i in pts.indices && width > 0f) {
+                        val (x, y) = pts[i]
+                        pts[i] = x to (y + (if (swipeState.vertical) -dy else dx) / width).coerceIn(0f, 1f)
+                        curvePoint = pts[i]
+                        dragging = true
+                        settings = settings.withCurve(node.channel, Curve(pts.toList()))
+                    }
+                }
+                SwipeMode.SLIDER -> {
+                    val d = swipeState.detent
+                    if (node is SwipeLeaf && d != null && width > 0f) {
+                        // The photo's width is half the slider's range.
+                        val next = d.move((if (swipeState.vertical) -dy else dx) / width * (node.max - node.min) / 2)
+                        if (next != node.get(settings)) {
+                            if (next == node.default) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            dragging = true
+                            settings = node.set(settings, next)
+                        }
+                    }
+                }
+                SwipeMode.NONE -> {}
             }
         },
         onEnd = {
             if (dragging) { dragging = false; commit(settings) }
+            // Letting go on a folder picks its remembered (or first) row.
+            if (swipeState.mode == SwipeMode.MENU && swipeNav.node(menuTree, swipePath) is SwipeFolder) navigate(swipeNav.descend(menuTree, swipePath))
+            swipeState.mode = SwipeMode.NONE
+            curvePoint = null
             swipeAxis = 0
         },
     ) else null
@@ -667,29 +859,71 @@ fun EditorScreen(
                     OverlayLabel("After", Modifier.align(Alignment.TopEnd))
                 }
                 if (swipe != null && !cropMode) {
-                    val p = swipeList.firstOrNull { it.key == swipeKey } ?: swipeList.first()
+                    val path = swipeNav.resolve(menuTree, swipePath)
+                    val node = swipeNav.node(menuTree, path)
+                    fun valueOf(n: SwipeNode) = when (n) {
+                        is SwipeFolder -> "›"
+                        is SwipeWheel -> if (settings[n.sat] == 0f) "–" else "${settings[n.hue].roundToInt()}° · ${settings[n.sat].roundToInt()}"
+                        is SwipeWbPad -> if (n.neutral(settings)) "As shot" else
+                            "${((settings.temperature ?: 0f) / 50f).roundToInt() * 50} · ${(settings.tint ?: 0f).roundToInt()}"
+                        is SwipeCurve -> curvePoint?.takeIf { swipeAxis == 1 || swipeAxis == 4 }
+                            ?.let { (x, y) -> "in ${(x * 255).roundToInt()} → out ${(y * 255).roundToInt()}" }
+                            ?: settings.curves[n.channel].let { if (it.isIdentity) "–" else "${it.points.size - 2} pts" }
+                        is SwipeLeaf -> n.get(settings).let { v -> n.format?.invoke(v) ?: n.param?.let { formatParam(it, v) } ?: "" }
+                    }
                     if (swipeAxis == 2) {
+                        // The open folder's rows, at most seven around the highlighted one.
+                        val folder = swipeNav.folderAt(menuTree, path.dropLast(1))
+                        val rows = folder.children
+                        val sel = rows.indexOfFirst { it.id == path.last() }.coerceAtLeast(0)
+                        val first = (sel - 3).coerceIn(0, maxOf(0, rows.size - 7))
                         Column(
-                            Modifier.align(Alignment.Center).background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
-                                .padding(vertical = 8.dp),
+                            Modifier.align(Alignment.Center).width(240.dp).background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(12.dp))
+                                .padding(vertical = 6.dp),
                         ) {
-                            for (q in swipeList) {
-                                val sel = q.key == p.key
-                                Row(Modifier.width(220.dp).padding(horizontal = 16.dp, vertical = 6.dp)) {
-                                    val c = if (sel) Color.White else Color.Gray
-                                    val w = if (sel) FontWeight.SemiBold else FontWeight.Normal
+                            Text(
+                                if (path.size > 1) "‹  ${folder.label}" else folder.label,
+                                color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                            )
+                            if (first > 0) Text("⋯", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp))
+                            for (i in first until minOf(rows.size, first + 7)) {
+                                val q = rows[i]
+                                val on = i == sel
+                                Row(
+                                    Modifier.fillMaxWidth().padding(horizontal = 6.dp)
+                                        .background(if (on) Color.White.copy(alpha = 0.14f) else Color.Transparent, RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                                ) {
+                                    val c = if (on) Color.White else Color.Gray
+                                    val w = if (on) FontWeight.SemiBold else FontWeight.Normal
                                     Text(q.label, color = c, fontWeight = w, fontSize = 15.sp, modifier = Modifier.weight(1f))
-                                    Text(formatParam(q, settings[q]), color = c, fontWeight = w, fontSize = 15.sp)
+                                    Text(valueOf(q), color = c, fontWeight = w, fontSize = 15.sp)
+                                }
+                            }
+                            if (first + 7 < rows.size) Text("⋯", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp))
+                        }
+                    } else if (node != null) {
+                        val active = swipeAxis == 1 || swipeAxis == 4
+                        // While dragging a wheel, the pad or a curve, a small copy of it shows under the label.
+                        if (active && (node is Swipe2D || node is SwipeCurve)) {
+                            Canvas(Modifier.align(Alignment.TopCenter).padding(top = if (split) 76.dp else 44.dp).size(96.dp)) {
+                                when (node) {
+                                    is SwipeWheel -> drawHueWheel(settings[node.hue], settings[node.sat])
+                                    is SwipeWbPad -> node.xy(settings).let { (x, y) -> drawWbPad(x, y) }
+                                    is SwipeCurve -> drawMiniCurve(settings.curves[node.channel], CURVE_COLORS[node.channel], curvePoint)
+                                    else -> {}
                                 }
                             }
                         }
-                    } else {
+                        // Below the top level, name the folder too ("Red · Saturation").
+                        val parent = path.dropLast(1).takeIf { it.size > 1 }?.let { swipeNav.node(menuTree, it)?.label }
+                        val label = listOfNotNull(parent, node.label).joinToString(" · ")
                         Text(
-                            "${p.label}  ${formatParam(p, settings[p])}",
-                            color = Color.White, fontSize = if (swipeAxis == 1) 16.sp else 12.sp,
-                            fontWeight = if (swipeAxis == 1) FontWeight.SemiBold else FontWeight.Normal,
+                            "$label  ${valueOf(node)}",
+                            color = Color.White, fontSize = if (active) 16.sp else 12.sp,
+                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
                             modifier = Modifier.align(Alignment.TopCenter).padding(top = if (split) 40.dp else 8.dp)
-                                .background(Color.Black.copy(alpha = if (swipeAxis == 1) 0.7f else 0.45f), RoundedCornerShape(16.dp))
+                                .background(Color.Black.copy(alpha = if (active) 0.7f else 0.45f), RoundedCornerShape(16.dp))
                                 .padding(horizontal = 12.dp, vertical = 4.dp),
                         )
                     }
@@ -712,7 +946,7 @@ fun EditorScreen(
                                 val sel = t == tool || (tool == null && t == Tool.LIGHT)
                                 val c = if (sel) MaterialTheme.colorScheme.primary else Color.White
                                 Box(
-                                    Modifier.size(48.dp).clip(CircleShape).clickable { tool = t; chromePing++ },
+                                    Modifier.size(48.dp).clip(CircleShape).clickable { selectTool(t); chromePing++ },
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Icon(t.icon, t.label, tint = c)
@@ -740,7 +974,7 @@ fun EditorScreen(
                         OverlayButton(Icons.Outlined.Swipe, "Swipe on the photo to adjust", selected = swipeMode) {
                             swipeMode = !swipeMode
                             store.swipeAdjust = swipeMode
-                            if (swipeMode) scope.launch { snackbar.showSnackbar("Swipe up or down on the photo to pick a slider, left or right to change it") }
+                            if (swipeMode) scope.launch { snackbar.showSnackbar("Swipe up or down on the photo to pick a slider (slide right into a folder, left to go back), then left or right to change it. On curves, Mix and Grading, hold a spot on the photo to target it.") }
                         }
                         // Tap for a split view, hold for the original.
                         OverlayButton(
@@ -780,8 +1014,26 @@ fun EditorScreen(
                             cropAspect = a
                             if (o != null) commit(fitAspect(settings, a, o))
                         })
-                        Tool.LIGHT -> LightPanel(ctl, onAuto = if (o != null) ({ auto() }) else null)
-                        Tool.COLOR -> ColorPanel(ctl, o?.preview)
+                        Tool.LIGHT -> LightPanel(
+                            ctl, onAuto = if (o != null) ({ auto() }) else null,
+                            curve = lightCurve, channel = curveChannel,
+                            onCurve = { c -> navigate(if (c) swipeNav.descend(menuTree, listOf("light", "curve")) else swipeNav.ownLeaf(menuTree, listOf("light"))) },
+                            onChannel = { ch ->
+                                navigate(if (ch < 0) swipeNav.ownLeaf(menuTree, listOf("light", "curve")) else listOf("light", "curve", CURVE_IDS[ch]))
+                            },
+                        )
+                        Tool.COLOR -> ColorPanel(
+                            ctl, o?.preview, mode = colorMode, band = mixBand, zone = gradeZone,
+                            onMode = { m ->
+                                navigate(when (m) {
+                                    1 -> swipeNav.descend(menuTree, listOf("color", "mix"))
+                                    2 -> swipeNav.descend(menuTree, listOf("color", "grading"))
+                                    else -> swipeNav.ownLeaf(menuTree, listOf("color"))
+                                })
+                            },
+                            onBand = { b -> navigate(swipeNav.descend(menuTree, listOf("color", "mix", P.MIX_BANDS[b].first))) },
+                            onZone = { z -> navigate(listOf("color", "grading", P.GRADE_ZONES[z])) },
+                        )
                         Tool.EFFECTS -> EffectsPanel(ctl)
                         Tool.DETAIL -> DetailPanel(ctl)
                         Tool.OPTICS -> OpticsPanel(ctl, hasLensProfile = o?.preview?.lens != null, isRaw = o?.raw != null)
@@ -831,7 +1083,7 @@ fun EditorScreen(
                     val changed = t.changed(settings)
                     Column(
                         Modifier.weight(1f).testTag("tool-${t.name}").clip(RoundedCornerShape(8.dp))
-                            .clickable { tool = if (selected) null else t }.padding(vertical = 4.dp),
+                            .clickable { selectTool(if (selected) null else t) }.padding(vertical = 4.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         val c = if (selected) MaterialTheme.colorScheme.primary else Color.White
@@ -963,6 +1215,19 @@ private class SceneCache {
     }
 }
 
+/** Swipe mode's probe: a small render, for reading the photo's colors under a finger. */
+private class Probe(val pixels: IntArray, val width: Int, val height: Int)
+
+private fun probeOf(o: OpenedPhoto, s: Settings, guides: GuideCache): Probe {
+    val look = Look(o.preview, s)
+    val sampler = ImageSampler(o.preview.image, o.geometry(s, false), 240)
+    val px = IntArray(sampler.width * sampler.height)
+    renderBands(look, sampler, guides.get(o, look, s, false), 256) { y, rows, band ->
+        System.arraycopy(band, 0, px, y * sampler.width, rows * sampler.width)
+    }
+    return Probe(px, sampler.width, sampler.height)
+}
+
 /** Histogram of a small CPU render, for the overlay (the GPU frame isn't read back). */
 private fun histogramOf(o: OpenedPhoto, s: Settings, crop: Boolean, guides: GuideCache): Array<IntArray> {
     val look = Look(o.preview, s)
@@ -1032,6 +1297,7 @@ private fun ZoomableImage(
     val report by rememberUpdatedState(onViewport)
     val img by rememberUpdatedState(layer)
     val adjust by rememberUpdatedState(swipe)
+    val holding by rememberUpdatedState(onHold)
     val tapped by rememberUpdatedState(onTap)
     val split by rememberUpdatedState(splitAt)
     val splitChanged by rememberUpdatedState(onSplit)
@@ -1072,13 +1338,33 @@ private fun ZoomableImage(
                     detectTransformGestures { _, pan, zoom, _ -> transform(pan, zoom) }
                     return@pointerInput
                 }
-                // Swipe mode: one finger adjusts (the first move picks the axis), two fingers zoom and pan.
+                /** A point on screen as 0..1 of the photo, or null off it. */
+                fun toImage(p: Offset): Offset? {
+                    val i = img ?: return null
+                    val r = fitRect(box, i.width, i.height)
+                    val c = Offset(box.width / 2, box.height / 2)
+                    val q = c + (p - c - offset) / scale
+                    val u = (q.x - r.left) / r.width; val v = (q.y - r.top) / r.height
+                    return if (u in 0f..1f && v in 0f..1f) Offset(u, v) else null
+                }
+                // Swipe mode: one finger adjusts (the first move picks the axis), two fingers zoom and
+                // pan, and holding still targets what's under the finger (or shows the original).
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
-                    var axis = 0 // 0 undecided, 1 sideways, 2 up/down, 3 zoom
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var axis = 0 // 0 undecided, 1 sideways, 2 up/down, 3 zoom, 4 long-press target, 5 original
                     var moved = Offset.Zero
+                    var last = down.uptimeMillis
                     while (true) {
-                        val ev = awaitPointerEvent()
+                        val ev = if (axis == 0) {
+                            val left = viewConfiguration.longPressTimeoutMillis - (last - down.uptimeMillis)
+                            withTimeoutOrNull(left.coerceAtLeast(1L)) { awaitPointerEvent() }
+                        } else awaitPointerEvent()
+                        if (ev == null) {
+                            val at = toImage(down.position + moved)
+                            axis = if (at != null && adjust?.onTarget?.invoke(at.x, at.y) == true) 4 else { holding(true); 5 }
+                            continue
+                        }
+                        ev.changes.firstOrNull()?.let { last = it.uptimeMillis }
                         val pressed = ev.changes.filter { it.pressed }
                         if (pressed.isEmpty()) break
                         if (pressed.size > 1 && axis == 0) axis = 3
@@ -1095,20 +1381,23 @@ private fun ZoomableImage(
                                     pressed[0].consume()
                                 }
                             }
+                            5 -> {}
                             else -> {
                                 val d = pressed[0].positionChange()
-                                adjust?.onMove?.invoke(d.x / size.width, d.y)
+                                adjust?.onMove?.invoke(d.x, d.y, size.width.toFloat())
                                 pressed[0].consume()
                             }
                         }
                     }
-                    if (axis == 1 || axis == 2) adjust?.onEnd?.invoke()
+                    if (axis == 1 || axis == 2 || axis == 4) adjust?.onEnd?.invoke()
+                    if (axis == 5) holding(false)
                 }
             }
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = { if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 4f },
-                    onLongPress = { onHold(true) },
+                    // Swipe mode handles holding itself (it may target what's under the finger).
+                    onLongPress = { if (adjust == null) holding(true) },
                     onPress = { tryAwaitRelease(); onHold(false) },
                     onTap = { tapped() },
                 )
@@ -1179,11 +1468,23 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
+private enum class SwipeMode { NONE, MENU, SLIDER, PAD, CURVE }
+
 /** Swipe mode's gesture state, kept across one gesture's callbacks. */
 private class SwipeState {
+    var mode = SwipeMode.NONE
+    /** Rows change with up/down rather than sideways (a long-pressed target). */
+    var vertical = false
     var acc = 0f
+    /** Sideways motion while the menu is open, toward opening a folder or going back. */
+    var sideways = 0f
     var startIndex = 0
     var detent: Detent? = null
+    /** A wheel's or pad's dot, -1..1 (y up). */
+    var pad: Pair<Float, Float>? = null
+    /** A curve row's points while one is dragged, and which. */
+    var curve: MutableList<Pair<Float, Float>>? = null
+    var curveSel = -1
 }
 
 @Composable
@@ -1459,9 +1760,8 @@ private fun Chips(options: List<String>, selected: Int, marked: List<Boolean> = 
 }
 
 @Composable
-private fun LightPanel(c: Controls, onAuto: (() -> Unit)?) {
+private fun LightPanel(c: Controls, onAuto: (() -> Unit)?, curve: Boolean, channel: Int, onCurve: (Boolean) -> Unit, onChannel: (Int) -> Unit) {
     val s = c.s
-    var curve by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp).fadeWhileAdjusting(),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1472,7 +1772,7 @@ private fun LightPanel(c: Controls, onAuto: (() -> Unit)?) {
             FilterChip(selected = s.profile == p, onClick = { c.commit(s.copy(profile = p)) }, label = { Text(p.label) })
         }
     }
-    Chips(listOf("Sliders", "Curve"), if (curve) 1 else 0, listOf(!s.isDefault(Group.LIGHT), !s.isDefault(Group.CURVE))) { curve = it == 1 }
+    Chips(listOf("Sliders", "Curve"), if (curve) 1 else 0, listOf(!s.isDefault(Group.LIGHT), !s.isDefault(Group.CURVE))) { onCurve(it == 1) }
     if (!curve) {
         SectionHeader("Light", c, Group.LIGHT) {
             if (onAuto != null) {
@@ -1485,17 +1785,16 @@ private fun LightPanel(c: Controls, onAuto: (() -> Unit)?) {
         }
         for (p in listOf(P.EXPOSURE, P.CONTRAST, P.HIGHLIGHTS, P.SHADOWS, P.WHITES, P.BLACKS)) ParamSlider(p, c)
     } else {
-        CurvePanel(c)
+        CurvePanel(c, channel, onChannel)
     }
 }
 
 private val CURVE_COLORS = listOf(Color.White, Color(0xFFFF5050), Color(0xFF50E050), Color(0xFF5090FF))
 
 @Composable
-private fun CurvePanel(c: Controls) {
-    var channel by remember { mutableIntStateOf(-1) }
+private fun CurvePanel(c: Controls, channel: Int, onChannel: (Int) -> Unit) {
     SectionHeader("Tone curve", c, Group.CURVE)
-    Chips(listOf("Parametric", "RGB", "Red", "Green", "Blue"), channel + 1) { channel = it - 1 }
+    Chips(listOf("Parametric", "RGB", "Red", "Green", "Blue"), channel + 1) { onChannel(it - 1) }
     if (channel < 0) {
         for (p in listOf(P.CURVE_HIGHLIGHTS, P.CURVE_LIGHTS, P.CURVE_DARKS, P.CURVE_SHADOWS)) ParamSlider(p, c)
     } else {
@@ -1667,14 +1966,17 @@ internal val SAT_TRACK = Brush.horizontalGradient(listOf(Color(0xFF888888), Colo
 private fun hueColor(h: Float, s: Float = 0.85f, v: Float = 0.95f) = Color.hsv(((h % 360f) + 360f) % 360f, s, v)
 
 @Composable
-private fun ColorPanel(c: Controls, source: DevelopSource?) {
-    var mode by remember { mutableIntStateOf(0) }
+private fun ColorPanel(
+    c: Controls, source: DevelopSource?,
+    mode: Int, band: Int, zone: Int,
+    onMode: (Int) -> Unit, onBand: (Int) -> Unit, onZone: (Int) -> Unit,
+) {
     val s = c.s
-    Chips(listOf("Basic", "Mix", "Grading"), mode, listOf(!s.isDefault(Group.COLOR), !s.isDefault(Group.MIXER), !s.isDefault(Group.GRADING))) { mode = it }
+    Chips(listOf("Basic", "Mix", "Grading"), mode, listOf(!s.isDefault(Group.COLOR), !s.isDefault(Group.MIXER), !s.isDefault(Group.GRADING)), onMode)
     when (mode) {
         0 -> BasicColor(c, source)
-        1 -> MixPanel(c)
-        else -> GradingPanel(c)
+        1 -> MixPanel(c, band, onBand)
+        else -> GradingPanel(c, zone, onZone)
     }
 }
 
@@ -1720,7 +2022,7 @@ private fun BasicColor(c: Controls, source: DevelopSource?) {
 }
 
 @Composable
-private fun MixPanel(c: Controls) {
+private fun MixPanel(c: Controls, band: Int, onBand: (Int) -> Unit) {
     SectionHeader(if (c.s.profile == Profile.MONOCHROME) "B&W mix" else "Color mix", c, Group.MIXER)
     if (c.s.profile == Profile.MONOCHROME) {
         P.MIX_BANDS.forEachIndexed { i, (name, hue) ->
@@ -1728,13 +2030,12 @@ private fun MixPanel(c: Controls) {
         }
         return
     }
-    var band by remember { mutableIntStateOf(0) }
     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp).fadeWhileAdjusting(), horizontalArrangement = Arrangement.SpaceEvenly) {
         P.MIX_BANDS.forEachIndexed { i, (_, hue) ->
             Box(
                 Modifier.size(28.dp).clip(CircleShape).background(hueColor(hue))
                     .then(if (i == band) Modifier.border(3.dp, Color.White, CircleShape) else Modifier)
-                    .clickable { band = i },
+                    .clickable { onBand(i) },
             )
         }
     }
@@ -1745,13 +2046,13 @@ private fun MixPanel(c: Controls) {
 }
 
 @Composable
-private fun GradingPanel(c: Controls) {
-    var zone by remember { mutableIntStateOf(0) }
+private fun GradingPanel(c: Controls, zone: Int, onZone: (Int) -> Unit) {
     SectionHeader("Color grading", c, Group.GRADING)
     Chips(
         listOf("Shadows", "Midtones", "Highlights", "Global"), zone,
         List(4) { z -> listOf(P.GRADE_HUE[z], P.GRADE_SAT[z], P.GRADE_LUM[z]).any { it.key in c.s.values } },
-    ) { zone = it }
+        onZone,
+    )
     ColorWheel(
         hue = c.s[P.GRADE_HUE[zone]], sat = c.s[P.GRADE_SAT[zone]],
         onChange = { h, sat -> c.change(c.s.with(P.GRADE_HUE[zone] to h, P.GRADE_SAT[zone] to sat)) },
@@ -1787,20 +2088,46 @@ private fun ColorWheel(hue: Float, sat: Float, onChange: (Float, Float) -> Unit,
                 )
             },
         ) {
-            Canvas(Modifier.fillMaxSize()) {
-                val r = size.minDimension / 2
-                // Sweep runs clockwise on screen; hue runs counter-clockwise, so mirror it.
-                val sweep = (0..12).map { hueColor(360f - it * 30f, 1f, 1f) }
-                drawCircle(Brush.sweepGradient(sweep, center), r)
-                drawCircle(Brush.radialGradient(listOf(Color(0xFF808080), Color(0x00808080)), center, r), r)
-                drawCircle(Color.White.copy(alpha = 0.6f), r, style = Stroke(1f))
-                val a = hue / 180f * PI.toFloat(); val d = sat / 100f * r
-                val p = Offset(center.x + cos(a) * d, center.y - sin(a) * d)
-                drawCircle(Color.Black, 8.dp.toPx(), p)
-                drawCircle(Color.White, 6.dp.toPx(), p)
-            }
+            Canvas(Modifier.fillMaxSize()) { drawHueWheel(hue, sat) }
         }
     }
+}
+
+/** White balance pad: temperature across (blue to yellow), tint up (magenta) and down (green); dot at ([x], [y]) in -1..1. */
+private fun DrawScope.drawWbPad(x: Float, y: Float) {
+    drawRect(TEMP_TRACK)
+    drawRect(Brush.verticalGradient(listOf(Color(0xAAE040C8), Color(0x00808080), Color(0xAA3BC14A))))
+    drawRect(Color.White.copy(alpha = 0.6f), style = Stroke(1f))
+    val p = Offset((x + 1) / 2 * size.width, (1 - y) / 2 * size.height)
+    drawCircle(Color.Black, 8.dp.toPx(), p)
+    drawCircle(Color.White, 6.dp.toPx(), p)
+}
+
+/** A small point curve, with the point being dragged ([active], input and output in 0..1) ringed. */
+private fun DrawScope.drawMiniCurve(curve: Curve, color: Color, active: Pair<Float, Float>?) {
+    val w = size.width; val h = size.height
+    drawRect(Color.Black.copy(alpha = 0.7f))
+    drawLine(Color(0xFF555555), Offset(0f, h), Offset(w, 0f), 1f)
+    val t = curve.table(64)
+    val path = Path()
+    t.forEachIndexed { i, v -> val px = w * i / 63f; val py = h * (1 - v); if (i == 0) path.moveTo(px, py) else path.lineTo(px, py) }
+    drawPath(path, color, style = Stroke(2.dp.toPx()))
+    for (pt in curve.points) drawCircle(color, 3.dp.toPx(), Offset(pt.first * w, (1 - pt.second) * h))
+    active?.let { (ax, ay) -> drawCircle(Color.White, 6.dp.toPx(), Offset(ax * w, (1 - ay) * h), style = Stroke(2.dp.toPx())) }
+}
+
+/** The color wheel with its dot: hue around (counter-clockwise from red at 3 o'clock), saturation 0..100 outwards. */
+private fun DrawScope.drawHueWheel(hue: Float, sat: Float) {
+    val r = size.minDimension / 2
+    // Sweep runs clockwise on screen; hue runs counter-clockwise, so mirror it.
+    val sweep = (0..12).map { hueColor(360f - it * 30f, 1f, 1f) }
+    drawCircle(Brush.sweepGradient(sweep, center), r)
+    drawCircle(Brush.radialGradient(listOf(Color(0xFF808080), Color(0x00808080)), center, r), r)
+    drawCircle(Color.White.copy(alpha = 0.6f), r, style = Stroke(1f))
+    val a = hue / 180f * PI.toFloat(); val d = sat / 100f * r
+    val p = Offset(center.x + cos(a) * d, center.y - sin(a) * d)
+    drawCircle(Color.Black, 8.dp.toPx(), p)
+    drawCircle(Color.White, 6.dp.toPx(), p)
 }
 
 @Composable
