@@ -128,7 +128,8 @@ object Albums {
     /**
      * Finds this phone's own key for a shot named by another phone: the same key, or else the same
      * file name stem taken at (nearly) the same time. Her DSC01234.JPG is my DSC01234.ARW when she
-     * only has the JPEG; the hour of slack is the same as RAW+JPEG pairing allows.
+     * only has the JPEG. A copy MediaStore saved as "DSC01234 (1).JPG" is the same shot. The day
+     * of slack covers capture times MediaStore guessed hours off ([MATCH_WINDOW_MS]).
      */
     fun resolver(local: Collection<String>): (String) -> String? {
         val known = local.toSet()
@@ -157,10 +158,18 @@ object Albums {
         val at = key.lastIndexOf('@')
         if (at <= 0) return null
         val time = key.substring(at + 1).toLongOrNull() ?: return null
-        return key.substring(0, at).substringBeforeLast('.').lowercase() to time
+        return key.substring(0, at).substringBeforeLast('.').replace(COPY_SUFFIX, "").lowercase() to time
     }
 
-    private const val MATCH_WINDOW_MS = 60 * 60 * 1000L
+    /**
+     * How far apart two phones' capture times for one shot can be. MediaStore guesses the time
+     * zone of a camera file from when it arrived, so a copy can be up to a day off; the camera's
+     * file counter takes far longer than that to come round to the same name.
+     */
+    const val MATCH_WINDOW_MS = 25 * 60 * 60 * 1000L
+
+    /** What MediaStore adds to a name already taken: "DSC01234 (1).JPG". */
+    private val COPY_SUFFIX = Regex(" \\(\\d+\\)$")
 
     /** Names are one line of text; an empty one becomes "Album". */
     fun clean(name: String) = name.replace(Regex("[\\t\\r\\n]+"), " ").trim().ifEmpty { "Album" }

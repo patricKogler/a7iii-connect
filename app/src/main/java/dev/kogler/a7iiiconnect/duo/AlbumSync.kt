@@ -24,6 +24,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import kotlin.math.abs
 
 /**
  * Shared albums over Together, whatever else the two phones are doing. An album only ever goes to
@@ -197,17 +198,33 @@ object AlbumSync {
     }
 }
 
-/** A photo from the other phone lands in Photos, like a shot from this phone's own camera would. */
+/**
+ * A photo from the other phone lands in Photos, like a shot from this phone's own camera would,
+ * unless it's already there (the same file name, taken around the same time).
+ */
 internal fun saveToLibrary(app: Context, name: String, mime: String, taken: Long, file: File) {
+    val resolver = app.contentResolver
+    val folder = "${Environment.DIRECTORY_PICTURES}/${RecentPhotos.ALBUM}"
+    val there = runCatching {
+        resolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Images.Media.DATE_TAKEN),
+            "${MediaStore.Images.Media.DISPLAY_NAME} = ? AND ${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?",
+            arrayOf(name, "$folder%"), null,
+        )?.use { c -> generateSequence { if (c.moveToNext()) c.getLong(0) else null }.any { abs(it - taken) <= Albums.MATCH_WINDOW_MS } }
+    }.getOrNull() == true
+    if (there) return
     val values = ContentValues().apply {
         put(MediaStore.Images.Media.DISPLAY_NAME, name)
         put(MediaStore.Images.Media.MIME_TYPE, mime)
-        put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/${RecentPhotos.ALBUM}")
+        put(MediaStore.Images.Media.RELATIVE_PATH, folder)
         put(MediaStore.Images.Media.DATE_TAKEN, taken)
         put(MediaStore.Images.Media.IS_PENDING, 1)
     }
-    val resolver = app.contentResolver
     val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return
     resolver.openOutputStream(uri)!!.use { out -> file.inputStream().use { it.copyTo(out) } }
     resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
+    // Publishing has MediaStore read the capture time from the file, and without a time zone in it
+    // (the A7III writes none) it guesses one from when the file arrived, hours off. The other
+    // phone's time goes back on, so both phones know the shot by the same key.
+    resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.DATE_TAKEN, taken) }, null, null)
 }
