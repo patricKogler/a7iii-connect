@@ -83,6 +83,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -960,7 +961,7 @@ private fun BattlePick(onClose: () -> Unit) {
 @Composable
 private fun BattleEdit(onClose: () -> Unit) {
     val photo = Duo.battlePhoto
-    var started by remember(photo) { mutableStateOf(false) }
+    var started by rememberSaveable(photo?.key) { mutableStateOf(false) }
     when {
         photo == null -> {
             TopBar("Edit battle", onClose = onClose)
