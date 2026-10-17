@@ -52,6 +52,9 @@ import kotlin.math.min
 /** True while a slider (or curve, wheel, swipe) is being dragged. Panels fade the rest out. */
 internal val LocalAdjusting = compositionLocalOf { false }
 
+/** The visible height of the editor's panel, for controls that should fit without scrolling. */
+internal val LocalPanelHeight = compositionLocalOf { 380.dp }
+
 /** Fades a panel element out while something is being dragged, so the photo has your eye. */
 internal fun Modifier.fadeWhileAdjusting(): Modifier = composed {
     val alpha by animateFloatAsState(if (LocalAdjusting.current) 0f else 1f, label = "fade")
