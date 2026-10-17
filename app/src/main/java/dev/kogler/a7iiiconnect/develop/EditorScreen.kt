@@ -21,12 +21,14 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -2179,6 +2181,7 @@ private fun CurveEditor(curve: Curve, color: Color, onChange: (Curve) -> Unit, o
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
     val grab = with(density) { 36.dp.toPx() }
+    val lineGrab = with(density) { 20.dp.toPx() }
     val removeAt = with(density) { 40.dp.toPx() }
     // The point under the finger (for the readout and highlight), and whether letting go removes it.
     var active by remember { mutableStateOf<Pair<Float, Float>?>(null) }
@@ -2246,28 +2249,36 @@ private fun CurveEditor(curve: Curve, color: Color, onChange: (Curve) -> Unit, o
                         sel = -1; active = null; removing = false
                         done()
                     }
-                    detectDragGestures(
-                        onDragStart = { p ->
-                            pts = current.points.toMutableList()
-                            sel = nearest(pts, p.x, p.y, size.width.toFloat(), size.height.toFloat())
-                            if (sel < 0) {
-                                sel = addOnCurve(pts, p.x / size.width)
-                                if (sel >= 0) change(Curve(pts))
-                            }
-                            if (sel >= 0) {
-                                px = pts[sel].first; py = pts[sel].second
-                                active = pts[sel]
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            }
-                        },
-                        onDrag = { ch, delta ->
-                            ch.consume()
-                            if (sel < 0) return@detectDragGestures
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val p = down.position
+                        val w = size.width.toFloat(); val h = size.height.toFloat()
+                        pts = current.points.toMutableList()
+                        sel = nearest(pts, p.x, p.y, w, h)
+                        // Only a drag that starts on a point or on the line edits the curve. Anywhere
+                        // else on the graph is left alone, so the panel scrolls under it.
+                        if (sel < 0) {
+                            val t = current.table(1024)
+                            val onLine = abs((1 - t[(p.x / w).coerceIn(0f, 1f).times(1023).roundToInt()]) * h - p.y) < lineGrab
+                            if (!onLine) return@awaitEachGesture
+                        }
+                        val slop = awaitTouchSlopOrCancellation(down.id) { ch, _ -> ch.consume() } ?: return@awaitEachGesture
+                        if (sel < 0) {
+                            sel = addOnCurve(pts, p.x / w)
+                            if (sel >= 0) change(Curve(pts))
+                        }
+                        if (sel >= 0) {
+                            px = pts[sel].first; py = pts[sel].second
+                            active = pts[sel]
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        }
+                        fun move(delta: Offset) {
+                            if (sel < 0) return
                             // Follow the finger's motion, so the point stays visible beside it.
-                            px += delta.x / size.width
-                            py -= delta.y / size.height
+                            px += delta.x / w
+                            py -= delta.y / h
                             val endpoint = sel == 0 || sel == pts.size - 1
-                            val margin = removeAt / size.height
+                            val margin = removeAt / h
                             val out = !endpoint && (py < -margin || py > 1 + margin)
                             if (out != removing) {
                                 removing = out
@@ -2278,10 +2289,11 @@ private fun CurveEditor(curve: Curve, color: Color, onChange: (Curve) -> Unit, o
                             pts[sel] = px.coerceIn(lo, maxOf(lo, hi)) to py.coerceIn(0f, 1f)
                             active = pts[sel]
                             change(Curve(if (out) pts.filterIndexed { i, _ -> i != sel } else pts.toList()))
-                        },
-                        onDragEnd = { finish() },
-                        onDragCancel = { finish() },
-                    )
+                        }
+                        move(slop.positionChange())
+                        drag(slop.id) { ch -> ch.consume(); move(ch.positionChange()) }
+                        finish()
+                    }
                 },
         ) {
             Canvas(Modifier.fillMaxSize()) {
