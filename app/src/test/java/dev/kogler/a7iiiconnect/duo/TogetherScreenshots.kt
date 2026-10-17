@@ -128,10 +128,11 @@ class TogetherScreenshots {
         shot("61-review-deck")
         compose.onNodeWithTag("duo-pick").performClick()
         settle(20)
-        check(review(a).vote(me, keys.first()) != null) { "the first card wasn't voted on" }
+        check(keys.count { review(a).vote(me, it) == Call.PICK } == 1) { "the top card wasn't kept" }
 
-        // The rest, as if swiped: two disagree with Anna.
-        PlayStore.add(context, keys.drop(1).mapIndexed { i, k -> review(a).voteFact(me, k, if (i < 2) Call.REJECT else if (i < 3) Call.PICK else Call.REJECT, now()) })
+        // All of them, as if swiped (the tapped one again): two disagree with Anna.
+        val mine = listOf(Call.PICK, Call.REJECT, Call.REJECT, Call.PICK, Call.REJECT, Call.REJECT)
+        PlayStore.add(context, keys.mapIndexed { i, k -> review(a).voteFact(me, k, mine[i], now()) })
         settle(30)
         compose.onNodeWithText("in sync").assertExists()
         shot("62-review-reveal")
@@ -272,7 +273,10 @@ class TogetherScreenshots {
     private fun holdToSeal() {
         compose.onNodeWithTag("hold-to-seal").performTouchInput { down(center) }
         repeat(40) { step() }
-        compose.onNodeWithTag("hold-to-seal").performTouchInput { up() }
+        // Once sealed the button is gone, and the press with it.
+        if (compose.onAllNodesWithTag("hold-to-seal").fetchSemanticsNodes().isNotEmpty()) {
+            compose.onNodeWithTag("hold-to-seal").performTouchInput { up() }
+        }
         settle(20)
     }
 
