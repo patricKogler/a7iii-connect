@@ -138,7 +138,12 @@ class DevelopActivity : ComponentActivity() {
                             store = store,
                             onBack = { closeEditor() },
                             onPhotoChanged = { editing = it.id },
-                            onBattle = { p -> shots.firstOrNull { it.contains(p.id) }?.let { startActivity(DuoActivity.battleIntent(this, it.key)) } },
+                            onBattle = { p ->
+                                val key = shots.firstOrNull { it.contains(p.id) }?.key
+                                val album = key?.let { battleAlbum(it) }
+                                if (key != null && album != null) startActivity(DuoActivity.battleIntent(this, album.id, key))
+                            },
+                            canBattle = { p -> shots.firstOrNull { it.contains(p.id) }?.key?.let { battleAlbum(it) } != null },
                             onAddToAlbum = { p -> shots.firstOrNull { it.contains(p.id) }?.let { albumDialog = AlbumDialog.Pick(listOf(it.key)) } },
                         )
                     }
@@ -186,7 +191,7 @@ class DevelopActivity : ComponentActivity() {
                         exported = exported,
                         onOpen = { editing = it.primary.id },
                         onCull = { title, deck -> cullAlbum = openAlbum; takenOut.clear(); culling = title to deck.map { it.key } },
-                        onTogether = { deck -> startActivity(DuoActivity.intent(this, deck.map { it.key })) },
+                        onTogether = { startActivity(DuoActivity.intent(this)) },
                         onDeleteRejected = { deleteRejected() },
                         transfer = transfer,
                         onCamera = { startActivity(MainActivity.intent(this)) },
@@ -236,7 +241,7 @@ class DevelopActivity : ComponentActivity() {
                                 AlbumAction.SHARE -> shareAlbum(a)
                                 // A private album is shared only once you say so.
                                 AlbumAction.TOGETHER ->
-                                    if (a.shared && a.members.size > 1) startActivity(DuoActivity.albumsIntent(this))
+                                    if (a.shared && a.members.size > 1) startActivity(DuoActivity.albumIntent(this, a.id))
                                     else albumDialog = AlbumDialog.Share(a.id)
                                 AlbumAction.INVITE -> albumDialog = AlbumDialog.Share(a.id)
                                 AlbumAction.STOP_SHARING -> changeAlbum(a.id) { Albums.share(it, false) }
@@ -251,6 +256,10 @@ class DevelopActivity : ComponentActivity() {
             }
         }
     }
+
+    /** A shared album with [key] in it, to battle over the shot there; the newest such album. */
+    private fun battleAlbum(key: String): Album? =
+        albums.filter { it.alive && it.shared && it.members.size > 1 && key in it }.maxByOrNull { it.createdAt }
 
     /** The album's shots that are on this phone, oldest first, like a story. */
     private fun albumShots(album: Album): List<Shot> = shots.filter { it.key in album }.sortedBy { it.takenMillis }
@@ -328,7 +337,7 @@ class DevelopActivity : ComponentActivity() {
                     TextButton(onClick = {
                         changeAlbum(d.id) { Albums.share(it, true) }
                         albumDialog = null
-                        startActivity(DuoActivity.albumsIntent(this, invite = if (inviting) d.id else null))
+                        startActivity(DuoActivity.albumIntent(this, d.id, invite = inviting))
                     }) { Text(if (inviting) "Invite" else "Share") }
                 },
                 dismissButton = { TextButton(onClick = { albumDialog = null }) { Text("Cancel") } },

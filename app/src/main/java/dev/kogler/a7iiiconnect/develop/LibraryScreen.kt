@@ -172,7 +172,8 @@ fun LibraryScreen(
     exported: Set<String>,
     onOpen: (Shot) -> Unit,
     onCull: (title: String, shots: List<Shot>) -> Unit,
-    onTogether: (shots: List<Shot>) -> Unit,
+    /** Open Together: the shared albums, their reviews and edit battles. */
+    onTogether: () -> Unit,
     onDeleteRejected: () -> Unit,
     transfer: SyncStatus,
     onCamera: () -> Unit,
@@ -339,13 +340,13 @@ fun LibraryScreen(
                             }
                         }
                         IconButton(onClick = { onAlbumAction(AlbumAction.TOGETHER) }, modifier = Modifier.testTag("album-together")) {
-                            Icon(Icons.Rounded.People, if (album.shared && album.members.size > 1) "Swap with ${album.members.filterKeys { it != me }.values.joinToString(", ")}" else "Share this album")
+                            Icon(Icons.Rounded.People, if (album.shared && album.members.size > 1) "Together with ${album.members.filterKeys { it != me }.values.joinToString(", ")}" else "Share with someone")
                         }
                         IconButton(onClick = { onAlbumAction(AlbumAction.SLIDESHOW) }, enabled = shown.isNotEmpty(), modifier = Modifier.testTag("album-slideshow")) {
                             Icon(Icons.Rounded.PlayArrow, "Slideshow")
                         }
                         IconButton(onClick = { onAlbumAction(AlbumAction.SHARE) }, enabled = shown.isNotEmpty(), modifier = Modifier.testTag("album-share")) {
-                            Icon(Icons.Rounded.IosShare, "Share album")
+                            Icon(Icons.Rounded.IosShare, "Send to an app")
                         }
                         Box {
                             IconButton(onClick = { albumMenu = true }) { Icon(Icons.Rounded.MoreVert, "More") }
@@ -361,12 +362,7 @@ fun LibraryScreen(
                             }
                         }
                     } else {
-                        // Together: the same shots as Review, for the selected days or else the newest
-                        // day with shots in it. Nothing to review: join someone else's photos.
-                        IconButton(onClick = {
-                            val newest = due.maxOfOrNull { dayOf(it.takenMillis) }
-                            onTogether(if (selectedDays.isNotEmpty()) due else due.filter { dayOf(it.takenMillis) == newest })
-                        }) { Icon(Icons.Rounded.People, "Together") }
+                        IconButton(onClick = onTogether, modifier = Modifier.testTag("together")) { Icon(Icons.Rounded.People, "Together") }
                         if (due.isNotEmpty()) {
                             TextButton(
                                 onClick = { onCull(if (revisit) filter.label else "Review", due) },
