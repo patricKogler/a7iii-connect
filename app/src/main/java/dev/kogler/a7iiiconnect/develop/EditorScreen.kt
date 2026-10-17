@@ -315,11 +315,18 @@ fun EditorScreen(
     store: EditStore,
     onBack: () -> Unit,
     onPhotoChanged: (LibraryPhoto) -> Unit,
-    /** Start an edit battle over the photo on another phone; null hides the option. */
+    /** Start an edit battle over the photo in a shared album it's in; null hides the option. */
     onBattle: ((LibraryPhoto) -> Unit)? = null,
+    /** Whether [onBattle] applies to this photo: only shots in a shared album can be battled. */
+    canBattle: (LibraryPhoto) -> Boolean = { true },
     /** Put the photo's shot in an album; null hides the option. */
     onAddToAlbum: ((LibraryPhoto) -> Unit)? = null,
+    /** Only these panels (by [Tool] name), for an edit battle's Limited tools; null for all. */
+    tools: Set<String>? = null,
+    /** Shown under the top bar: an edit battle's theme, clock or target. */
+    header: (@Composable () -> Unit)? = null,
 ) {
+    val allowed = { t: Tool -> tools == null || t.name in tools || t == Tool.VERSIONS }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var index by remember { mutableIntStateOf(startIndex) }
@@ -334,7 +341,7 @@ fun EditorScreen(
     var rendered by remember { mutableStateOf<Rendered?>(null) }
     var before by remember { mutableStateOf<ImageBitmap?>(null) }
     var showBefore by remember { mutableStateOf(false) }
-    var tool by remember { mutableStateOf<Tool?>(Tool.LIGHT) }
+    var tool by remember { mutableStateOf<Tool?>(Tool.LIGHT.takeIf(allowed) ?: Tool.entries.firstOrNull { it != Tool.VERSIONS && allowed(it) }) }
     var menu by remember { mutableStateOf(false) }
     var shareMenu by remember { mutableStateOf(false) }
     var dialog by remember { mutableStateOf<String?>(null) }
@@ -356,7 +363,8 @@ fun EditorScreen(
     var splitAt by remember { mutableFloatStateOf(0.5f) }
     var splitPanelOnly by remember { mutableStateOf(false) }
     var compareImage by remember { mutableStateOf<ImageBitmap?>(null) }
-    var swipeMode by remember { mutableStateOf(store.swipeAdjust) }
+    // Swipe mode's menu holds every panel, so it's off while only some panels are allowed.
+    var swipeMode by remember { mutableStateOf(store.swipeAdjust && tools == null) }
     // Where swipe mode is in its menu (see SwipeMenu.kt); the panel's chips follow it and set it.
     var swipePath by remember { mutableStateOf(listOf("light", P.EXPOSURE.key)) }
     val swipeNav = remember { SwipeNav() }
@@ -1042,13 +1050,14 @@ fun EditorScreen(
                         if (onAddToAlbum != null) {
                             DropdownMenuItem(text = { Text("Add to album…") }, onClick = { menu = false; onAddToAlbum(photo) })
                         }
-                        if (onBattle != null) {
+                        if (onBattle != null && canBattle(photo)) {
                             DropdownMenuItem(text = { Text("Edit battle…") }, onClick = { menu = false; onBattle(photo) })
                         }
                     }
                 }
             }
             exportProgress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth()) }
+            header?.invoke()
 
             // Photo and panel: stacked in portrait, side by side in landscape.
             val photoArea: @Composable (Modifier) -> Unit = { m -> Box(
@@ -1205,7 +1214,7 @@ fun EditorScreen(
                             Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)
                                 .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(24.dp)).padding(horizontal = 4.dp),
                         ) {
-                            for (t in Tool.entries.filter { it != Tool.CROP && it != Tool.PRESETS && it != Tool.VERSIONS }) {
+                            for (t in Tool.entries.filter { it != Tool.CROP && it != Tool.PRESETS && it != Tool.VERSIONS && allowed(it) }) {
                                 val sel = t == tool || (tool == null && t == Tool.LIGHT)
                                 val c = if (sel) MaterialTheme.colorScheme.primary else Color.White
                                 Box(
@@ -1234,7 +1243,7 @@ fun EditorScreen(
                             chrome = false
                             if (fullscreen) scope.launch { snackbar.showSnackbar("Tap the photo to show the controls") }
                         }
-                        OverlayButton(Icons.Outlined.Swipe, "Swipe on the photo to adjust", selected = swipeMode) {
+                        if (tools == null) OverlayButton(Icons.Outlined.Swipe, "Swipe on the photo to adjust", selected = swipeMode) {
                             swipeMode = !swipeMode
                             store.swipeAdjust = swipeMode
                             if (swipeMode) scope.launch { snackbar.showSnackbar("Swipe up or down on the photo to pick a slider (slide right into a folder, left to go back), then left or right to change it. On curves, Mix and Grading, hold a spot on the photo to target it. Or use two thumbs: left picks, right changes.") }
@@ -1368,7 +1377,7 @@ fun EditorScreen(
 
             // Tool strip: every tool fits on screen; a dot marks the ones with edits.
             if (!fullscreen) Row(Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 2.dp)) {
-                for (t in Tool.entries.filter { it != Tool.VERSIONS }) {
+                for (t in Tool.entries.filter { it != Tool.VERSIONS && allowed(it) }) {
                     val selected = tool == t
                     val changed = t.changed(settings)
                     Column(

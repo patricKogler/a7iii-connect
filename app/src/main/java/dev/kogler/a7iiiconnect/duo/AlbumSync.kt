@@ -26,7 +26,7 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Shared albums over Together, whatever else the two phones are doing. An album only ever goes to
+ * Shared albums over Together. An album only ever goes to
  * the phones its owner invited ([Album.members]), and only shots in it are served. As soon as the
  * phones know who's who ("hello"), each sends the albums it shares with the other (a few
  * kilobytes) and puts the other's together with its own ([Albums.merge]),
@@ -53,6 +53,10 @@ object AlbumSync {
     var invite: String? = null
     /** The other phone's id (from its hello); nothing is shared before it's known. */
     private var partner = ""
+    /** Shots already asked for on this connection, so albums sent again don't ask twice. */
+    private val requested = HashSet<String>()
+    /** Bumped whenever albums or album shots change here, so screens look again. */
+    var changes by mutableStateOf(0); private set
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -60,6 +64,7 @@ object AlbumSync {
         merged = false; albumCount = 0; shotCount = 0
         getting = 0 to 0; asked = false; sending = 0 to 0
         partner = ""
+        requested.clear()
     }
 
     /**
@@ -78,8 +83,20 @@ object AlbumSync {
                     all = all.map { if (it.id == inviting && it.ownedBy(store.phoneId)) Albums.invite(it, store.phoneId, myName, phone, name) else it }
                     store.save(all)
                 }
+                withContext(Dispatchers.Main) { changes++ }
                 Albums.encode(Albums.sharedWith(all, phone))
             }
+            link?.send(JSONObject().put("t", "albums").put("a", text))
+            // Then what was done together in them: votes, battles, seals.
+            Duo.sendAllFacts()
+        }
+    }
+
+    /** My albums changed while connected: the ones I share with the other phone go over again. */
+    fun resend(app: Context, link: DuoLink?) {
+        val phone = partner.ifEmpty { return }
+        scope.launch {
+            val text = withContext(Dispatchers.IO) { Albums.encode(Albums.sharedWith(AlbumStore(app).load(), phone)) }
             link?.send(JSONObject().put("t", "albums").put("a", text))
         }
     }
@@ -113,9 +130,11 @@ object AlbumSync {
             albumCount = counts.first
             shotCount = counts.second
             merged = true
-            if (need.isNotEmpty()) {
+            changes++
+            val fresh = need.filter { requested.add(it.getString("k")) }
+            if (fresh.isNotEmpty()) {
                 asked = true
-                link?.send(JSONObject().put("t", "albumneed").put("l", JSONArray(need)))
+                link?.send(JSONObject().put("t", "albumneed").put("l", JSONArray(fresh)))
             }
         }
     }
@@ -189,6 +208,7 @@ object AlbumSync {
                 file.delete()
             }
             getting = (getting.first + 1) to getting.second.coerceAtLeast(getting.first + 1)
+            changes++
         }
     }
 

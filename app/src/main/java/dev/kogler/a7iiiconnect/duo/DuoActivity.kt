@@ -13,26 +13,19 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
-import androidx.lifecycle.lifecycleScope
-import dev.kogler.a7iiiconnect.develop.Library
-import dev.kogler.a7iiiconnect.develop.Similar
 import dev.kogler.a7iiiconnect.ui.AppTheme
-import dev.kogler.a7iiiconnect.develop.dayOf
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * The Together screen. Opened from Photos it hosts the chosen shots; opened by touching another
- * phone (or from Photos with nothing to review) it joins one.
+ * Together: the shared albums, and in each the review and the edit battles. While it's open this
+ * phone is findable and acts as an NFC tag, so touching another phone (with Shootback open
+ * anywhere) brings it in. Phones that share an album connect by themselves when both are here.
  */
 class DuoActivity : ComponentActivity() {
 
@@ -46,22 +39,17 @@ class DuoActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // The other phone reads our NFC tag only while the screen is on, and the link likes it awake.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        Duo.init(this)
-
-        val keys = intent.getStringArrayListExtra(EXTRA_KEYS)
-        val battle = intent.getStringExtra(EXTRA_BATTLE)
-        if (savedInstanceState == null || !Duo.active) {
-            if (battle != null) startBattle(battle)
-            else if (intent.getBooleanExtra(EXTRA_ALBUMS, false)) Duo.hostAlbums(this, intent.getStringExtra(EXTRA_INVITE))
-            else if (keys != null && !keys.isEmpty()) startHosting(keys.toSet())
-            else Duo.join(this, codeOf(intent))
-        }
+        Duo.start(this, codeOf(intent))
+        // After start: a fresh start forgets any earlier invite.
+        intent.getStringExtra(EXTRA_INVITE)?.let { AlbumSync.invite = it }
         permissions.launch(neededPermissions())
 
+        val start = intent.getStringExtra(EXTRA_ROUTE) ?: Routes.HOME
         setContent {
             AppTheme {
-                DuoScreen(
-                    onExit = { Duo.leave(); finish() },
+                TogetherScreen(
+                    start = start,
+                    onExit = { finish() },
                     onShareApp = { shareApp() },
                     onInstall = { installUpdate(it) },
                 )
@@ -69,56 +57,9 @@ class DuoActivity : ComponentActivity() {
         }
     }
 
-    private fun startHosting(keys: Set<String>) {
-        Duo.host(this)
-        lifecycleScope.launch {
-            val stacks = withContext(Dispatchers.IO) {
-                val shots = Library.shots(Library.load(this@DuoActivity)).filter { it.key in keys }
-                // Like the culling deck: newest day first, each day in the order it was shot.
-                Similar.stacks(this@DuoActivity, shots) { Duo.reportPreparing(it) }
-                    .sortedByDescending { dayOf(it.first().takenMillis) }
-            }
-            Duo.dealDeck(stacks)
-        }
-    }
-
-    private fun startBattle(key: String) {
-        Duo.hostBattle(this)
-        lifecycleScope.launch {
-            val shot = withContext(Dispatchers.IO) {
-                Library.shots(Library.load(this@DuoActivity)).firstOrNull { it.key == key }
-            }
-            if (shot == null) {
-                Toast.makeText(this@DuoActivity, "That photo is gone", Toast.LENGTH_SHORT).show()
-                Duo.leave(); finish()
-            } else {
-                Duo.chooseBattleShot(shot)
-            }
-        }
-    }
-
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        codeOf(intent)?.let { Duo.join(this, it) }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        // A host must not read tags: reader mode would switch off its own tag. A guest reads the
-        // host's tag here itself, so the tap works with this screen open too.
-        if (!Duo.hosting) {
-            NfcAdapter.getDefaultAdapter(this)?.enableReaderMode(
-                this,
-                { tag -> codeOf(tag)?.let { c -> runOnUiThread { Duo.join(this, c) } } },
-                NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B,
-                null,
-            )
-        }
-    }
-
-    override fun onPause() {
-        NfcAdapter.getDefaultAdapter(this)?.disableReaderMode(this)
-        super.onPause()
+        codeOf(intent)?.let { Duo.start(this, it) }
     }
 
     override fun onDestroy() {
@@ -168,30 +109,20 @@ class DuoActivity : ComponentActivity() {
     }.toTypedArray()
 
     companion object {
-        private const val EXTRA_KEYS = "keys"
-        private const val EXTRA_BATTLE = "battle"
-        private const val EXTRA_ALBUMS = "albums"
+        private const val EXTRA_ROUTE = "route"
         private const val EXTRA_INVITE = "invite"
         private const val APK_TYPE = "application/vnd.android.package-archive"
 
-        /** Host [keys] (the shots to cull together); with no keys, join another phone. */
-        fun intent(context: Context, keys: List<String> = emptyList()) =
-            Intent(context, DuoActivity::class.java).apply {
-                if (keys.isNotEmpty()) {
-                    putStringArrayListExtra(EXTRA_KEYS, ArrayList(keys))
-                }
-            }
+        /** Every shared album. */
+        fun intent(context: Context) = Intent(context, DuoActivity::class.java)
 
-        /** An edit battle over the shot with [key], without culling first. */
-        fun battleIntent(context: Context, key: String) =
-            Intent(context, DuoActivity::class.java).putExtra(EXTRA_BATTLE, key)
+        /** One shared album; with [invite], the phone that connects next joins it (only its owner invites). */
+        fun albumIntent(context: Context, album: String, invite: Boolean = false) =
+            Intent(context, DuoActivity::class.java).putExtra(EXTRA_ROUTE, Routes.hub(album)).apply { if (invite) putExtra(EXTRA_INVITE, album) }
 
-        /**
-         * Swap shared albums (and the photos in them) with another phone, without culling; with
-         * [invite], the phone that connects joins that album first.
-         */
-        fun albumsIntent(context: Context, invite: String? = null) =
-            Intent(context, DuoActivity::class.java).putExtra(EXTRA_ALBUMS, true).apply { if (invite != null) putExtra(EXTRA_INVITE, invite) }
+        /** A new edit battle in [album], over the shot with [key]. */
+        fun battleIntent(context: Context, album: String, key: String) =
+            Intent(context, DuoActivity::class.java).putExtra(EXTRA_ROUTE, Routes.newBattle(album, key))
 
         /** Join the phone whose Together tag carried [code]. */
         fun joinIntent(context: Context, code: String) =
