@@ -231,14 +231,19 @@ private class SwipeAdjust(
     val onStart: (horizontal: Boolean) -> Unit,
     /** The finger held still at ([u], [v]) of the photo: true if that targets something to drag. */
     val onTarget: (u: Float, v: Float) -> Boolean,
-    /** Two thumbs went down on opposite halves; the left one at ([u], [v]) of the photo (-1 off it). */
+    /**
+     * Two thumbs are about to start: true when the one that went down first should be the "left"
+     * (holding) thumb wherever it is, as on a wheel or pad, rather than the one on the left.
+     */
+    val firstHolds: () -> Boolean,
+    /** Two thumbs went down on opposite halves; the left (holding) one at ([u], [v]) of the photo (-1 off it). */
     val onThumbs: (u: Float, v: Float) -> Unit,
     /** The left thumb moved by (dx, dy) px to ([u], [v]) of the photo (-1 off it). */
     val onLeft: (dx: Float, dy: Float, u: Float, v: Float, height: Float) -> Unit,
     /** The left thumb held still at ([u], [v]) of the photo (-1 off it). */
     val onLeftHold: (u: Float, v: Float) -> Unit,
-    /** The right thumb moved by (dx, dy) px. */
-    val onRight: (dx: Float, dy: Float, height: Float) -> Unit,
+    /** The right (moving) thumb moved by (dx, dy) px. */
+    val onRight: (dx: Float, dy: Float, width: Float, height: Float) -> Unit,
     val onMove: (dx: Float, dy: Float, width: Float) -> Unit,
     val onEnd: () -> Unit,
 )
@@ -808,6 +813,12 @@ fun EditorScreen(
                     startRow(p, vertical = false)
                     true
                 }
+                // A wheel or the white balance pad: holding shows it, then this finger (or a second thumb) moves the dot.
+                swipeNav.node(menuTree, path) is Swipe2D -> {
+                    navigate(path)
+                    startRow(path, vertical = false)
+                    true
+                }
                 else -> false
             }
             if (targeted) {
@@ -817,13 +828,19 @@ fun EditorScreen(
             }
             targeted
         },
+        firstHolds = {
+            val path = swipeNav.resolve(menuTree, swipePath)
+            swipeNav.node(menuTree, path) is Swipe2D || (path[0] == "color" && path.getOrNull(1) == "grading")
+        },
         onThumbs = { u, v ->
             // Two thumbs: where the left one lands picks the target (a tone for the curve, a color
-            // for Mix, a tone for Grading); then it moves through the menu (or turns a wheel's hue,
-            // or aims the curve), and the right one changes the value.
+            // for Mix, a tone for Grading); then it moves through the menu (or aims the curve), and
+            // the right one changes the value. On a wheel or pad the first thumb holds it up, the
+            // other moves its dot.
             chrome = false
             swipeState.mode = SwipeMode.THUMBS
             swipeState.thumbDetent = null
+            swipeState.pad = null
             swipeState.curve = null
             val path = swipeNav.resolve(menuTree, swipePath)
             val rgb = if (u >= 0f) probeAt(u, v) else null
@@ -846,20 +863,10 @@ fun EditorScreen(
             swipeAxis = 6
             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
         },
-        onLeft = { dx, dy, u, v, height ->
-            when (val node = swipeNav.node(menuTree, swipePath)) {
+        onLeft = { dx, dy, _, _, _ ->
+            when (swipeNav.node(menuTree, swipePath)) {
                 is SwipeCurve -> stepCurvePoint(dy)
-                is SwipeWheel -> if (height > 0f) {
-                    // Up/down turns the hue; the right thumb sets how strong it is.
-                    val h = ((settings[node.hue] - dy / height * 360f) % 360f + 360f) % 360f
-                    dragging = true
-                    settings = settings.with(node.hue, h)
-                }
-                is SwipeWbPad -> if (height > 0f) {
-                    val (x, y) = node.xy(settings)
-                    dragging = true
-                    settings = node.moveTo(settings, x, (y - dy / height * 2).coerceIn(-1f, 1f))
-                }
+                // On a wheel or pad the left thumb just holds it up; sliding it moves to another row.
                 else -> menuMove(dx, dy)
             }
         },
@@ -867,7 +874,7 @@ fun EditorScreen(
             val node = swipeNav.node(menuTree, swipePath)
             if (node is SwipeCurve && u >= 0f) toneAt(node.channel, u, v)?.let { addCurvePoint(node.channel, it) }
         },
-        onRight = { dx, dy, height ->
+        onRight = { dx, dy, width, height ->
             val up = if (height > 0f) -dy / height else 0f
             when (val node = swipeNav.node(menuTree, swipePath)) {
                 is SwipeLeaf -> {
@@ -885,19 +892,20 @@ fun EditorScreen(
                         settings = node.set(settings, next)
                     }
                 }
-                is SwipeWheel -> {
-                    val sat = (settings[node.sat] + up * node.sat.max).coerceIn(0f, node.sat.max)
-                    val next = if (sat < node.sat.max * SwipeWheel.SNAP) 0f else sat
-                    if (next == 0f && settings[node.sat] != 0f) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    dragging = true
-                    settings = settings.with(node.sat, next)
-                }
-                is SwipeWbPad -> {
-                    val (x, y) = node.xy(settings)
-                    val next = node.moveTo(settings, (x + up * 2).coerceIn(-1f, 1f), y)
-                    if (node.neutral(next) && !node.neutral(settings)) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    dragging = true
-                    settings = next
+                is Swipe2D -> {
+                    // The right thumb moves the dot in 2D, the photo's width spanning the wheel or pad.
+                    val start = swipeState.pad?.takeIf { swipeState.thumbRow == node.id } ?: node.xy(settings)
+                    swipeState.thumbRow = node.id
+                    if (width > 0f) {
+                        val (x, y) = pad2D(node, start.first + dx / width * 2, start.second - dy / width * 2)
+                        swipeState.pad = x to y
+                        val next = node.moveTo(settings, x, y)
+                        if (next != settings) {
+                            if (node.neutral(next) && !node.neutral(settings)) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            dragging = true
+                            settings = next
+                        }
+                    }
                 }
                 is SwipeCurve -> {
                     // The right thumb moves the selected point: up/down its output, sideways its input
@@ -915,14 +923,7 @@ fun EditorScreen(
                     // The dot follows the finger, the photo's width spanning the wheel or pad.
                     val start = swipeState.pad
                     if (node is Swipe2D && start != null && width > 0f) {
-                        var x = start.first + dx / width * 2
-                        var y = start.second - dy / width * 2
-                        if (node.round) {
-                            val r = hypot(x, y)
-                            if (r > 1f) { x /= r; y /= r }
-                        } else {
-                            x = x.coerceIn(-1f, 1f); y = y.coerceIn(-1f, 1f)
-                        }
+                        val (x, y) = pad2D(node, start.first + dx / width * 2, start.second - dy / width * 2)
                         swipeState.pad = x to y
                         val next = node.moveTo(settings, x, y)
                         if (next != settings) {
@@ -1163,7 +1164,14 @@ fun EditorScreen(
                         val active = swipeAxis == 1 || swipeAxis == 4 || swipeAxis == 6
                         // While dragging a wheel, the pad or a curve, a small copy of it shows under the label.
                         if (active && (node is Swipe2D || node is SwipeCurve)) {
-                            Canvas(Modifier.align(Alignment.TopCenter).padding(top = if (split) 76.dp else 44.dp).size(if (swipeAxis == 6 && node is SwipeCurve) 150.dp else 96.dp)) {
+                            Canvas(Modifier.align(Alignment.TopCenter).padding(top = if (split) 76.dp else 44.dp).size(
+                                    when {
+                                        // Held up by a thumb, the wheel or pad shows big enough to aim at.
+                                        node is Swipe2D && (swipeAxis == 4 || swipeAxis == 6) -> 200.dp
+                                        swipeAxis == 6 && node is SwipeCurve -> 150.dp
+                                        else -> 96.dp
+                                    },
+                                )) {
                                 when (node) {
                                     is SwipeWheel -> drawHueWheel(settings[node.hue], settings[node.sat])
                                     is SwipeWbPad -> node.xy(settings).let { (x, y) -> drawWbPad(x, y) }
@@ -1677,7 +1685,13 @@ private fun ZoomableImage(
                             if ((a.position.x < half) != (b.position.x < half) && abs(a.position.x - b.position.x) > size.width * 0.3f) {
                                 if (axis == 1 || axis == 2 || axis == 4) adjust?.onEnd?.invoke()
                                 if (axis == 5) holding(false)
-                                val (l, r) = if (a.position.x < b.position.x) a to b else b to a
+                                // On a wheel or pad the thumb that was down first holds it, on either side.
+                                val first = pressed.firstOrNull { it.id == down.id }
+                                val (l, r) = when {
+                                    first != null && adjust?.firstHolds?.invoke() == true -> first to (if (first === a) b else a)
+                                    a.position.x < b.position.x -> a to b
+                                    else -> b to a
+                                }
                                 leftId = l.id; rightId = r.id
                                 leftAt = l.position; leftStill = last; leftDrift = 0f; leftHeld = false
                                 axis = 6
@@ -1709,7 +1723,7 @@ private fun ZoomableImage(
                                     if (d != Offset.Zero) {
                                         // Working with the right thumb disarms the left thumb's hold until it slides again.
                                         leftHeld = true
-                                        adjust?.onRight?.invoke(d.x, d.y, size.height.toFloat())
+                                        adjust?.onRight?.invoke(d.x, d.y, size.width.toFloat(), size.height.toFloat())
                                     }
                                     r.consume()
                                 }
@@ -1820,6 +1834,11 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 }
 
 private enum class SwipeMode { NONE, MENU, SLIDER, PAD, CURVE, THUMBS }
+
+/** ([x], [y]) kept on a wheel (inside the circle) or pad (inside the square). */
+private fun pad2D(node: Swipe2D, x: Float, y: Float): Pair<Float, Float> =
+    if (node.round) hypot(x, y).let { r -> if (r > 1f) x / r to y / r else x to y }
+    else x.coerceIn(-1f, 1f) to y.coerceIn(-1f, 1f)
 
 /** Swipe mode's gesture state, kept across one gesture's callbacks. */
 private class SwipeState {
