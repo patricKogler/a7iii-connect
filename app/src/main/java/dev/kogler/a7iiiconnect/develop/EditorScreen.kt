@@ -240,6 +240,13 @@ private class SwipeAdjust(
     val onLeft: (dx: Float, dy: Float, u: Float, v: Float, height: Float) -> Unit,
     /** The left thumb held still at ([u], [v]) of the photo (-1 off it). */
     val onLeftHold: (u: Float, v: Float) -> Unit,
+    /**
+     * The right thumb went down at ([x], [y]) px of the photo area ([width] × [height]): true when the
+     * row is edited by where it lands (a curve, like the panel's graph), so it may lift and land again.
+     */
+    val onRightDown: (x: Float, y: Float, width: Float, height: Float) -> Boolean,
+    /** That right thumb lifted while the left one still holds. */
+    val onRightUp: () -> Unit,
     /** The right (moving) thumb moved by (dx, dy) px. */
     val onRight: (dx: Float, dy: Float, width: Float, height: Float) -> Unit,
     val onMove: (dx: Float, dy: Float, width: Float) -> Unit,
@@ -689,10 +696,6 @@ fun EditorScreen(
             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
         }
     }
-    /** The tone (0..1) of [channel]'s curve input under ([u], [v]): luminance for RGB, else that color. */
-    fun toneAt(channel: Int, u: Float, v: Float): Float? = probeAt(u, v)?.let { rgb ->
-        if (channel == 0) 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2] else rgb[channel - 1]
-    }
     /** Removes the point pushed off the curve (the photo already shows the curve without it). */
     fun dropRemovedPoint() {
         val pts = swipeState.curve
@@ -732,43 +735,37 @@ fun EditorScreen(
         dragging = true
         settings = settings.withCurve(channel, Curve(if (out) pts.filterIndexed { j, _ -> j != i } else pts.toList()))
     }
-    /** Two-thumb mode on a curve: selects the existing point nearest tone [x] (where the left thumb landed), or the middle one. */
-    fun selectCurvePoint(channel: Int, x: Float?) {
+    /**
+     * Two-thumb mode on a curve, with the left thumb holding: the right thumb landed at ([x], [y]) px
+     * of a [width] × [height] photo area. Like the panel's graph (drawn big over the photo), it grabs
+     * the point under it or adds one on the curve there.
+     */
+    fun grabOverlayPoint(channel: Int, x: Float, y: Float, width: Float, height: Float) {
         dropRemovedPoint()
+        val r = curveOverlayRect(width, height)
         val pts = settings.curves[channel].points.sortedBy { it.first }.toMutableList()
-        val i = pts.indices.minBy { abs(pts[it].first - (x ?: 0.5f)) }
+        val reach = with(density) { 36.dp.toPx() }
+        fun dist(i: Int) = hypot(r.left + pts[i].first * r.width - x, r.top + (1 - pts[i].second) * r.height - y)
+        var i = pts.indices.minByOrNull { dist(it) }?.takeIf { dist(it) < reach } ?: -1
+        var added = false
+        if (i < 0) {
+            val u = (x - r.left) / r.width
+            if (u in 0f..1f) {
+                val (grabbed, j) = grabCurvePoint(settings.curves[channel], u)
+                if (j >= 0) { pts.clear(); pts += grabbed; i = j; added = grabbed.size > settings.curves[channel].points.size }
+            }
+        }
         swipeState.curve = pts
         swipeState.curveSel = i
-        swipeState.acc = 0f
-        curvePoint = pts[i]
-    }
-    /** Two-thumb mode: the left thumb, held still, adds a point at tone [x] on the curve and selects it. */
-    fun addCurvePoint(channel: Int, x: Float) {
-        dropRemovedPoint()
-        val (pts, i) = grabCurvePoint(Curve(swipeState.curve ?: settings.curves[channel].points), x)
+        swipeState.curveY = Float.NaN
+        curvePoint = pts.getOrNull(i)
         if (i < 0) return
-        swipeState.curve = pts
-        swipeState.curveSel = i
-        swipeState.curveY = Float.NaN
-        swipeState.acc = 0f
-        curvePoint = pts[i]
-        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-        dragging = true
-        settings = settings.withCurve(channel, Curve(pts.toList()))
-    }
-    /** Two-thumb mode: sliding the left thumb steps through the curve's points, up to brighter ones. */
-    fun stepCurvePoint(dy: Float) {
-        val pts = swipeState.curve ?: return
-        swipeState.acc -= dy
-        val steps = (swipeState.acc / swipeRowStep).toInt()
-        if (steps == 0) return
-        dropRemovedPoint()
-        swipeState.acc -= steps * swipeRowStep
-        val next = (swipeState.curveSel + steps).coerceIn(0, pts.size - 1)
-        if (next != swipeState.curveSel) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-        swipeState.curveSel = next
-        swipeState.curveY = Float.NaN
-        curvePoint = pts.getOrNull(next)
+        curveGrab[channel] = pts[i].first
+        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        if (added) {
+            dragging = true
+            settings = settings.withCurve(channel, Curve(pts.toList()))
+        }
     }
     // Kept while the original shows: a held finger shows it, and a second thumb then starts two-thumb editing.
     val swipe = if (swipeMode && tool != Tool.CROP && tool != Tool.MASKS && opened != null) SwipeAdjust(
@@ -836,7 +833,8 @@ fun EditorScreen(
         },
         firstHolds = {
             val path = swipeNav.resolve(menuTree, swipePath)
-            swipeNav.node(menuTree, path) is Swipe2D || (path[0] == "color" && path.getOrNull(1) == "grading")
+            val n = swipeNav.node(menuTree, path)
+            n is Swipe2D || n is SwipeCurve || (path[0] == "color" && path.getOrNull(1) == "grading")
         },
         onThumbs = { u, v ->
             // Two thumbs: where the left one lands picks the target (a tone for the curve, a color
@@ -853,8 +851,10 @@ fun EditorScreen(
             when {
                 path[0] == "light" && path.getOrNull(1) == "curve" -> {
                     val ch = (swipeNav.node(menuTree, path) as? SwipeCurve)?.channel ?: 0
+                    // The left thumb holds the curve up, drawn big over the photo; the right one edits it.
                     navigate(listOf("light", "curve", CURVE_IDS[ch]))
-                    selectCurvePoint(ch, if (u >= 0f) toneAt(ch, u, v) else null)
+                    swipeState.curveSel = -1
+                    curvePoint = null
                 }
                 rgb != null && path[0] == "color" && path.getOrNull(1) == "mix" && settings.profile != Profile.MONOCHROME -> {
                     val hsv = FloatArray(3)
@@ -870,15 +870,20 @@ fun EditorScreen(
             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
         },
         onLeft = { dx, dy, _, _, _ ->
-            when (swipeNav.node(menuTree, swipePath)) {
-                is SwipeCurve -> stepCurvePoint(dy)
-                // On a wheel or pad the left thumb just holds it up; sliding it moves to another row.
-                else -> menuMove(dx, dy)
-            }
+            // On a wheel, pad or curve the left thumb just holds it up; sliding it moves to another row.
+            menuMove(dx, dy)
         },
-        onLeftHold = { u, v ->
+        onLeftHold = { _, _ -> },
+        onRightDown = { x, y, width, height ->
             val node = swipeNav.node(menuTree, swipePath)
-            if (node is SwipeCurve && u >= 0f) toneAt(node.channel, u, v)?.let { addCurvePoint(node.channel, it) }
+            if (node is SwipeCurve) grabOverlayPoint(node.channel, x, y, width, height)
+            node is SwipeCurve
+        },
+        onRightUp = {
+            dropRemovedPoint()
+            if (dragging) { dragging = false; commit(settings) }
+            swipeState.curveSel = -1
+            curvePoint = null
         },
         onRight = { dx, dy, width, height ->
             val up = if (height > 0f) -dy / height else 0f
@@ -914,9 +919,9 @@ fun EditorScreen(
                     }
                 }
                 is SwipeCurve -> {
-                    // The right thumb moves the selected point: up/down its output, sideways its input
-                    // (between its neighbours).
-                    if (height > 0f) moveCurvePoint(node.channel, dx / height, up)
+                    // The right thumb moves its point by its own motion over the big curve, as in the panel.
+                    val r = curveOverlayRect(width, height)
+                    if (r.width > 0f) moveCurvePoint(node.channel, dx / r.width, -dy / r.height)
                 }
                 else -> {}
             }
@@ -1169,20 +1174,25 @@ fun EditorScreen(
                     }
                     if (node != null && swipeAxis != 2) {
                         val active = swipeAxis == 1 || swipeAxis == 4 || swipeAxis == 6
-                        // While dragging a wheel, the pad or a curve, a small copy of it shows under the label.
-                        if (active && (node is Swipe2D || node is SwipeCurve)) {
+                        // While a curve is worked on, it shows big over the photo, where the right thumb edits it.
+                        if (active && node is SwipeCurve) Canvas(Modifier.fillMaxSize()) {
+                            drawCurveOverlay(
+                                curveOverlayRect(size.width, size.height), settings.curves[node.channel],
+                                CURVE_COLORS[node.channel], curvePoint, curveRemoving,
+                            )
+                        }
+                        // While dragging a wheel or the pad, a small copy of it shows under the label.
+                        if (active && node is Swipe2D) {
                             Canvas(Modifier.align(Alignment.TopCenter).padding(top = if (split) 76.dp else 44.dp).size(
                                     when {
                                         // Held up by a thumb, the wheel or pad shows big enough to aim at.
-                                        node is Swipe2D && (swipeAxis == 4 || swipeAxis == 6) -> 200.dp
-                                        swipeAxis == 6 && node is SwipeCurve -> 150.dp
+                                        swipeAxis == 4 || swipeAxis == 6 -> 200.dp
                                         else -> 96.dp
                                     },
                                 )) {
                                 when (node) {
                                     is SwipeWheel -> drawHueWheel(settings[node.hue], settings[node.sat])
                                     is SwipeWbPad -> node.xy(settings).let { (x, y) -> drawWbPad(x, y) }
-                                    is SwipeCurve -> drawMiniCurve(settings.curves[node.channel], CURVE_COLORS[node.channel], curvePoint)
                                     else -> {}
                                 }
                             }
@@ -1662,6 +1672,8 @@ private fun ZoomableImage(
                     var leftStill = 0L
                     var leftDrift = 0f
                     var leftHeld = false
+                    // The right thumb edits by where it lands (a curve), so it may lift and land again.
+                    var rightPlaced = false
                     while (true) {
                         val ev = if (axis == 0) {
                             val left = viewConfiguration.longPressTimeoutMillis - (last - down.uptimeMillis)
@@ -1706,6 +1718,7 @@ private fun ZoomableImage(
                                 axis = 6
                                 val at = toImage(l.position)
                                 adjust?.onThumbs?.invoke(at?.x ?: -1f, at?.y ?: -1f)
+                                rightPlaced = adjust?.onRightDown?.invoke(r.position.x, r.position.y, size.width.toFloat(), size.height.toFloat()) == true
                                 pressed.forEach { it.consume() }
                                 continue
                             } else if (axis == 0) axis = 3
@@ -1713,6 +1726,13 @@ private fun ZoomableImage(
                         when (axis) {
                             6 -> {
                                 val l = ev.changes.firstOrNull { it.id == leftId }
+                                // A right thumb landing again while the left one still holds.
+                                if (rightId == null) ev.changes.firstOrNull { it.pressed && !it.previousPressed && it.id != leftId }?.let { n ->
+                                    rightId = n.id
+                                    leftHeld = true
+                                    rightPlaced = adjust?.onRightDown?.invoke(n.position.x, n.position.y, size.width.toFloat(), size.height.toFloat()) == true
+                                    n.consume()
+                                }
                                 val r = ev.changes.firstOrNull { it.id == rightId }
                                 if (l != null && l.pressed) {
                                     val d = l.positionChange()
@@ -1736,8 +1756,12 @@ private fun ZoomableImage(
                                     }
                                     r.consume()
                                 }
-                                // The right thumb lifted: the left one carries on in the menu, as one finger.
-                                if (r != null && !r.pressed && l != null && l.pressed) {
+                                // The right thumb lifted from a curve: the left one keeps holding it for the next stroke.
+                                if (rightPlaced && r != null && !r.pressed && l != null && l.pressed) {
+                                    adjust?.onRightUp?.invoke()
+                                    rightId = null
+                                } else if (r != null && !r.pressed && l != null && l.pressed) {
+                                    // The right thumb lifted: the left one carries on in the menu, as one finger.
                                     adjust?.onEnd?.invoke()
                                     adjust?.onStart?.invoke(false)
                                     axis = 2
@@ -2492,17 +2516,36 @@ private fun DrawScope.drawWbPad(x: Float, y: Float) {
     drawCircle(Color.White, 6.dp.toPx(), p)
 }
 
-/** A small point curve, with the point being dragged ([active], input and output in 0..1) ringed. */
-private fun DrawScope.drawMiniCurve(curve: Curve, color: Color, active: Pair<Float, Float>?) {
-    val w = size.width; val h = size.height
-    drawRect(Color.Black.copy(alpha = 0.7f))
-    drawLine(Color(0xFF555555), Offset(0f, h), Offset(w, 0f), 1f)
-    val t = curve.table(64)
+/** Where swipe mode draws its big curve over a [w] × [h] photo area, and where the right thumb edits it. */
+private fun curveOverlayRect(w: Float, h: Float): Rect {
+    val side = minOf(w, h) * 0.8f
+    return Rect((w - side) / 2, (h - side) / 2, (w + side) / 2, (h + side) / 2)
+}
+
+/** Swipe mode's big curve in [r], over the photo: the point being dragged ([active]) highlighted, and ringed red when [removing]. */
+private fun DrawScope.drawCurveOverlay(r: Rect, curve: Curve, color: Color, active: Pair<Float, Float>?, removing: Boolean) {
+    val w = r.width; val h = r.height
+    fun at(x: Float, y: Float) = Offset(r.left + x * w, r.top + (1 - y) * h)
+    drawRect(Color.Black.copy(alpha = 0.45f), r.topLeft, r.size)
+    for (i in 1..3) {
+        drawLine(Color.White.copy(alpha = 0.15f), at(i / 4f, 0f), at(i / 4f, 1f), 1f)
+        drawLine(Color.White.copy(alpha = 0.15f), at(0f, i / 4f), at(1f, i / 4f), 1f)
+    }
+    drawLine(Color.White.copy(alpha = 0.25f), at(0f, 0f), at(1f, 1f), 1f)
+    if (active != null && !removing) {
+        drawLine(color.copy(alpha = 0.35f), at(active.first, 0f), at(active.first, 1f), 1.dp.toPx())
+        drawLine(color.copy(alpha = 0.35f), at(0f, active.second), at(1f, active.second), 1.dp.toPx())
+    }
+    val t = curve.table(256)
     val path = Path()
-    t.forEachIndexed { i, v -> val px = w * i / 63f; val py = h * (1 - v); if (i == 0) path.moveTo(px, py) else path.lineTo(px, py) }
-    drawPath(path, color, style = Stroke(2.dp.toPx()))
-    for (pt in curve.points) drawCircle(color, 3.dp.toPx(), Offset(pt.first * w, (1 - pt.second) * h))
-    active?.let { (ax, ay) -> drawCircle(Color.White, 6.dp.toPx(), Offset(ax * w, (1 - ay) * h), style = Stroke(2.dp.toPx())) }
+    t.forEachIndexed { i, v -> val p = at(i / 255f, v); if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y) }
+    drawPath(path, color, style = Stroke(2.5.dp.toPx()))
+    for (pt in curve.points) {
+        val on = active != null && pt == active
+        drawCircle(color, (if (on) 10 else 7).dp.toPx(), at(pt.first, pt.second))
+        drawCircle(Color.Black, (if (on) 6 else 4).dp.toPx(), at(pt.first, pt.second))
+    }
+    if (active != null && removing) drawCircle(Color(0xFFFF8080), 10.dp.toPx(), at(active.first, active.second), style = Stroke(2.dp.toPx()))
 }
 
 /** The color wheel with its dot: hue around (counter-clockwise from red at 3 o'clock), saturation 0..100 outwards. */
