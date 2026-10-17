@@ -812,17 +812,18 @@ fun EditorScreen(
                     startRow(p, vertical = true)
                     true
                 }
-                // Grading: the zone of this pixel's brightness, then drag its wheel.
+                // A wheel or the white balance pad picked in the menu: holding shows that one, then this
+                // finger (or a second thumb) moves the dot.
+                swipeNav.node(menuTree, path) is Swipe2D -> {
+                    navigate(path)
+                    startRow(path, vertical = false)
+                    true
+                }
+                // Grading on another row: the zone of this pixel's brightness, then drag its wheel.
                 path[0] == "color" && path.getOrNull(1) == "grading" -> {
                     val p = listOf("color", "grading", P.GRADE_ZONES[zoneOf(lum)])
                     navigate(p)
                     startRow(p, vertical = false)
-                    true
-                }
-                // A wheel or the white balance pad: holding shows it, then this finger (or a second thumb) moves the dot.
-                swipeNav.node(menuTree, path) is Swipe2D -> {
-                    navigate(path)
-                    startRow(path, vertical = false)
                     true
                 }
                 else -> false
@@ -840,7 +841,7 @@ fun EditorScreen(
         },
         onThumbs = { u, v ->
             // Two thumbs: where the left one lands picks the target (a tone for the curve, a color
-            // for Mix, a tone for Grading); then it moves through the menu (or aims the curve), and
+            // for Mix, a tone for Grading unless a wheel is already picked); then it moves through the menu (or aims the curve), and
             // the right one changes the value. On a wheel or pad the first thumb holds it up, the
             // other moves its dot.
             chrome = false
@@ -861,7 +862,8 @@ fun EditorScreen(
                     android.graphics.Color.RGBToHSV((rgb[0] * 255).toInt(), (rgb[1] * 255).toInt(), (rgb[2] * 255).toInt(), hsv)
                     navigate(swipeNav.descend(menuTree, listOf("color", "mix", P.MIX_BANDS[bandOf(hsv[0])].first)))
                 }
-                rgb != null && path[0] == "color" && path.getOrNull(1) == "grading" ->
+                // A wheel picked in the menu stays; only from another Grading row does the tone pick the zone.
+                rgb != null && path[0] == "color" && path.getOrNull(1) == "grading" && swipeNav.node(menuTree, path) !is SwipeWheel ->
                     navigate(listOf("color", "grading", P.GRADE_ZONES[zoneOf(0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2])]))
                 path != swipePath -> navigate(path)
             }
