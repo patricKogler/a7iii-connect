@@ -271,7 +271,8 @@ private fun ColumnScope.DuelFlow(room: Room, b: TogetherBattle, onBack: () -> Un
                 shot == null -> Message("The photo is still on its way", "Touch phones with ${room.othersName} to get it.")
                 b.edit(me, r) == null -> EditTurn(
                     room, b, "r$r", shot, Settings(), round.twist,
-                    intro = "Edit it any way you like. ${room.othersName} can't see your edit until you've all voted.",
+                    intro = (round.twist.theme?.let { "Make it feel like “$it”." } ?: "Edit it any way you like.") +
+                        " ${room.othersName} can't see your edit until you've all voted.",
                     started = b.started(me, r),
                     onStart = { PlayStore.add(context, b.startFact(me, r, System.currentTimeMillis())) },
                     onLock = { s -> PlayStore.add(context, b.editFact(me, r, pack(s), System.currentTimeMillis())) },

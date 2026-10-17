@@ -133,7 +133,12 @@ object Duo : DuoLink.Listener {
         myName = name.trim().replace("|", " ").ifEmpty { myName }
         app.getSharedPreferences("duo", Context.MODE_PRIVATE).edit().putString("name", myName).apply()
         if (!connected) link?.let { it.stopSearching(); searching = false; startSearching() }
+        // Connected: say hello again, so the other phone's albums take the new name now.
+        else link?.send(hello())
     }
+
+    private fun hello() = JSONObject().put("t", "hello").put("name", myName).put("v", versionCode()).put("p", PROTOCOL)
+        .put("pid", AlbumStore(app).phoneId)
 
     private fun savedName(): String {
         app.getSharedPreferences("duo", Context.MODE_PRIVATE).getString("name", null)?.let { return it }
@@ -226,10 +231,7 @@ object Duo : DuoLink.Listener {
         // My tag stays as it was, so the other phone can tap again after a drop.
         partnerName = endpointName.substringBefore('|')
         AlbumSync.reset()
-        link?.send(
-            JSONObject().put("t", "hello").put("name", myName).put("v", versionCode()).put("p", PROTOCOL)
-                .put("pid", AlbumStore(app).phoneId),
-        )
+        link?.send(hello())
     }
 
     override fun onDisconnected() {
