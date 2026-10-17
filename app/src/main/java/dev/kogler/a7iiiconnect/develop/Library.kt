@@ -84,15 +84,15 @@ object Library {
 
     /**
      * Pairs each RAW with the JPEG of the same name taken at (nearly) the same time; newest first.
-     * The time check keeps DSC01234 from two counter cycles apart; the hour of slack covers files
-     * whose capture time MediaStore didn't read and fell back to when they arrived.
+     * The time check keeps DSC01234 from two counter cycles apart; the day of slack covers files
+     * whose capture time MediaStore guessed hours off (a RAW that came a day after its JPEG).
      */
     fun shots(photos: List<LibraryPhoto>): List<Shot> {
         val out = mutableListOf<Shot>()
         for ((_, same) in photos.groupBy { it.stem.lowercase() }) {
             val jpegs = same.filter { !it.isRaw }.toMutableList()
             for (raw in same.filter { it.isRaw }) {
-                val twin = jpegs.filter { abs(it.takenMillis - raw.takenMillis) <= PAIR_WINDOW_MS }
+                val twin = jpegs.filter { abs(it.takenMillis - raw.takenMillis) <= Albums.MATCH_WINDOW_MS }
                     .minByOrNull { abs(it.takenMillis - raw.takenMillis) }
                 if (twin != null) jpegs -= twin
                 out += Shot(raw, twin)
@@ -114,6 +114,4 @@ object Library {
         }
         return out
     }
-
-    private const val PAIR_WINDOW_MS = 60 * 60 * 1000L
 }

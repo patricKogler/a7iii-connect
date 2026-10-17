@@ -102,8 +102,18 @@ class AlbumsTest {
         assertEquals("DSC01234.ARW@1000", resolve("dsc01234.jpg@2000"))
         // The same name from another round of the camera's counter is another shot.
         assertNull(resolve("DSC01236.JPG@1000"))
-        assertNull(resolve("DSC01234.JPG@50000000"))
+        assertNull(resolve("DSC01234.JPG@200000000"))
         assertNull(resolve("not a key"))
+    }
+
+    @Test
+    fun findsMyCopyWhenMediaStoreGotTheTimeWrong() {
+        val hour = 60 * 60 * 1000L
+        // Her phone read the capture time as UTC; mine guessed it from when the RAW came, a day later.
+        val resolve = Albums.resolver(listOf("DSC01234.ARW@${1000 + 20 * hour}", "DSC09999.ARW@1000"))
+        assertEquals("DSC01234.ARW@${1000 + 20 * hour}", resolve("DSC01234.JPG@${1000 + 2 * hour}"))
+        // A copy MediaStore renamed because the name was taken is still the same shot.
+        assertEquals("DSC09999.ARW@1000", resolve("DSC09999 (1).JPG@1000"))
     }
 
     @Test
