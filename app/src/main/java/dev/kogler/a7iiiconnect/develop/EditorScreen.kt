@@ -147,6 +147,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -241,10 +242,10 @@ private class SwipeAdjust(
     /** The left thumb held still at ([u], [v]) of the photo (-1 off it). */
     val onLeftHold: (u: Float, v: Float) -> Unit,
     /**
-     * The right thumb went down at ([x], [y]) px of the photo area ([width] × [height]): true when the
-     * row is edited by where it lands (a curve, like the panel's graph), so it may lift and land again.
+     * The right thumb went down at ([x], [y]) px of the photo area ([width] × [height]). It may lift
+     * and land again while the left one holds.
      */
-    val onRightDown: (x: Float, y: Float, width: Float, height: Float) -> Boolean,
+    val onRightDown: (x: Float, y: Float, width: Float, height: Float) -> Unit,
     /** That right thumb lifted while the left one still holds. */
     val onRightUp: () -> Unit,
     /** The right (moving) thumb moved by (dx, dy) px. */
@@ -389,6 +390,17 @@ fun EditorScreen(
     var probe by remember { mutableStateOf<Probe?>(null) }
     var swipeAxis by remember { mutableIntStateOf(0) }
     val swipeState = remember { SwipeState() }
+    // The up/down or 2D edit just let go of: the next drag picks it up again, like lifting a finger on a trackpad.
+    var clutch by remember { mutableStateOf<Clutch?>(null) }
+    LaunchedEffect(clutch) { if (clutch != null) { delay(CLUTCH_MS); clutch = null } }
+    // Swipe mode's gesture hint shows for a while after entering swipe mode or picking another row.
+    var hintPing by remember { mutableIntStateOf(0) }
+    var hintShown by remember { mutableStateOf(false) }
+    LaunchedEffect(hintPing, swipeMode) {
+        hintShown = swipeMode
+        delay(HINT_MS)
+        hintShown = false
+    }
     // Saved, so full screen survives anything that rebuilds the screen.
     var fullscreen by rememberSaveable { mutableStateOf(false) }
     // Full screen's controls: hidden until the photo is tapped, then hidden again after a while.
@@ -606,6 +618,7 @@ fun EditorScreen(
         isRaw = opened?.raw != null, hasLensProfile = opened?.preview?.lens != null,
     )
     fun navigate(path: List<String>) {
+        if (path != swipePath) hintPing++
         swipePath = path
         swipeNav.remember(path, menuTree)
         // The open panel follows the menu: its tool, then its chips.
@@ -738,7 +751,8 @@ fun EditorScreen(
     /**
      * Two-thumb mode on a curve, with the left thumb holding: the right thumb landed at ([x], [y]) px
      * of a [width] × [height] photo area. Like the panel's graph (drawn big over the photo), it grabs
-     * the point under it or adds one on the curve there.
+     * the point under it or adds one on the curve there. Landing away from both carries on with the
+     * point moved last, so the thumb can lift and land again where there's room, as on a trackpad.
      */
     fun grabOverlayPoint(channel: Int, x: Float, y: Float, width: Float, height: Float) {
         dropRemovedPoint()
@@ -748,9 +762,13 @@ fun EditorScreen(
         fun dist(i: Int) = hypot(r.left + pts[i].first * r.width - x, r.top + (1 - pts[i].second) * r.height - y)
         var i = pts.indices.minByOrNull { dist(it) }?.takeIf { dist(it) < reach } ?: -1
         var added = false
+        val u = (x - r.left) / r.width
+        val onLine = u in 0f..1f && settings.curves[channel].table(1024).let { t ->
+            abs(r.top + (1 - t[(u * 1023).roundToInt()]) * r.height - y) < reach
+        }
+        if (i < 0 && !onLine) i = pts.indexOfFirst { it.first == swipeState.thumbPoint }
         if (i < 0) {
-            val u = (x - r.left) / r.width
-            if (u in 0f..1f) {
+            if (onLine) {
                 val (grabbed, j) = grabCurvePoint(settings.curves[channel], u)
                 if (j >= 0) { pts.clear(); pts += grabbed; i = j; added = grabbed.size > settings.curves[channel].points.size }
             }
@@ -767,11 +785,22 @@ fun EditorScreen(
             settings = settings.withCurve(channel, Curve(pts.toList()))
         }
     }
+    /** Picks the edit just let go of up again where it was. */
+    fun resume(c: Clutch) {
+        startRow(c.path, c.vertical)
+        clutch = null
+        chrome = false
+        swipeAxis = 4
+    }
     // Kept while the original shows: a held finger shows it, and a second thumb then starts two-thumb editing.
     val swipe = if (swipeMode && tool != Tool.CROP && tool != Tool.MASKS && opened != null) SwipeAdjust(
         onStart = { horizontal ->
             chrome = false
-            if (horizontal) {
+            // A 2D edit carries on whichever way the drag starts, an up/down one when it starts up or down.
+            val c = clutch?.takeIf { it.path == swipePath && (it.twoD || !horizontal) }
+            clutch = null
+            if (c != null) resume(c)
+            else if (horizontal) {
                 val path = swipeNav.descend(menuTree, swipePath)
                 if (path != swipePath) navigate(path)
                 startRow(path, vertical = false)
@@ -786,7 +815,10 @@ fun EditorScreen(
                 swipeAxis = 2
             }
         },
-        onTarget = { u, v ->
+        onTarget = target@{ u, v ->
+            // Resting the finger before carrying on keeps the same edit rather than targeting anew.
+            val c = clutch?.takeIf { it.path == swipePath }
+            if (c != null) { resume(c); return@target true }
             val rgb = probeAt(u, v)
             val path = swipeNav.resolve(menuTree, swipePath)
             val lum = rgb?.let { 0.2126f * it[0] + 0.7152f * it[1] + 0.0722f * it[2] } ?: 0f
@@ -847,6 +879,7 @@ fun EditorScreen(
             swipeState.thumbDetent = null
             swipeState.pad = null
             swipeState.curve = null
+            swipeState.thumbPoint = -1f
             val path = swipeNav.resolve(menuTree, swipePath)
             val rgb = if (u >= 0f) probeAt(u, v) else null
             when {
@@ -879,10 +912,11 @@ fun EditorScreen(
         onRightDown = { x, y, width, height ->
             val node = swipeNav.node(menuTree, swipePath)
             if (node is SwipeCurve) grabOverlayPoint(node.channel, x, y, width, height)
-            node is SwipeCurve
         },
         onRightUp = {
+            val removed = curveRemoving
             dropRemovedPoint()
+            swipeState.thumbPoint = if (removed) -1f else curvePoint?.first ?: -1f
             if (dragging) { dragging = false; commit(settings) }
             swipeState.curveSel = -1
             curvePoint = null
@@ -965,6 +999,11 @@ fun EditorScreen(
             }
         },
         onEnd = {
+            // A sideways edit already carries on with the next sideways drag; up/down and 2D edits
+            // would otherwise turn into the menu, so the next drag keeps them going for a moment.
+            val held = swipeState.mode == SwipeMode.PAD || (swipeState.vertical && swipeState.mode == SwipeMode.CURVE && swipeState.curveSel >= 0) ||
+                (swipeState.vertical && swipeState.mode == SwipeMode.SLIDER)
+            clutch = if (held && !curveRemoving) Clutch(swipePath, swipeState.vertical, swipeState.mode == SwipeMode.PAD) else null
             dropRemovedPoint()
             if (dragging) { dragging = false; commit(settings) }
             // Letting go on a folder picks its remembered (or first) row.
@@ -1094,7 +1133,7 @@ fun EditorScreen(
                         overlay = maskOverlay && !dragging,
                         onChange = { settings = it; dragging = true },
                         onDone = { dragging = false; commit(settings) },
-                        onTap = { if (fullscreen) chrome = !chrome },
+                        onTap = { clutch = null; if (fullscreen) chrome = !chrome },
                     )
                 } else {
                     ZoomableImage(
@@ -1106,7 +1145,7 @@ fun EditorScreen(
                         onSplit = { splitAt = it },
                         swipe = swipe,
                         onHold = { showBefore = it },
-                        onTap = { if (fullscreen) chrome = !chrome },
+                        onTap = { clutch = null; if (fullscreen) chrome = !chrome },
                         onViewport = { viewport = it },
                     )
                 }
@@ -1175,7 +1214,8 @@ fun EditorScreen(
                         }
                     }
                     if (node != null && swipeAxis != 2) {
-                        val active = swipeAxis == 1 || swipeAxis == 4 || swipeAxis == 6
+                        // Just let go but still carried on by the next drag: it stays shown as active.
+                        val active = swipeAxis == 1 || swipeAxis == 4 || swipeAxis == 6 || (swipeAxis == 0 && clutch != null)
                         // While a curve is worked on, it shows big over the photo, where the right thumb edits it.
                         if (active && node is SwipeCurve) Canvas(Modifier.fillMaxSize()) {
                             drawCurveOverlay(
@@ -1209,6 +1249,24 @@ fun EditorScreen(
                             modifier = Modifier.align(Alignment.TopCenter).padding(top = if (split) 40.dp else 8.dp)
                                 .background(Color.Black.copy(alpha = if (active) 0.7f else 0.45f), RoundedCornerShape(16.dp))
                                 .padding(horizontal = 12.dp, vertical = 4.dp),
+                        )
+                    }
+                    // How to work the row: after picking it, while an edit can be carried on, and while the
+                    // right thumb is still to land on a held-up curve.
+                    val hint = when {
+                        swipeAxis == 0 && clutch != null -> "Drag again to keep going · tap to stop"
+                        swipeAxis == 6 && node is SwipeCurve && curvePoint == null ->
+                            "Right thumb: land on a point to move it, or on the curve to add one"
+                        swipeAxis == 0 && hintShown && node != null -> swipeHint(node, path, settings.profile == Profile.MONOCHROME)
+                        else -> null
+                    }
+                    if (hint != null) {
+                        Text(
+                            hint, color = Color.White, fontSize = 13.sp, textAlign = TextAlign.Center,
+                            modifier = Modifier.align(Alignment.BottomCenter)
+                                .padding(start = 24.dp, end = 24.dp, bottom = 64.dp + if (fullscreen && chrome) 56.dp else 0.dp)
+                                .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
                         )
                     }
                 }
@@ -1666,6 +1724,8 @@ private fun ZoomableImage(
                     val down = awaitFirstDown(requireUnconsumed = false)
                     var axis = 0 // 0 undecided, 1 sideways, 2 up/down, 3 zoom, 4 long-press target, 5 original
                     var moved = Offset.Zero
+                    // Where the finger was when holding still showed the original: moving on from there edits again.
+                    var heldAt = Offset.Zero
                     var last = down.uptimeMillis
                     var leftId: PointerId? = null
                     var rightId: PointerId? = null
@@ -1674,8 +1734,6 @@ private fun ZoomableImage(
                     var leftStill = 0L
                     var leftDrift = 0f
                     var leftHeld = false
-                    // The right thumb edits by where it lands (a curve), so it may lift and land again.
-                    var rightPlaced = false
                     while (true) {
                         val ev = if (axis == 0) {
                             val left = viewConfiguration.longPressTimeoutMillis - (last - down.uptimeMillis)
@@ -1693,7 +1751,7 @@ private fun ZoomableImage(
                         }
                         if (ev == null) {
                             val at = toImage(down.position + moved)
-                            axis = if (at != null && adjust?.onTarget?.invoke(at.x, at.y) == true) 4 else { holding(true); 5 }
+                            axis = if (at != null && adjust?.onTarget?.invoke(at.x, at.y) == true) 4 else { holding(true); heldAt = moved; 5 }
                             continue
                         }
                         ev.changes.firstOrNull()?.let { last = it.uptimeMillis }
@@ -1720,7 +1778,7 @@ private fun ZoomableImage(
                                 axis = 6
                                 val at = toImage(l.position)
                                 adjust?.onThumbs?.invoke(at?.x ?: -1f, at?.y ?: -1f)
-                                rightPlaced = adjust?.onRightDown?.invoke(r.position.x, r.position.y, size.width.toFloat(), size.height.toFloat()) == true
+                                adjust?.onRightDown?.invoke(r.position.x, r.position.y, size.width.toFloat(), size.height.toFloat())
                                 pressed.forEach { it.consume() }
                                 continue
                             } else if (axis == 0) axis = 3
@@ -1732,7 +1790,7 @@ private fun ZoomableImage(
                                 if (rightId == null) ev.changes.firstOrNull { it.pressed && !it.previousPressed && it.id != leftId }?.let { n ->
                                     rightId = n.id
                                     leftHeld = true
-                                    rightPlaced = adjust?.onRightDown?.invoke(n.position.x, n.position.y, size.width.toFloat(), size.height.toFloat()) == true
+                                    adjust?.onRightDown?.invoke(n.position.x, n.position.y, size.width.toFloat(), size.height.toFloat())
                                     n.consume()
                                 }
                                 val r = ev.changes.firstOrNull { it.id == rightId }
@@ -1758,15 +1816,11 @@ private fun ZoomableImage(
                                     }
                                     r.consume()
                                 }
-                                // The right thumb lifted from a curve: the left one keeps holding it for the next stroke.
-                                if (rightPlaced && r != null && !r.pressed && l != null && l.pressed) {
+                                // The right thumb lifted: the left one keeps holding, so the right one can land
+                                // anywhere and carry on, like lifting a finger on a trackpad.
+                                if (r != null && !r.pressed && l != null && l.pressed) {
                                     adjust?.onRightUp?.invoke()
                                     rightId = null
-                                } else if (r != null && !r.pressed && l != null && l.pressed) {
-                                    // The right thumb lifted: the left one carries on in the menu, as one finger.
-                                    adjust?.onEnd?.invoke()
-                                    adjust?.onStart?.invoke(false)
-                                    axis = 2
                                 }
                             }
                             3 -> {
@@ -1781,7 +1835,17 @@ private fun ZoomableImage(
                                     pressed[0].consume()
                                 }
                             }
-                            5 -> {}
+                            5 -> {
+                                // The original only shows while the finger rests; dragging on adjusts as usual.
+                                moved += pressed[0].positionChange()
+                                val d = moved - heldAt
+                                if (abs(d.x) > viewConfiguration.touchSlop || abs(d.y) > viewConfiguration.touchSlop) {
+                                    holding(false)
+                                    axis = if (abs(d.x) > abs(d.y)) 1 else 2
+                                    adjust?.onStart?.invoke(axis == 1)
+                                    pressed[0].consume()
+                                }
+                            }
                             else -> {
                                 val d = pressed[0].positionChange()
                                 adjust?.onMove?.invoke(d.x, d.y, size.width.toFloat())
@@ -1895,7 +1959,31 @@ private class SwipeState {
     /** Two-thumb mode: the right thumb's slider detent, and its row. */
     var thumbDetent: Detent? = null
     var thumbRow: String? = null
+    /** Two-thumb mode on a curve: the input of the point the right thumb moved before it lifted, or -1. */
+    var thumbPoint = -1f
 }
+
+/**
+ * What to do on the photo for swipe mode's row [node] at [path]: where to slide, and where holding
+ * a spot targets something (otherwise holding still shows the original).
+ */
+private fun swipeHint(node: SwipeNode, path: List<String>, mono: Boolean): String = when {
+    node is SwipeFolder -> "Slide right to open ${node.label} · up or down for another row"
+    node is SwipeCurve -> "Hold a tone on the photo, then drag up or down · or hold with your left thumb and edit the curve with your right"
+    path.getOrNull(1) == "mix" && !mono -> "Hold a color on the photo to pick its band, then drag up or down"
+    node is Swipe2D -> "Slide to move the dot · or hold the photo, then drag"
+    path.getOrNull(1) == "grading" -> "Slide to adjust · or hold a tone on the photo to pick its zone, then drag its wheel"
+    else -> "Slide left or right to adjust · up or down for another row · hold still to see the original"
+}
+
+/** An up/down or 2D ([twoD]) edit just let go of, at [path]; the next drag carries it on. */
+private class Clutch(val path: List<String>, val vertical: Boolean, val twoD: Boolean)
+
+/** How long after letting go the next drag still carries the same edit on. */
+private const val CLUTCH_MS = 1500L
+
+/** How long swipe mode's gesture hint shows. */
+private const val HINT_MS = 5000L
 
 @Composable
 private fun OverlayButton(
