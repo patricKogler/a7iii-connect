@@ -68,8 +68,8 @@ object AlbumSync {
     }
 
     /**
-     * The other phone said who it is: if I was inviting it into an album, it's a member now. Then
-     * the albums I share with it go over. An app too old to say who it is gets nothing.
+     * The other phone said who it is: if I was inviting it into an album, it's a member now, and
+     * it's called what it's called now everywhere. Then the albums I share with it go over. An app too old to say who it is gets nothing.
      */
     fun onHello(app: Context, link: DuoLink?, phone: String, name: String, myName: String) {
         if (phone.isEmpty()) return
@@ -78,11 +78,14 @@ object AlbumSync {
         scope.launch {
             val text = withContext(Dispatchers.IO) {
                 val store = AlbumStore(app)
-                var all = store.load()
+                val stored = store.load()
+                var all = stored
                 if (inviting != null) {
                     all = all.map { if (it.id == inviting && it.ownedBy(store.phoneId)) Albums.invite(it, store.phoneId, myName, phone, name) else it }
-                    store.save(all)
                 }
+                // Names as they are now: theirs as it just said, mine as I last set it.
+                all = Albums.named(Albums.named(all, phone, name), store.phoneId, myName)
+                if (all != stored) store.save(all)
                 withContext(Dispatchers.Main) { changes++ }
                 Albums.encode(Albums.sharedWith(all, phone))
             }

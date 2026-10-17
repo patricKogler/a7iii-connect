@@ -172,4 +172,20 @@ class AlbumsTest {
         assertTrue(a.ownedBy("anyone"))
         assertEquals(listOf("a@1"), a.keys)
     }
+
+    @Test
+    fun aRenameReachesEveryAlbumTheyreIn() {
+        val hike = Albums.invite(Albums.create("Hike", listOf("h@1"), now = 10, id = "h", owner = "me"), "me", "Patrick", "viki", "Me")
+        val other = Albums.create("Lisbon", listOf("l@1"), now = 10, id = "l", owner = "me")
+        val renamed = Albums.named(listOf(hike, other), "viki", "Viki")
+        assertEquals(mapOf("me" to "Patrick", "viki" to "Viki"), renamed[0].members)
+        // Albums they're not in stay as they were.
+        assertEquals(other, renamed[1])
+        // A blank name changes nothing.
+        assertEquals(listOf(hike), Albums.named(listOf(hike), "viki", " "))
+        // The merge keeps this phone's names, so the new name survives their (older) copy coming in.
+        assertEquals("Viki", Albums.merge(renamed, listOf(hike)).first { it.id == "h" }.members["viki"])
+        // And survives a save.
+        assertEquals("Viki", Albums.decode(Albums.encode(renamed)).first { it.id == "h" }.members["viki"])
+    }
 }

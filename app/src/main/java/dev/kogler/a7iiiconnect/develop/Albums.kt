@@ -82,6 +82,16 @@ object Albums {
         members = album.members + (me to myName) + (phone to clean(name)),
     )
 
+    /**
+     * [phone] goes by [name] now, in every album it's a member of. Each phone says its own name
+     * when it connects, so a rename reaches the albums (the merge keeps this phone's names).
+     */
+    fun named(albums: List<Album>, phone: String, name: String): List<Album> {
+        if (name.isBlank()) return albums
+        val n = clean(name)
+        return albums.map { if (phone in it.members && it.members[phone] != n) it.copy(members = it.members + (phone to n)) else it }
+    }
+
     /** The albums [phone] may have from me: shared, with [phone] a member (deleted ones too, so it learns). */
     fun sharedWith(albums: List<Album>, phone: String): List<Album> = albums.filter { it.shared && phone in it.members }
 
