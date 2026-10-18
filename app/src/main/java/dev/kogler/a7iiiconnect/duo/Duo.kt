@@ -11,6 +11,7 @@ import dev.kogler.a7iiiconnect.develop.Albums
 import dev.kogler.a7iiiconnect.develop.Library
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -47,6 +48,10 @@ object Duo : DuoLink.Listener {
     var active by mutableStateOf(false); private set
     var connected by mutableStateOf(false); private set
     var reconnecting by mutableStateOf(false); private set
+    /** Reconnecting has gone on a while: the phones may be too far apart, or Together closed on the other. */
+    var reconnectSlow by mutableStateOf(false); private set
+    /** The phone (endpoint id) this one is asking to connect to, until it answers. */
+    var connecting by mutableStateOf<String?>(null); private set
     var myName by mutableStateOf(""); private set
     var partnerName by mutableStateOf(""); private set
     /** The other phone's id (from its hello), empty until it said. */
@@ -61,6 +66,9 @@ object Duo : DuoLink.Listener {
     private var code = ""
     private var searching = false
     private var joinCode: String? = null
+    /** Asks that didn't work out, per endpoint, for retrying the ones made without a tap. */
+    private val tries = HashMap<String, Int>()
+    private var slowJob: Job? = null
 
     /** A file on its way (label, 0..1), for the big ones: the app update. */
     var transfer by mutableStateOf<Pair<String, Float>?>(null); private set
@@ -102,9 +110,28 @@ object Duo : DuoLink.Listener {
 
     private fun endpointName() = "${myName.replace("|", " ")}|$code|${AlbumStore(app).phoneId}"
 
-    fun connectTo(endpointId: String) {
-        link?.connect(endpointId, endpointName())
+    /**
+     * Asks [endpointId] to connect, once at a time. [tapped] when the user picked it: a failure
+     * says so; otherwise (a phone that should reconnect on its own) it's tried again a few times.
+     */
+    fun connectTo(endpointId: String, tapped: Boolean = true) {
+        if (connected || connecting != null) return
+        if (tapped) tries.remove(endpointId)
+        connecting = endpointId
+        manual = tapped
+        val l = link ?: run { connecting = null; return }
+        val ask = ++asks
+        l.connect(endpointId, endpointName())
+        // No answer at all (the other phone walked off mid-ask): give up, so a tap can try again.
+        scope.launch {
+            delay(CONNECT_TIMEOUT_MS)
+            if (asks == ask && connecting == endpointId && !connected) onConnectFailed(endpointId)
+        }
     }
+
+    /** The ask going on was made by a tap; and how many asks there have been, to tell them apart. */
+    private var manual = false
+    private var asks = 0
 
     fun leave() {
         val l = link
@@ -121,6 +148,7 @@ object Duo : DuoLink.Listener {
 
     private fun reset() {
         active = false; connected = false; reconnecting = false; ended = false; searching = false
+        reconnectSlow = false; connecting = null; tries.clear(); slowJob?.cancel()
         partnerName = ""; partnerPhone = ""; nearby.clear(); notice = null
         code = ""; joinCode = null; tagUri = null
         transfer = null; update = null; partnerVersion = 0
@@ -209,12 +237,16 @@ object Duo : DuoLink.Listener {
             connectTo(endpointId)
             return
         }
-        // Someone I already share an album with: connect without a tap. Only one of the two
-        // phones asks (the one with the smaller id), so they don't both ask at once.
+        // The phone just lost, or someone I already share an album with: connect without a tap.
+        // The phone with the smaller id asks first, so they don't both ask at once; the other
+        // asks too after a while, in case the first doesn't see it.
         if (theirPhone.isNotEmpty()) scope.launch {
             val me = AlbumStore(app).phoneId
-            val known = withContext(Dispatchers.IO) { Albums.sharedWith(AlbumStore(app).load(), theirPhone).any { it.alive } }
-            if (known && me < theirPhone && !connected) connectTo(endpointId)
+            val known = (reconnecting && theirPhone == partnerPhone) ||
+                withContext(Dispatchers.IO) { Albums.sharedWith(AlbumStore(app).load(), theirPhone).any { it.alive } }
+            if (!known) return@launch
+            if (me > theirPhone) delay(SECOND_ASK_MS)
+            if (!connected && endpointId in nearby) connectTo(endpointId, tapped = false)
         }
     }
 
@@ -226,6 +258,9 @@ object Duo : DuoLink.Listener {
         connected = true
         searching = false
         reconnecting = false
+        reconnectSlow = false; slowJob?.cancel()
+        connecting = null
+        tries.clear()
         ended = false
         nearby.clear()
         // My tag stays as it was, so the other phone can tap again after a drop.
@@ -236,9 +271,38 @@ object Duo : DuoLink.Listener {
 
     override fun onDisconnected() {
         connected = false
+        connecting = null
         if (ended || !active) return
         reconnecting = true
+        reconnectSlow = false
+        slowJob?.cancel()
+        slowJob = scope.launch { delay(SLOW_RECONNECT_MS); if (reconnecting && !connected) reconnectSlow = true }
         startSearching()
+    }
+
+    override fun onConnectFailed(endpointId: String) {
+        if (connecting == endpointId) connecting = null
+        if (connected) return
+        val name = nearby[endpointId] ?: partnerName.ifEmpty { "the other phone" }
+        if (manual) {
+            notice = "Couldn't connect to $name. Keep both phones close and try again."
+            return
+        }
+        // On its own: try again a little later, a few times, while that phone is still around.
+        val n = (tries[endpointId] ?: 0) + 1
+        tries[endpointId] = n
+        if (n > MAX_TRIES) return
+        scope.launch {
+            delay(RETRY_MS * n)
+            if (active && !connected && endpointId in nearby) connectTo(endpointId, tapped = false)
+        }
+    }
+
+    override fun onFileFailed(meta: JSONObject, outgoing: Boolean) {
+        when (meta.optString("kind")) {
+            "albumshot" -> AlbumSync.onFailed(outgoing)
+            "apk" -> if (!outgoing) transfer = null
+        }
     }
 
     override fun onError(text: String) {
@@ -295,6 +359,12 @@ object Duo : DuoLink.Listener {
     fun albumsChanged() {
         if (connected && partnerPhone.isNotEmpty()) AlbumSync.resend(app, link)
     }
+
+    private const val SECOND_ASK_MS = 6_000L
+    private const val CONNECT_TIMEOUT_MS = 20_000L
+    private const val RETRY_MS = 3_000L
+    private const val MAX_TRIES = 4
+    private const val SLOW_RECONNECT_MS = 30_000L
 
     private fun versionCode(): Long = app.packageManager.getPackageInfo(app.packageName, 0).longVersionCode
 }

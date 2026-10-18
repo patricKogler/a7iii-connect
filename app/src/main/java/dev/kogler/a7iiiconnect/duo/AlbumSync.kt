@@ -66,6 +66,7 @@ object AlbumSync {
         getting = 0 to 0; asked = false; sending = 0 to 0
         partner = ""
         requested.clear()
+        failedOnce = false
     }
 
     /**
@@ -174,8 +175,10 @@ object AlbumSync {
                 first + later
             }
             link?.send(JSONObject().put("t", "albumcount").put("n", files.size))
-            sending = 0 to files.size
-            for ((meta, uri) in files) link?.sendUri(meta, uri)
+            // Added to what's still going out, if the albums changed and more was asked for.
+            sending = sending.first to sending.second + files.size
+            // A file that can't be read (deleted since) counts as done; it's asked for again next time.
+            for ((meta, uri) in files) if (link?.sendUri(meta, uri) != true) onFailed(outgoing = true)
         }
     }
 
@@ -215,6 +218,22 @@ object AlbumSync {
             changes++
         }
     }
+
+    /**
+     * A file didn't make it: it counts as done, so the progress finishes. The shot is still missing
+     * on the receiving phone, which asks for it again the next time the phones connect.
+     */
+    fun onFailed(outgoing: Boolean) {
+        if (outgoing) sending = (sending.first + 1) to sending.second
+        else getting = (getting.first + 1) to getting.second.coerceAtLeast(getting.first + 1)
+        if (!failedOnce) {
+            failedOnce = true
+            Duo.notice = "Some photos didn't come through. They'll come next time you connect."
+        }
+    }
+
+    /** A failure was already told about on this connection. */
+    private var failedOnce = false
 
     fun onProgress(meta: JSONObject, fraction: Float, outgoing: Boolean) {
         if (outgoing && fraction >= 1f) sending = (sending.first + 1) to sending.second
