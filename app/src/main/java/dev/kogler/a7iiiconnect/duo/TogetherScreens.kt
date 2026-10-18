@@ -232,6 +232,7 @@ internal fun LinkCard(who: String?, inviting: Boolean = false, onShareApp: (() -
                         Column(Modifier.weight(1f)) {
                             Text(
                                 when {
+                                    Duo.reconnecting && Duo.reconnectSlow -> "Still looking for ${Duo.partnerName}…"
                                     Duo.reconnecting -> "Lost ${Duo.partnerName}. Reconnecting…"
                                     inviting -> "Touch the backs of your phones"
                                     who != null -> "Touch phones with $who to sync"
@@ -240,8 +241,11 @@ internal fun LinkCard(who: String?, inviting: Boolean = false, onShareApp: (() -
                                 color = Color.White, fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                if (inviting) "The other phone joins this album and gets its photos."
-                                else "Or just open Together on both phones nearby. Apart works too: it all goes over next time.",
+                                when {
+                                    Duo.reconnecting && Duo.reconnectSlow -> "Keep Together open on both phones and bring them closer. Nothing done meanwhile is lost."
+                                    inviting -> "The other phone joins this album and gets its photos."
+                                    else -> "Or just open Together on both phones nearby. Apart works too: it all goes over next time."
+                                },
                                 color = Dim, fontSize = 13.sp,
                             )
                         }
@@ -249,12 +253,13 @@ internal fun LinkCard(who: String?, inviting: Boolean = false, onShareApp: (() -
                     val others = Duo.nearby.entries.toList()
                     for ((id, name) in others) {
                         Spacer(Modifier.height(8.dp))
-                        Surface(color = Color.White.copy(alpha = 0.06f), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().clickable { Duo.connectTo(id) }) {
+                        Surface(color = Color.White.copy(alpha = 0.06f), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().clickable(enabled = Duo.connecting == null) { Duo.connectTo(id) }) {
                             Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Avatar(name, PartnerColor, 28)
                                 Spacer(Modifier.width(10.dp))
                                 Text(name, color = Color.White, modifier = Modifier.weight(1f))
-                                Text("Connect", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                                if (Duo.connecting == id) Text("Connecting…", color = Dim)
+                                else Text("Connect", color = MaterialTheme.colorScheme.primary.copy(alpha = if (Duo.connecting == null) 1f else 0.4f), fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }

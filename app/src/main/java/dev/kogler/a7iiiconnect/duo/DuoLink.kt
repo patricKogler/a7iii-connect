@@ -5,12 +5,14 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
 import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
 import com.google.android.gms.nearby.connection.ConnectionResolution
 import com.google.android.gms.nearby.connection.ConnectionsClient
+import com.google.android.gms.nearby.connection.ConnectionsStatusCodes
 import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
 import com.google.android.gms.nearby.connection.DiscoveryOptions
 import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback
@@ -37,10 +39,14 @@ class DuoLink(private val context: Context, private val listener: Listener) {
         fun onLost(endpointId: String)
         fun onConnected(endpointId: String, incoming: Boolean, endpointName: String)
         fun onDisconnected()
+        /** Asking [endpointId] to connect didn't work out (and nothing else connected meanwhile). */
+        fun onConnectFailed(endpointId: String)
         fun onMessage(msg: JSONObject)
         fun onFile(meta: JSONObject, file: File)
         /** A file on its way, in either direction. */
         fun onProgress(meta: JSONObject, fraction: Float, outgoing: Boolean)
+        /** A file didn't make it, in either direction; it's asked for again next time. */
+        fun onFileFailed(meta: JSONObject, outgoing: Boolean)
         fun onError(text: String)
     }
 
@@ -61,12 +67,12 @@ class DuoLink(private val context: Context, private val listener: Listener) {
 
     fun advertise(name: String) {
         client.startAdvertising(name, SERVICE, lifecycle, AdvertisingOptions.Builder().setStrategy(STRATEGY).build())
-            .addOnFailureListener { fail("Couldn't start sharing", it) }
+            .addOnFailureListener { if (code(it) != ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING) fail("Couldn't let other phones find this one", it) }
     }
 
     fun discover() {
         client.startDiscovery(SERVICE, discovery, DiscoveryOptions.Builder().setStrategy(STRATEGY).build())
-            .addOnFailureListener { fail("Couldn't look for phones", it) }
+            .addOnFailureListener { if (code(it) != ConnectionsStatusCodes.STATUS_ALREADY_DISCOVERING) fail("Couldn't look for phones nearby", it) }
     }
 
     fun stopSearching() {
@@ -76,7 +82,12 @@ class DuoLink(private val context: Context, private val listener: Listener) {
 
     fun connect(endpointId: String, myName: String) {
         client.requestConnection(myName, endpointId, lifecycle)
-            .addOnFailureListener { fail("Couldn't connect", it) }
+            .addOnFailureListener {
+                Log.w(TAG, "requestConnection", it)
+                // The other phone asked at the same moment, or it already worked: nothing went wrong.
+                if (endpoint != null || code(it) == ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT) return@addOnFailureListener
+                if (endpointId !in pending) listener.onConnectFailed(endpointId)
+            }
     }
 
     fun send(msg: JSONObject) {
@@ -93,9 +104,12 @@ class DuoLink(private val context: Context, private val listener: Listener) {
 
     fun sendFile(meta: JSONObject, file: File) = sendFile(meta, Payload.fromFile(file))
 
-    fun sendUri(meta: JSONObject, uri: Uri) {
-        val pfd = context.contentResolver.openFileDescriptor(uri, "r") ?: return
+    /** Sends the file at [uri]; false if it can't be read (gone since), so nothing goes. */
+    fun sendUri(meta: JSONObject, uri: Uri): Boolean {
+        if (endpoint == null) return false
+        val pfd = runCatching { context.contentResolver.openFileDescriptor(uri, "r") }.getOrNull() ?: return false
         sendFile(meta, Payload.fromFile(pfd))
+        return true
     }
 
     private fun sendFile(meta: JSONObject, payload: Payload) {
@@ -137,7 +151,12 @@ class DuoLink(private val context: Context, private val listener: Listener) {
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             val info = pending.remove(endpointId)
             if (!result.status.isSuccess || info == null) {
-                if (endpoint == null) listener.onError("The other phone didn't connect. Try again.")
+                if (endpoint == null) listener.onConnectFailed(endpointId)
+                return
+            }
+            // Two connections came up at once (both phones asked): keep the first.
+            if (endpoint != null && endpoint != endpointId) {
+                client.disconnectFromEndpoint(endpointId)
                 return
             }
             endpoint = endpointId
@@ -191,9 +210,10 @@ class DuoLink(private val context: Context, private val listener: Listener) {
                     }
                 }
                 PayloadTransferUpdate.Status.FAILURE, PayloadTransferUpdate.Status.CANCELED -> {
-                    outgoing.remove(pid)
                     incomingFiles.remove(pid)
-                    metas.remove(pid)
+                    complete -= pid
+                    outgoing.remove(pid)?.let { listener.onFileFailed(it, true) }
+                    metas.remove(pid)?.let { listener.onFileFailed(it, false) }
                 }
                 else -> {}
             }
@@ -218,7 +238,7 @@ class DuoLink(private val context: Context, private val listener: Listener) {
             } else null
             main.post {
                 when {
-                    !ok -> listener.onError("A file didn't come through")
+                    !ok -> listener.onFileFailed(meta, false)
                     json != null -> listener.onMessage(json)
                     meta.optString("kind") != KIND_JSON -> listener.onFile(meta, dest)
                 }
@@ -226,9 +246,15 @@ class DuoLink(private val context: Context, private val listener: Listener) {
         }
     }
 
+    private fun code(e: Exception) = (e as? ApiException)?.statusCode
+
     private fun fail(what: String, e: Exception) {
         Log.w(TAG, what, e)
-        listener.onError("$what: ${e.message ?: e.javaClass.simpleName}")
+        val hint = when (code(e)) {
+            ConnectionsStatusCodes.STATUS_BLUETOOTH_ERROR -> ". Check that Bluetooth and Wi-Fi are on."
+            else -> ". Close Together and open it again."
+        }
+        listener.onError(what + hint)
     }
 
     companion object {
