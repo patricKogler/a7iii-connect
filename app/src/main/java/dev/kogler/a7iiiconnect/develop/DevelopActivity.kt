@@ -199,12 +199,11 @@ class DevelopActivity : ComponentActivity() {
                         places = places,
                         insights = insights,
                         people = people,
-                        onNamePerson = { ids, name ->
-                            people = People.rename(people, ids, name)
-                            val now = people
+                        onNamePerson = { seen, name ->
+                            people = People.rename(people, seen.map { it.id }.toSet(), name)
                             val found = insights
                             lifecycleScope.launch(Dispatchers.IO) {
-                                synchronized(People) { People.save(this@DevelopActivity, now) }
+                                People.name(this@DevelopActivity, seen, name)
                                 regroup(found)
                             }
                         },
@@ -512,7 +511,8 @@ class DevelopActivity : ComponentActivity() {
     /** Shows [found] and groups its faces into people again (call off the main thread). */
     private fun regroup(found: Map<String, ShotInsight>) {
         val grouped = synchronized(People) {
-            People.group(found, People.load(this)).also { People.save(this, it) }
+            val known = People.load(this)
+            People.group(found, known.people, known.next).also { People.save(this, it, known) }
         }
         runOnUiThread { insights = found; people = grouped }
     }

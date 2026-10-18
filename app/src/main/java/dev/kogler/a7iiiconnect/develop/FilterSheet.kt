@@ -87,7 +87,7 @@ fun FilterSheet(
     startExpanded: Boolean = false,
     /** People to filter by ([People.shown]); long-press one to name them. */
     people: List<Person> = emptyList(),
-    onNamePerson: (ids: Set<String>, name: String) -> Unit = { _, _ -> },
+    onNamePerson: (people: List<Person>, name: String) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("library", 0) }
@@ -323,7 +323,7 @@ fun FilterSheet(
         val done = {
             val key = same.first().key
             namingPerson = null
-            onNamePerson(same.map { it.id }.toSet(), name)
+            onNamePerson(same, name)
             // Keep the filter on this person under their new name.
             if (key in filter.people) onFilter(filter.copy(people = filter.people - key + (name.trim().ifEmpty { same.first().id })))
         }

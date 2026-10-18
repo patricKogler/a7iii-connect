@@ -91,6 +91,48 @@ class SmartTest {
     }
 
     @Test
+    fun aNameLandsOnWhoeverWasOnScreen() {
+        val rnd = Random(11)
+        val anna = person(rnd); val ben = person(rnd); val carl = person(rnd)
+        fun shots(prefix: String, who: FloatArray, n: Int) = (0 until n).associate { k ->
+            "$prefix$k" to ShotInsight(listOf(face(near(who, rnd))), 10f, emptyList(), "")
+        }
+        val annaShots = shots("a", anna, 6); val benShots = shots("b", ben, 4); val carlShots = shots("c", carl, 4)
+
+        val first = People.group(annaShots + benShots, emptyList())
+        val known = Remembered(first.map { Anchor(it.id, it.name, it.centroid) }, Remembered(emptyList(), 1).nextAfter(first))
+        val benOnScreen = first.single { p -> p.faces.all { it.shot.startsWith("b") } }
+
+        // While the name dialog is open, Ben's photos leave the library (he's forgotten)...
+        fun regroup(insights: Map<String, ShotInsight>, from: Remembered): Pair<List<Person>, Remembered> {
+            val found = People.group(insights, from.people, from.next)
+            val kept = found.filter { it.name != null || it.faces.size >= 2 }.map { Anchor(it.id, it.name, it.centroid) }
+            return found to People.decode(People.encode(Remembered(kept, from.nextAfter(found))))
+        }
+        val (_, withoutBen) = regroup(annaShots, known)
+        assertTrue(withoutBen.people.none { it.id == benOnScreen.id })
+        // ...and then Carl's arrive.
+        val (meanwhile, saved) = regroup(annaShots + carlShots, withoutBen)
+        val carlNow = meanwhile.single { p -> p.faces.all { it.shot.startsWith("c") } }
+        assertTrue("Carl must not get Ben's old id", carlNow.id != benOnScreen.id)
+
+        // Ben gets his name, Carl stays unnamed, and Ben's photos find Ben again.
+        val named = People.rename(saved, listOf(benOnScreen), "Ben")
+        val again = People.group(annaShots + benShots + carlShots, named.people, named.next)
+        assertEquals(setOf(FaceRef("b0", 0), FaceRef("b1", 0), FaceRef("b2", 0), FaceRef("b3", 0)), again.single { it.name == "Ben" }.faces.toSet())
+        assertTrue(again.filter { p -> p.faces.any { it.shot.startsWith("c") } }.all { it.name == null })
+        assertEquals(benOnScreen.id, again.single { it.name == "Ben" }.id)
+
+        // Forgetting the name of someone no longer remembered adds nobody.
+        assertEquals(saved.people.size, People.rename(saved, listOf(benOnScreen), " ").people.size)
+        // A file from before ids were counted still reads, and counts on from what's in it.
+        val old = "p1\tAnna\t${ShotInsight.packEmbedding(anna)}\np4\t\t${ShotInsight.packEmbedding(ben)}\n"
+        val back = People.decode(old)
+        assertEquals(listOf("p1", "p4"), back.people.map { it.id })
+        assertEquals(5, back.next)
+    }
+
+    @Test
     fun bestShotHasOpenEyesAndFocus() {
         val a = shot("A", 1000); val b = shot("B", 1500); val c = shot("C", 2000)
         val insights = mapOf(

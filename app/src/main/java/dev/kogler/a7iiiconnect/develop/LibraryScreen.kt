@@ -183,7 +183,7 @@ fun LibraryScreen(
     /** What looking at each shot found, and the people in them. */
     insights: Map<String, ShotInsight> = emptyMap(),
     people: List<Person> = emptyList(),
-    onNamePerson: (ids: Set<String>, name: String) -> Unit = { _, _ -> },
+    onNamePerson: (people: List<Person>, name: String) -> Unit = { _, _ -> },
     filter: QuickFilter = QuickFilter.ALL,
     onQuickFilter: (QuickFilter) -> Unit = {},
     sheetFilter: ShotFilter = ShotFilter(),
