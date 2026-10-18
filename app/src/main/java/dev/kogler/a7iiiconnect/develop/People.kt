@@ -55,6 +55,20 @@ class Person(val id: String, val name: String?, val centroid: FloatArray, val fa
 class Anchor(val id: String, val name: String?, val centroid: FloatArray)
 
 /**
+ * Everyone remembered, and the number the next new person's id gets. Ids are never handed out
+ * twice: a name typed for p5 must land on the p5 the person was looking at, even if that group
+ * was merged away and someone new turned up while the dialog was open.
+ */
+class Remembered(val people: List<Anchor>, val next: Int) {
+    /** The next free number, counting everyone in [found] too. */
+    fun nextAfter(found: List<Person>) = maxOf(next, firstFree(people.map { it.id }), firstFree(found.map { it.id }))
+
+    companion object {
+        fun firstFree(ids: List<String>) = (ids.mapNotNull { it.removePrefix("p").toIntOrNull() }.maxOrNull() ?: 0) + 1
+    }
+}
+
+/**
  * Groups faces into people, on the device. Faces join the person they look most like when they're
  * close enough ([JOIN]; same-person pairs measure about 0.7 to 1 with SFace, strangers under
  * about 0.3), otherwise they start someone new. People known from before go first, so their ids
@@ -82,10 +96,13 @@ object People {
         }
     }
 
-    /** People in [insights], starting from [known]; named people not in any photo now come back with no faces. */
-    fun group(insights: Map<String, ShotInsight>, known: List<Anchor>): List<Person> {
+    /**
+     * People in [insights], starting from [known]; named people not in any photo now come back with
+     * no faces. New people are numbered from [firstNew] on (or past [known], if that's higher).
+     */
+    fun group(insights: Map<String, ShotInsight>, known: List<Anchor>, firstNew: Int = 1): List<Person> {
         val groups = known.map { Group(it.id, it.name, it.centroid.copyOf()) }.toMutableList()
-        var next = (known.mapNotNull { it.id.removePrefix("p").toIntOrNull() }.maxOrNull() ?: 0) + 1
+        var next = maxOf(firstNew, Remembered.firstFree(known.map { it.id }))
         val embeddings = HashMap<FaceRef, FloatArray>()
         for ((key, insight) in insights.entries.sortedBy { it.key }) {
             insight.faces.forEachIndexed { i, f ->
@@ -125,24 +142,52 @@ object People {
 
     private fun file(context: Context) = File(context.filesDir, "develop/people.txt")
 
-    fun load(context: Context): List<Anchor> = runCatching {
-        file(context).readLines().mapNotNull { line ->
+    fun load(context: Context): Remembered = runCatching { decode(file(context).readText()) }.getOrDefault(Remembered(emptyList(), 1))
+
+    /** Remembers [people] (those in a photo, or named) for next time, after what was [known]. */
+    fun save(context: Context, people: List<Person>, known: Remembered) {
+        write(context, Remembered(people.filter { it.name != null || it.faces.size >= 2 }.map { Anchor(it.id, it.name, it.centroid) }, known.nextAfter(people)))
+    }
+
+    private fun write(context: Context, r: Remembered) {
+        runCatching { file(context).apply { parentFile?.mkdirs() }.writeText(encode(r)) }
+    }
+
+    /** One line per person (id, name, look), and a `#next` line; older files without it still read. */
+    fun encode(r: Remembered): String = "#next\t${r.next}\n" + r.people.joinToString("") {
+        "${it.id}\t${it.name?.replace('\t', ' ')?.replace('\n', ' ') ?: ""}\t${ShotInsight.packEmbedding(it.centroid)}\n"
+    }
+
+    fun decode(text: String): Remembered {
+        var next = 1
+        val people = text.lines().mapNotNull { line ->
             val parts = line.split('\t')
+            if (parts.size == 2 && parts[0] == "#next") next = parts[1].toIntOrNull() ?: 1
             if (parts.size != 3) return@mapNotNull null
             val e = ShotInsight.unpackEmbedding(parts[2]) ?: return@mapNotNull null
             Anchor(parts[0], parts[1].ifEmpty { null }, e)
         }
-    }.getOrDefault(emptyList())
+        return Remembered(people, maxOf(next, Remembered.firstFree(people.map { it.id })))
+    }
 
-    /** Remembers [people] (those in a photo, or named) for next time. */
-    fun save(context: Context, people: List<Person>) {
-        runCatching {
-            file(context).apply { parentFile?.mkdirs() }.writeText(
-                people.filter { it.name != null || it.faces.size >= 2 }.joinToString("") {
-                    "${it.id}\t${it.name?.replace('\t', ' ')?.replace('\n', ' ') ?: ""}\t${ShotInsight.packEmbedding(it.centroid)}\n"
-                },
-            )
-        }
+    /**
+     * [known] with the people the user picked ([seen], as they were on screen) called [name]
+     * (blank: forgets it). Goes by what's remembered now, not by an older list on screen, so a
+     * grouping that finished meanwhile isn't undone; someone merged away meanwhile comes back
+     * with the name and the look they had.
+     */
+    fun rename(known: Remembered, seen: List<Person>, name: String): Remembered {
+        val n = name.trim().ifEmpty { null }
+        val ids = seen.map { it.id }.toSet()
+        val have = known.people.map { it.id }.toSet()
+        val people = known.people.map { if (it.id in ids) Anchor(it.id, n, it.centroid) else it } +
+            (if (n == null) emptyList<Anchor>() else seen.filter { it.id !in have }.map { Anchor(it.id, n, it.centroid) })
+        return Remembered(people, known.next)
+    }
+
+    /** Names [seen] [name] in what's remembered (call off the main thread). */
+    fun name(context: Context, seen: List<Person>, name: String) {
+        synchronized(this) { write(context, rename(load(context), seen, name)) }
     }
 
     /** [people] with the ones in [ids] called [name] (blank: forgets the name). */
