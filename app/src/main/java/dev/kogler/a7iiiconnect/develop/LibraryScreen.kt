@@ -33,7 +33,7 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.rounded.UnfoldMore
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -41,7 +41,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntOffset
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
 import kotlin.math.roundToInt
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
@@ -75,6 +75,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -515,8 +516,8 @@ fun LibraryScreen(
                 }
             } else Box(Modifier.fillMaxSize()) {
                 val grid = rememberLazyGridState()
-                // The day of every grid item, header and shots alike, for the fast scroller's label.
-                val dayAt = remember(days) { days.flatMap { (day, dayShots) -> List(dayShots.size + 1) { day } } }
+                // Each day and its number of shots, for the fast scroller.
+                val daySizes = remember(days) { days.map { (day, dayShots) -> day to dayShots.size } }
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = 100.dp),
                     state = grid,
@@ -565,27 +566,91 @@ fun LibraryScreen(
                         }
                     }
                 }
-                FastScroller(grid, dayAt, Modifier.align(Alignment.TopEnd))
+                FastScroller(grid, daySizes, Modifier.align(Alignment.TopEnd))
             }
         }
     }
 }
 
+/** The grid's lines: a header per day, then its shots [columns] to a line. */
+internal class GridLines(days: List<Pair<Long, Int>>, columns: Int) {
+    /** Each line's first item, its day, and whether it's a day's header. */
+    val start: IntArray
+    val day: LongArray
+    val header: BooleanArray
+    /** The line each item is on. */
+    val lineOf: IntArray
+    /** How many of the lines before each (and, at [size], of all) are headers. */
+    private val headersBefore: IntArray
+
+    init {
+        val starts = ArrayList<Int>(); val ds = ArrayList<Long>(); val hs = ArrayList<Boolean>(); val of = ArrayList<Int>()
+        var item = 0
+        for ((d, n) in days) {
+            starts += item; ds += d; hs += true; of += starts.size - 1
+            item++
+            for (i in 0 until n) {
+                if (i % columns == 0) { starts += item; ds += d; hs += false }
+                of += starts.size - 1
+                item++
+            }
+        }
+        start = starts.toIntArray(); day = ds.toLongArray(); header = hs.toBooleanArray(); lineOf = of.toIntArray()
+        headersBefore = IntArray(start.size + 1)
+        for (i in start.indices) headersBefore[i + 1] = headersBefore[i] + if (header[i]) 1 else 0
+    }
+
+    val size get() = start.size
+
+    /** Where [line] (0..[size]) starts, in px, with header lines [headerH] and shot lines [rowH] tall, [gap] apart. */
+    fun top(line: Int, headerH: Float, rowH: Float, gap: Float): Float {
+        val h = headersBefore[line]
+        return h * (headerH + gap) + (line - h) * (rowH + gap)
+    }
+
+    /** The last line starting at or above [px]. */
+    fun lineAt(px: Float, headerH: Float, rowH: Float, gap: Float): Int {
+        var lo = 0; var hi = size - 1
+        while (lo < hi) {
+            val mid = (lo + hi + 1) / 2
+            if (top(mid, headerH, rowH, gap) <= px) lo = mid else hi = mid - 1
+        }
+        return lo
+    }
+}
+
 /**
  * A handle on the grid's right edge that shows up while scrolling: drag it to fly through the
- * library, with the day you'd land on shown beside it.
+ * library, with the day you'd land on shown beside it. It follows the grid's scroll pixel by pixel,
+ * and dragging it scrolls the grid smoothly to the matching spot rather than a row at a time.
  */
 @Composable
-private fun FastScroller(state: LazyGridState, dayAt: List<Long>, modifier: Modifier = Modifier) {
+private fun FastScroller(state: LazyGridState, days: List<Pair<Long, Int>>, modifier: Modifier = Modifier) {
     val info = state.layoutInfo
     val total = info.totalItemsCount
-    val onScreen = info.visibleItemsInfo.size
+    val visible = info.visibleItemsInfo
     // Only worth it once there are a few screens to get through.
-    if (onScreen == 0 || total < onScreen * 3) return
-    val scope = rememberCoroutineScope()
+    if (visible.isEmpty() || total < visible.size * 3) return
     val haptics = LocalHapticFeedback.current
+    val gap = with(LocalDensity.current) { 3.dp.toPx() }
+    val columns = visible.maxOf { it.column } + 1
+    val lines = remember(days, columns) { GridLines(days, columns) }
+    if (lines.lineOf.size != total) return
+    // Line heights as last seen on screen (a header line, a line of shots).
+    val heights = remember { floatArrayOf(0f, 0f) }
+    for (v in visible) heights[if (lines.header[lines.lineOf[v.index]]) 0 else 1] = v.size.height.toFloat()
+    if (heights[1] == 0f) heights[1] = visible.first().size.height.toFloat()
+    if (heights[0] == 0f) heights[0] = heights[1] / 2
+    val headerH = heights[0]
+    val rowH = heights[1]
+    val viewport = (info.viewportEndOffset - info.viewportStartOffset).toFloat()
+    val range = (lines.top(lines.size, headerH, rowH, gap) + info.beforeContentPadding + info.afterContentPadding - viewport).coerceAtLeast(1f)
+
     var dragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(0f) }
+    // Where a drag wants the grid: (item, offset in px); only the latest one counts.
+    val dragTo = remember { Channel<Pair<Int, Int>>(Channel.CONFLATED) }
+    LaunchedEffect(state) { for ((item, offset) in dragTo) state.scrollToItem(item, offset) }
     var shown by remember { mutableStateOf(false) }
     val active = dragging || state.isScrollInProgress
     LaunchedEffect(active) {
@@ -593,19 +658,23 @@ private fun FastScroller(state: LazyGridState, dayAt: List<Long>, modifier: Modi
     }
     val alpha by animateFloatAsState(if (shown) 1f else 0f, tween(if (shown) 150 else 400), label = "fast-scroll")
     if (alpha == 0f && !shown) return
-    val last = (total - onScreen).coerceAtLeast(1)
-    val fraction = if (dragging) dragFraction else (state.firstVisibleItemIndex.toFloat() / last).coerceIn(0f, 1f)
-    val target = (fraction * last).roundToInt().coerceIn(0, total - 1)
-    val day = dayAt.getOrNull(target)
+    val firstLine = lines.lineOf[state.firstVisibleItemIndex.coerceIn(0, total - 1)]
+    val scrolled = lines.top(firstLine, headerH, rowH, gap) + state.firstVisibleItemScrollOffset
+    val fraction = if (dragging) dragFraction else (scrolled / range).coerceIn(0f, 1f)
+    val day = lines.day.getOrNull(lines.lineAt(fraction * range, headerH, rowH, gap))
     LaunchedEffect(day) { if (dragging) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
     BoxWithConstraints(modifier.fillMaxHeight().alpha(alpha)) {
         val handle = 52.dp
         val travel = with(LocalDensity.current) { (maxHeight - handle).toPx() }.coerceAtLeast(1f)
         val y = (fraction * travel).roundToInt()
         // The drag outlives recompositions (a row more or less on screen), so it reads these fresh.
-        val lastNow by rememberUpdatedState(last)
-        val totalNow by rememberUpdatedState(total)
+        val fractionNow by rememberUpdatedState(fraction)
         val travelNow by rememberUpdatedState(travel)
+        val target by rememberUpdatedState { f: Float ->
+            val px = f * range
+            val line = lines.lineAt(px, headerH, rowH, gap)
+            lines.start[line] to (px - lines.top(line, headerH, rowH, gap)).roundToInt().coerceAtLeast(0)
+        }
         Row(
             Modifier.offset { IntOffset(0, y) },
             verticalAlignment = Alignment.CenterVertically,
@@ -630,7 +699,7 @@ private fun FastScroller(state: LazyGridState, dayAt: List<Long>, modifier: Modi
                 modifier = Modifier.size(width = 32.dp, height = handle).testTag("fast-scroll").pointerInput(Unit) {
                     detectVerticalDragGestures(
                         onDragStart = {
-                            dragFraction = (state.firstVisibleItemIndex.toFloat() / lastNow).coerceIn(0f, 1f)
+                            dragFraction = fractionNow
                             dragging = true
                         },
                         onDragEnd = { dragging = false },
@@ -638,8 +707,7 @@ private fun FastScroller(state: LazyGridState, dayAt: List<Long>, modifier: Modi
                     ) { change, dy ->
                         change.consume()
                         dragFraction = (dragFraction + dy / travelNow).coerceIn(0f, 1f)
-                        val to = (dragFraction * lastNow).roundToInt().coerceIn(0, totalNow - 1)
-                        scope.launch { state.scrollToItem(to) }
+                        dragTo.trySend(target(dragFraction))
                     }
                 },
             ) {
@@ -729,10 +797,22 @@ fun Thumb(
     selected: Boolean = false,
 ) {
     val context = LocalContext.current
-    val bitmap by produceState<ImageBitmap?>(Photos.cachedThumbnail(photo)?.asImageBitmap(), photo.id) {
-        if (value == null) value = withContext(Dispatchers.IO) { Photos.thumbnail(context, photo)?.asImageBitmap() }
+    // The cell's shorter side in pixels (stepped), once laid out: the thumbnail is loaded to cover it.
+    var edge by remember { mutableIntStateOf(0) }
+    // Which photo the shown bitmap is of: the same cell can be handed another photo.
+    val shownId = remember { longArrayOf(photo.id) }
+    val bitmap by produceState<ImageBitmap?>(Photos.cachedThumbnail(photo)?.asImageBitmap(), photo.id, edge) {
+        if (shownId[0] != photo.id) { shownId[0] = photo.id; value = Photos.cachedThumbnail(photo)?.asImageBitmap() }
+        if (edge == 0) return@produceState
+        // A cached one already big enough shows as it is; a smaller one shows until the sharp one is in.
+        if (value?.let { minOf(it.width, it.height) >= edge } != true) {
+            withContext(Dispatchers.IO) { Photos.thumbnail(context, photo, edge)?.asImageBitmap() }?.let { value = it }
+        }
     }
-    Box(modifier.clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
+    Box(
+        modifier.onSizeChanged { edge = Photos.thumbStep(minOf(it.width, it.height)) }
+            .clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh),
+    ) {
         bitmap?.let {
             Image(
                 it, photo.name, contentScale = ContentScale.Crop,

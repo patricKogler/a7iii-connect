@@ -72,26 +72,36 @@ object Photos {
 
     /**
      * Grid thumbnail: the JPEG embedded in a raw, or the system thumbnail for a JPEG. Its shorter
-     * edge covers a whole grid cell, so the square crop in the grid never gets stretched.
+     * edge is at least [edge] pixels (the cell it fills; a library grid cell by default), so the
+     * square crop never gets stretched. A cached one too small for [edge] is loaded again bigger.
      */
-    fun thumbnail(context: Context, photo: LibraryPhoto): Bitmap? {
-        thumbs.get(photo.id)?.let { return it }
-        val edge = thumbEdge(context)
+    fun thumbnail(context: Context, photo: LibraryPhoto, edge: Int = thumbEdge(context)): Bitmap? {
+        thumbs.get(photo.id)?.takeIf { minOf(it.width, it.height) >= edge }?.let { return it }
         val bmp = runCatching {
             if (photo.isRaw) embeddedPreview(context, photo.uri, edge, shortEdge = true)
             else runCatching { context.contentResolver.loadThumbnail(photo.uri, Size(edge * 3 / 2, edge * 3 / 2), null) }
-                .getOrElse { decodeJpeg(context, photo.uri, edge, shortEdge = true) }
+                .getOrNull()
+                // Some phones keep only small system thumbnails; those would look soft, so decode the photo.
+                ?.takeIf { minOf(it.width, it.height) >= edge }
+                ?: decodeJpeg(context, photo.uri, edge, shortEdge = true)
         }.getOrNull()?.let { fitShortEdge(it, edge) } ?: return null
         thumbs.put(photo.id, bmp)
         return bmp
     }
 
-    /** Pixels across one library grid cell (100 dp minimum, as many columns as fit the phone held upright). */
+    /** [px] rounded up to a step of thumbnail sizes, so cells a few pixels apart share one. */
+    fun thumbStep(px: Int): Int = ((px + 63) / 64 * 64).coerceIn(128, 1024)
+
+    /**
+     * Pixels across one library grid cell with the phone held upright: as many 100 dp columns as fit
+     * between the grid's 4 dp padding, 3 dp apart, as the grid lays them out.
+     */
     private fun thumbEdge(context: Context): Int {
         val dm = context.resources.displayMetrics
-        val across = minOf(dm.widthPixels, dm.heightPixels)
-        val columns = (across / (100 * dm.density)).toInt().coerceAtLeast(1)
-        return (across / columns).coerceIn(256, 512)
+        val across = minOf(dm.widthPixels, dm.heightPixels) - 8 * dm.density
+        val gap = 3 * dm.density
+        val columns = ((across + gap) / (100 * dm.density + gap)).toInt().coerceAtLeast(1)
+        return thumbStep(((across - gap * (columns - 1)) / columns).roundToInt())
     }
 
     /** Scales [bmp] down (filtered) so its shorter edge is [edge]; smaller pictures are left as they are. */
