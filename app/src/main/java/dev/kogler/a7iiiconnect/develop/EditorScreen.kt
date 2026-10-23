@@ -1483,34 +1483,31 @@ fun EditorScreen(
                 }
             }
 
-            // Bottom bar: a section opens its last tab, and tapping the open one closes the panel.
-            // A dot marks the sections with edits.
-            if (!fullscreen) Row(Modifier.fillMaxWidth().background(Color(0xFF0E0E0E)).padding(vertical = 8.dp, horizontal = 4.dp)) {
+            // Bottom bar, icons only: a section opens its last tab, and tapping the open one closes
+            // the panel. A dot marks the sections with edits.
+            if (!fullscreen) Row(Modifier.fillMaxWidth().background(Color(0xFF0E0E0E)).padding(vertical = 2.dp, horizontal = 4.dp)) {
                 for (s in Section.entries) {
                     val own = s.tools.filter(allowed)
                     if (own.isEmpty()) continue
                     val selected = tool?.section == s
                     val changed = own.any { it.changed(settings) }
                     val primary = MaterialTheme.colorScheme.primary
-                    Column(
-                        Modifier.weight(1f).testTag("section-${s.name}").clip(RoundedCornerShape(12.dp))
-                            .clickable { selectTool(if (selected) null else lastTool[s]?.takeIf { it in own } ?: own.first()) }
-                            .padding(vertical = 2.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                    Box(
+                        Modifier.weight(1f).height(48.dp).testTag("section-${s.name}").clip(RoundedCornerShape(12.dp))
+                            .clickable { selectTool(if (selected) null else lastTool[s]?.takeIf { it in own } ?: own.first()) },
+                        contentAlignment = Alignment.Center,
                     ) {
                         Box(
-                            Modifier.size(width = 60.dp, height = 32.dp).clip(RoundedCornerShape(16.dp))
+                            Modifier.size(width = 56.dp, height = 32.dp).clip(RoundedCornerShape(16.dp))
                                 .background(if (selected) primary else Color.Transparent),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Icon(s.icon, null, tint = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White)
+                            Icon(s.icon, s.label, tint = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White)
                             if (changed) Box(
-                                Modifier.align(Alignment.TopEnd).padding(top = 5.dp, end = 15.dp).size(6.dp)
+                                Modifier.align(Alignment.TopEnd).padding(top = 5.dp, end = 13.dp).size(6.dp)
                                     .background(if (selected) MaterialTheme.colorScheme.onPrimary else primary, CircleShape),
                             )
                         }
-                        Spacer(Modifier.height(4.dp))
-                        Text(s.label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
                     }
                 }
             }
@@ -2351,7 +2348,7 @@ private fun Segmented(
 private fun PanelTabs(tabs: List<Tool>, open: Tool, s: Settings, onSelect: (Tool) -> Unit, onReset: () -> Unit) {
     val primary = MaterialTheme.colorScheme.primary
     Row(
-        Modifier.fillMaxWidth().height(48.dp).drawBehind {
+        Modifier.fillMaxWidth().height(38.dp).drawBehind {
             drawLine(Color(0xFF262626), Offset(0f, size.height - 0.5f), Offset(size.width, size.height - 0.5f), 1f)
         },
         verticalAlignment = Alignment.CenterVertically,
@@ -2360,16 +2357,19 @@ private fun PanelTabs(tabs: List<Tool>, open: Tool, s: Settings, onSelect: (Tool
             val on = t == open
             Row(
                 Modifier.weight(1f).fillMaxHeight().testTag("tool-${t.name}").clickable { onSelect(t) }
-                    .drawBehind { if (on) drawRect(primary, Offset(0f, size.height - 3.dp.toPx()), Size(size.width, 3.dp.toPx())) },
+                    .drawBehind { if (on) drawRect(primary, Offset(0f, size.height - 2.dp.toPx()), Size(size.width, 2.dp.toPx())) },
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(t.label, color = if (on) primary else Color(0xFFBDBDBD), fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                Text(t.label, color = if (on) primary else Color(0xFFBDBDBD), fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
                 if (t.changed(s)) ChangedDot(Modifier.padding(start = 5.dp))
             }
         }
-        IconButton(onClick = onReset, enabled = open.changed(s)) {
-            Icon(Icons.Outlined.RestartAlt, "Reset ${open.label}", tint = if (open.changed(s)) Color.White else Color(0xFF5A5A5A))
+        Box(
+            Modifier.width(44.dp).fillMaxHeight().clickable(enabled = open.changed(s), onClick = onReset),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Outlined.RestartAlt, "Reset ${open.label}", Modifier.size(20.dp), tint = if (open.changed(s)) Color.White else Color(0xFF5A5A5A))
         }
     }
 }
@@ -3115,38 +3115,38 @@ internal fun AdjustSlider(
     val haptics = LocalHapticFeedback.current
     val fade by animateFloatAsState(if (LocalAdjusting.current && !active) 0f else 1f, label = "fade")
     val resetNow by rememberUpdatedState({ if (reset != null) reset() else { onChange(default); onDone() } })
-    // One line: label, slider, value, so a whole panel fits without scrolling. A label that starts
-    // with spaces belongs to the slider above it and is indented.
+    // The label and value on a short line above the slider, lined up with the ends of its track.
+    // A label that starts with spaces belongs to the slider above it and is indented.
     val sub = label.startsWith(" ")
-    Row(Modifier.fillMaxWidth().height(44.dp).graphicsLayer { alpha = fade }, verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.fillMaxWidth().graphicsLayer { alpha = fade }) {
         Row(
-            Modifier.width(104.dp).fillMaxHeight().pointerInput(Unit) {
-                detectTapGestures(
-                    onDoubleTap = { resetNow() },
-                    onLongPress = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); resetNow() },
-                )
-            }.padding(start = if (sub) 12.dp else 0.dp),
+            Modifier.fillMaxWidth().padding(top = 6.dp).padding(start = if (sub) 24.dp else 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // While scrubbing slowly, the label shows the speed.
-            val text = if (speed < 1f) speedLabel(speed) else label.trim()
+            Row(
+                Modifier.weight(1f).pointerInput(Unit) {
+                    detectTapGestures(
+                        onDoubleTap = { resetNow() },
+                        onLongPress = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); resetNow() },
+                    )
+                },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(label.trim(), color = if (sub) Color(0xFFBDBDBD) else Color.White, fontSize = 13.sp, maxLines = 1)
+                if (changed) ChangedDot(Modifier.padding(start = 6.dp))
+                // While scrubbing slowly, the speed shows beside the label.
+                if (speed < 1f) Text(speedLabel(speed), color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(start = 8.dp))
+            }
             Text(
-                text, color = if (speed < 1f || sub) Color(0xFFBDBDBD) else Color.White, fontSize = 13.sp,
-                lineHeight = 15.sp, maxLines = 2, modifier = Modifier.weight(1f, fill = false),
+                format(value), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1,
+                modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { typing = true }.padding(horizontal = 8.dp, vertical = 2.dp),
             )
-            if (changed) ChangedDot(Modifier.padding(start = 5.dp))
         }
         PrecisionSlider(
             value = value, range = range, default = default, track = track,
             onChange = onChange, onDone = onDone,
             onActive = { active = it }, onSpeed = { speed = it },
             onDoubleTap = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); resetNow() },
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            format(value), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1,
-            textAlign = TextAlign.End,
-            modifier = Modifier.width(52.dp).clip(RoundedCornerShape(4.dp)).clickable { typing = true }.padding(vertical = 8.dp),
         )
     }
     if (typing) {
