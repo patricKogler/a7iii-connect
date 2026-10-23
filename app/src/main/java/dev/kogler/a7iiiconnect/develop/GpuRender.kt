@@ -84,11 +84,14 @@ private object Shaders {
     fun give(g: GpuPreview) = synchronized(idle) { if (idle.size < 2) idle += g }
 }
 
+/** How [Offscreen]'s buffers are used: the GPU draws into them, then the CPU reads them. */
+internal const val OFFSCREEN_USAGE = HardwareBuffer.USAGE_GPU_COLOR_OUTPUT or HardwareBuffer.USAGE_CPU_READ_OFTEN
+
 /** A [width] x [height] offscreen surface that draws a [GpuPreview] and reads the pixels back. */
 private class Offscreen(val width: Int, val height: Int) : AutoCloseable {
-    private val reader = ImageReader.newInstance(
-        width, height, PixelFormat.RGBA_8888, 2, HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or HardwareBuffer.USAGE_GPU_COLOR_OUTPUT,
-    )
+    // The CPU reads the pixels back, so the buffers must be CPU-readable: without USAGE_CPU_READ_OFTEN
+    // a phone can't lock them and Image.planes throws (Robolectric doesn't care).
+    private val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2, OFFSCREEN_USAGE)
     // Not `apply { setPosition(0, 0, width, height) }`: inside it those names are the node's own
     // (still 0 x 0) size, and a 0 x 0 node draws nothing.
     private val node = RenderNode("develop").also { it.setPosition(0, 0, this.width, this.height) }
