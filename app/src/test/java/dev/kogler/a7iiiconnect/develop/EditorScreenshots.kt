@@ -71,7 +71,8 @@ class EditorScreenshots {
         tool("DETAIL"); shot("07-detail")
         section("FRAME"); tool("OPTICS"); shot("08-optics")
         tool("GEOMETRY"); shot("09-geometry")
-        section("LOOKS"); shot("10-presets")
+        // The look thumbnails render one at a time after the panel opens.
+        section("LOOKS"); repeat(40) { step() }; shot("10-presets")
         // A section opens on the tab it was left on.
         section("FRAME"); compose.onNodeWithText("Vertical").assertExists()
         tool("CROP"); awaitRender(); shot("11-crop")

@@ -52,6 +52,10 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -96,6 +100,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -1386,7 +1393,7 @@ fun EditorScreen(
                     )
                     when (tool) {
                         Tool.PRESETS -> PresetsPanel(
-                            ctl,
+                            ctl, o,
                             presets = Preset.BUILT_IN + presets,
                             current = settings,
                             onApply = { p ->
@@ -2832,34 +2839,32 @@ private fun GeometryPanel(c: Controls) {
     Text("A grid shows while you drag, to line up verticals.", color = Color.Gray, fontSize = 11.sp)
 }
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
+/**
+ * Looks: the profile, then each group of looks as a strip of thumbnails of this photo with the
+ * look on. The thumbnails show the edit as it was when Looks opened, so trying looks doesn't
+ * re-render them all.
+ */
 @Composable
-private fun PresetsPanel(c: Controls, presets: List<Preset>, current: Settings, onApply: (Preset) -> Unit, onDelete: (Preset) -> Unit, onCreate: () -> Unit) {
+private fun PresetsPanel(
+    c: Controls, opened: OpenedPhoto?, presets: List<Preset>, current: Settings,
+    onApply: (Preset) -> Unit, onDelete: (Preset) -> Unit, onCreate: () -> Unit,
+) {
     var confirm by remember { mutableStateOf<Preset?>(null) }
+    val base = remember(opened) { current }
+    val thumbs = remember(opened) { opened?.let { LookThumbs(it) } }
     ProfilePicker(c)
-    Text("Film stocks", color = Color(0xFFA8A8A8), fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 16.dp, bottom = 6.dp))
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        for (p in presets.filter { it.film }) LookChip(p.name, p.isApplied(current), { onApply(p) })
+    val film = presets.filter { it.film }
+    LookRow("Film stocks", film.size) {
+        items(film, key = { it.name }) { p -> LookTile(p.name, p.applyTo(base), thumbs, p.isApplied(current), { onApply(p) }) }
     }
-    LutPicker(c)
-    Text("Presets", color = Color(0xFFA8A8A8), fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 16.dp))
-    Text("Tap to apply. A look replaces the last one and keeps your exposure, white balance, crop and masks. Long-press your own presets to delete them.", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp))
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        for (p in presets.filter { !it.film }) {
-            val on = p.isApplied(current)
-            Box(
-                Modifier.clip(RoundedCornerShape(8.dp))
-                    .background(if (p.builtIn) Color(0xFF2A2A2A) else Color(0xFF263A4A))
-                    .then(if (on) Modifier.border(1.5.dp, Color.White, RoundedCornerShape(8.dp)) else Modifier)
-                    .combinedClickable(onClick = { onApply(p) }, onLongClick = { if (!p.builtIn) confirm = p })
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-            ) { Text(p.name, color = Color.White, fontSize = 13.sp) }
+    LutPicker(c, base, thumbs)
+    val own = presets.filter { !it.film }
+    LookRow("Presets", own.size, actions = { RowAction("+ Create", onClick = onCreate) }) {
+        items(own, key = { (if (it.builtIn) "b:" else "u:") + it.name }) { p ->
+            LookTile(p.name, p.applyTo(base), thumbs, p.isApplied(current), { onApply(p) }, onLong = { if (!p.builtIn) confirm = p })
         }
-        Box(
-            Modifier.clip(RoundedCornerShape(8.dp)).border(1.dp, Color.Gray, RoundedCornerShape(8.dp))
-                .clickable { onCreate() }.padding(horizontal = 12.dp, vertical = 8.dp),
-        ) { Text("+ Create preset", color = Color.White, fontSize = 13.sp) }
     }
+    Text("Long-press your own presets and LUTs to delete them.", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
     confirm?.let { p ->
         AlertDialog(
             onDismissRequest = { confirm = null },
@@ -2870,24 +2875,13 @@ private fun PresetsPanel(c: Controls, presets: List<Preset>, current: Settings, 
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun LookChip(label: String, on: Boolean, onClick: () -> Unit, onLong: () -> Unit = {}) {
-    Box(
-        Modifier.clip(RoundedCornerShape(8.dp)).background(Color(0xFF2A2A2A))
-            .then(if (on) Modifier.border(1.5.dp, Color.White, RoundedCornerShape(8.dp)) else Modifier)
-            .combinedClickable(onClick = onClick, onLongClick = onLong)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-    ) { Text(label, color = Color.White, fontSize = 13.sp) }
-}
-
 /**
  * Film LUTs imported on this phone (.cube, Hald PNG, or a .zip of them), grouped by the folder
  * they came from, with the amount once one is on. Long-press one to delete it or its folder.
  */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LutPicker(c: Controls) {
+private fun LutPicker(c: Controls, base: Settings, thumbs: LookThumbs?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var luts by remember { mutableStateOf(LutLibrary.ensure(context)) }
@@ -2897,7 +2891,9 @@ private fun LutPicker(c: Controls) {
     /** While the G'MIC pack downloads: its size, with [importing] counting the files done. */
     var downloadTotal by remember { mutableStateOf<Int?>(null) }
     val folders = luts.map { it.folder }.distinct()
-    var folder by remember { mutableStateOf(luts.firstOrNull { it.id == c.s.lut }?.folder ?: folders.firstOrNull()) }
+    // The folder "See all" shows; null for all of them.
+    var folder by remember { mutableStateOf<String?>(null) }
+    var sheet by remember { mutableStateOf(false) }
     val getPack: () -> Unit = {
         importing = 0
         message = null
@@ -2945,10 +2941,33 @@ private fun LutPicker(c: Controls) {
             }
         }
     }
-    Row(Modifier.fillMaxWidth().padding(top = 16.dp).fadeWhileAdjusting(), verticalAlignment = Alignment.CenterVertically) {
-        Text("Film LUTs", color = Color(0xFFA8A8A8), fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-        TextButton(onClick = getPack, enabled = importing == null) { Text("Get film pack", fontSize = 12.sp) }
-        TextButton(onClick = { pick.launch(arrayOf("*/*")) }, enabled = importing == null) { Text("+ Import", fontSize = 12.sp) }
+    // The pack's looks have fixed "gmic-" ids; once some are here, getting it again lives in See all.
+    val hasPack = luts.any { it.id.startsWith("gmic-") }
+    val lutActions: @Composable () -> Unit = {
+        if (!hasPack) RowAction("Get film pack", enabled = importing == null, onClick = getPack)
+        RowAction("+ Import", enabled = importing == null) { pick.launch(arrayOf("*/*")) }
+    }
+    if (luts.isEmpty()) {
+        Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Film LUTs", color = Color(0xFFA8A8A8), fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+            lutActions()
+        }
+    } else {
+        LookRow("Film LUTs", luts.size, actions = {
+            if (!hasPack) lutActions()
+            RowAction("See all") { sheet = true }
+        }) {
+            // The one that's on comes first, so it's in sight.
+            val ordered = luts.filter { it.id == c.s.lut } + luts.filter { it.id != c.s.lut }
+            item(key = "none") { LookTile("None", base.copy(lut = null), thumbs, c.s.lut == null, { c.commit(c.s.copy(lut = null)) }) }
+            items(ordered, key = { it.id }) { e ->
+                LookTile(
+                    e.name, base.copy(lut = e.id), thumbs, e.id == c.s.lut,
+                    { c.commit(c.s.copy(lut = if (e.id == c.s.lut) null else e.id)) }, { confirm = e },
+                    file = if (thumbs == null) LutLibrary.thumbnail(context, e.id) else null,
+                )
+            }
+        }
     }
     importing?.let { n ->
         val total = downloadTotal
@@ -2961,20 +2980,20 @@ private fun LutPicker(c: Controls) {
         }
     }
     message?.let { Text(it, color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 2.dp)) }
-    if (luts.isEmpty()) {
-        if (importing == null) Text(
-            "Get film pack downloads about 300 free film looks (Portra, Ektar, Velvia, Tri-X, Polaroid…) from the G'MIC collection on GitHub, about 40 MB. Or import your own .cube files, Hald PNGs, or a .zip of them.",
-            color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp),
-        )
-    } else {
-        if (folders.size > 1) Chips(folders, folders.indexOf(folder).coerceAtLeast(0), marked = folders.map { f -> luts.any { it.folder == f && it.id == c.s.lut } }) { folder = folders[it] }
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp).fadeWhileAdjusting()) {
-            LookChip("None", c.s.lut == null, { c.commit(c.s.copy(lut = null)) })
-            for (e in luts.filter { it.folder == (folder ?: folders.first()) }) {
-                LookChip(e.name, e.id == c.s.lut, { c.commit(c.s.copy(lut = if (e.id == c.s.lut) null else e.id)) }, { confirm = e })
-            }
-        }
-    }
+    if (luts.isEmpty() && importing == null) Text(
+        "Get film pack downloads about 300 free film looks (Portra, Ektar, Velvia, Tri-X, Polaroid…) from the G'MIC collection on GitHub, about 40 MB. Or import your own .cube files, Hald PNGs, or a .zip of them.",
+        color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp),
+    )
+    if (sheet) LutSheet(
+        luts, folders, folder, onFolder = { folder = it }, on = c.s.lut, base = base, thumbs = thumbs,
+        actions = {
+            RowAction(if (hasPack) "Update film pack" else "Get film pack", enabled = importing == null, onClick = getPack)
+            RowAction("+ Import", enabled = importing == null) { pick.launch(arrayOf("*/*")) }
+        },
+        onPick = { id -> c.commit(c.s.copy(lut = if (id == c.s.lut) null else id)) },
+        onLong = { confirm = it },
+        onDismiss = { sheet = false },
+    )
     if (c.s.lut != null) {
         if (luts.none { it.id == c.s.lut }) {
             Text("This edit uses a LUT that isn't on this phone.", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp))
@@ -2991,17 +3010,62 @@ private fun LutPicker(c: Controls) {
             confirmButton = {
                 Row {
                     if (inFolder > 1) TextButton(onClick = {
-                        LutLibrary.deleteFolder(context, e.folder); luts = LutLibrary.ensure(context); folder = luts.firstOrNull()?.folder; confirm = null
+                        LutLibrary.deleteFolder(context, e.folder); luts = LutLibrary.ensure(context); folder = null; confirm = null
                     }) { Text("All $inFolder in ${e.folder}") }
                     TextButton(onClick = {
                         LutLibrary.delete(context, e.id); luts = LutLibrary.ensure(context)
-                        if (luts.none { it.folder == folder }) folder = luts.firstOrNull()?.folder
+                        if (luts.none { it.folder == folder }) folder = null
                         confirm = null
                     }) { Text("Delete") }
                 }
             },
             dismissButton = { TextButton(onClick = { confirm = null }) { Text("Cancel") } },
         )
+    }
+}
+
+/**
+ * Every LUT as a grid, for a big pack: search by name, filter by folder. Tapping one applies it,
+ * and the sheet stays up so you can try the next.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LutSheet(
+    luts: List<LutLibrary.Entry>, folders: List<String>, folder: String?, onFolder: (String?) -> Unit,
+    on: String?, base: Settings, thumbs: LookThumbs?, actions: @Composable () -> Unit,
+    onPick: (String) -> Unit, onLong: (LutLibrary.Entry) -> Unit, onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    var query by remember { mutableStateOf("") }
+    val shown = luts.filter { (folder == null || it.folder == folder) && (query.isBlank() || it.name.contains(query.trim(), ignoreCase = true)) }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight(0.8f).padding(horizontal = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Film LUTs", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+                Text(" · ${luts.size}", color = Color.Gray, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                actions()
+            }
+            OutlinedTextField(
+                value = query, onValueChange = { query = it }, singleLine = true,
+                placeholder = { Text("Search looks") }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp).testTag("lut-search"),
+            )
+            if (folders.size > 1) Chips(listOf("All") + folders, folders.indexOf(folder) + 1, marked = listOf(false) + folders.map { f -> luts.any { it.folder == f && it.id == on } }) {
+                onFolder(if (it == 0) null else folders[it - 1])
+            }
+            LazyVerticalGrid(
+                GridCells.Adaptive(76.dp), Modifier.fillMaxWidth().weight(1f),
+                contentPadding = PaddingValues(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                gridItems(shown, key = { it.id }) { e ->
+                    LookTile(
+                        e.name, base.copy(lut = e.id), thumbs, e.id == on, { onPick(e.id) }, { onLong(e) },
+                        file = if (thumbs == null) LutLibrary.thumbnail(context, e.id) else null, size = 76.dp,
+                    )
+                }
+            }
+            if (shown.isEmpty()) Text("No looks match.", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(bottom = 16.dp))
+        }
     }
 }
 
