@@ -3115,38 +3115,38 @@ internal fun AdjustSlider(
     val haptics = LocalHapticFeedback.current
     val fade by animateFloatAsState(if (LocalAdjusting.current && !active) 0f else 1f, label = "fade")
     val resetNow by rememberUpdatedState({ if (reset != null) reset() else { onChange(default); onDone() } })
-    // One line: label, slider, value, so a whole panel fits without scrolling. A label that starts
-    // with spaces belongs to the slider above it and is indented.
+    // The label and value on a short line above the slider, lined up with the ends of its track.
+    // A label that starts with spaces belongs to the slider above it and is indented.
     val sub = label.startsWith(" ")
-    Row(Modifier.fillMaxWidth().height(44.dp).graphicsLayer { alpha = fade }, verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.fillMaxWidth().graphicsLayer { alpha = fade }) {
         Row(
-            Modifier.width(104.dp).fillMaxHeight().pointerInput(Unit) {
-                detectTapGestures(
-                    onDoubleTap = { resetNow() },
-                    onLongPress = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); resetNow() },
-                )
-            }.padding(start = if (sub) 12.dp else 0.dp),
+            Modifier.fillMaxWidth().padding(top = 6.dp).padding(start = if (sub) 24.dp else 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // While scrubbing slowly, the label shows the speed.
-            val text = if (speed < 1f) speedLabel(speed) else label.trim()
+            Row(
+                Modifier.weight(1f).pointerInput(Unit) {
+                    detectTapGestures(
+                        onDoubleTap = { resetNow() },
+                        onLongPress = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); resetNow() },
+                    )
+                },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(label.trim(), color = if (sub) Color(0xFFBDBDBD) else Color.White, fontSize = 13.sp, maxLines = 1)
+                if (changed) ChangedDot(Modifier.padding(start = 6.dp))
+                // While scrubbing slowly, the speed shows beside the label.
+                if (speed < 1f) Text(speedLabel(speed), color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(start = 8.dp))
+            }
             Text(
-                text, color = if (speed < 1f || sub) Color(0xFFBDBDBD) else Color.White, fontSize = 13.sp,
-                lineHeight = 15.sp, maxLines = 2, modifier = Modifier.weight(1f, fill = false),
+                format(value), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1,
+                modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { typing = true }.padding(horizontal = 8.dp, vertical = 2.dp),
             )
-            if (changed) ChangedDot(Modifier.padding(start = 5.dp))
         }
         PrecisionSlider(
             value = value, range = range, default = default, track = track,
             onChange = onChange, onDone = onDone,
             onActive = { active = it }, onSpeed = { speed = it },
             onDoubleTap = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); resetNow() },
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            format(value), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1,
-            textAlign = TextAlign.End,
-            modifier = Modifier.width(52.dp).clip(RoundedCornerShape(4.dp)).clickable { typing = true }.padding(vertical = 8.dp),
         )
     }
     if (typing) {
