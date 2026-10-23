@@ -40,6 +40,8 @@ object P {
     val SHADOWS = p("shadows", "Shadows", Group.LIGHT)
     val WHITES = p("whites", "Whites", Group.LIGHT)
     val BLACKS = p("blacks", "Blacks", Group.LIGHT)
+    /** How strongly [Settings.lut] applies; it travels with the profile. */
+    val LUT_AMOUNT = p("lut.amount", "Amount", Group.LIGHT, 0f, 100f, 100f)
 
     // Parametric tone curve
     val CURVE_HIGHLIGHTS = p("curveHighlights", "Highlights", Group.CURVE)
@@ -180,6 +182,8 @@ data class Settings(
     val curves: List<Curve> = List(4) { Curve() },
     /** Local adjustments, applied in this order on top of the global sliders. */
     val masks: List<Mask> = emptyList(),
+    /** A film look from a LUT (see [Luts]), on top of the profile; null for none. */
+    val lut: String? = null,
 ) {
     operator fun get(p: Param): Float = values[p.key] ?: p.default
     fun on(p: Param) = get(p) >= 0.5f
@@ -207,6 +211,16 @@ data class Settings(
         values = values.filterKeys { P.byKey[it]?.group != group },
         profile = if (group == Group.LIGHT) Profile.COLOR else profile,
         curves = if (group == Group.CURVE) List(4) { Curve() } else curves,
+        lut = if (group == Group.LIGHT) null else lut,
+    )
+
+    /** These settings on the plain Color profile with no LUT: what the Light sliders alone did. */
+    fun withoutProfile(): Settings = copy(profile = Profile.COLOR, lut = null, values = values - P.LUT_AMOUNT.key)
+
+    /** The look these settings start from: the profile and the LUT with its amount. */
+    fun withProfileOf(from: Settings): Settings = copy(
+        profile = from.profile, lut = from.lut,
+        values = (values - P.LUT_AMOUNT.key) + listOfNotNull(from.values[P.LUT_AMOUNT.key]?.let { P.LUT_AMOUNT.key to it }),
     )
 
     /** These settings with [groups] taken from [from] (Lightroom's selective paste). */
@@ -218,17 +232,19 @@ data class Settings(
             values = kept + taken,
             profile = if (Group.LIGHT in groups) from.profile else profile,
             curves = if (Group.CURVE in groups) from.curves else curves,
+            lut = if (Group.LIGHT in groups) from.lut else lut,
         )
     }
 
     fun isDefault(group: Group): Boolean = values.keys.none { P.byKey[it]?.group == group } &&
-        (group != Group.CURVE || curves.all { it.isIdentity }) && (group != Group.LIGHT || profile == Profile.COLOR)
+        (group != Group.CURVE || curves.all { it.isIdentity }) && (group != Group.LIGHT || profile == Profile.COLOR && lut == null)
 
     val isDefault get() = this == Settings()
 
     fun encode(): String = buildString {
         append("v=2\n")
         append("profile=${profile.name}\n")
+        if (lut != null) append("lut=$lut\n")
         for ((k, v) in values.toSortedMap()) append("$k=$v\n")
         curves.forEachIndexed { i, c -> if (!c.isIdentity) append("curve.$i=${c.encode()}\n") }
         masks.forEachIndexed { i, m -> append("mask.$i=${m.encode()}\n") }
@@ -237,6 +253,7 @@ data class Settings(
     companion object {
         fun decode(text: String): Settings {
             var profile = Profile.COLOR
+            var lut: String? = null
             val values = HashMap<String, Float>()
             val curves = MutableList(4) { Curve() }
             val masks = sortedMapOf<Int, Mask>()
@@ -247,6 +264,7 @@ data class Settings(
                 val v = line.substring(i + 1).trim()
                 when {
                     k == "profile" -> profile = Profile.entries.firstOrNull { it.name == v } ?: Profile.COLOR
+                    k == "lut" -> lut = v.takeIf { it.isNotEmpty() }
                     k.startsWith("curve.") && k.length == 7 -> k[6].digitToIntOrNull()?.takeIf { it in 0..3 }?.let { curves[it] = Curve.decode(v) }
                     k.startsWith("mask.") -> k.removePrefix("mask.").toIntOrNull()?.let { i -> Mask.decode(v)?.let { masks[i] = it } }
                     else -> {
@@ -256,7 +274,7 @@ data class Settings(
                     }
                 }
             }
-            return Settings(values, profile, curves, masks.values.toList())
+            return Settings(values, profile, curves, masks.values.toList(), lut)
         }
     }
 }
