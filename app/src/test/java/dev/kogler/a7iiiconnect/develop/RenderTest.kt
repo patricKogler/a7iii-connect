@@ -30,8 +30,9 @@ import kotlin.math.abs
  * - Tiles: the photo rendered in small bands and tiles matches it rendered in one piece, so
  *   exports (which are tiled) show no seams.
  * - Golden images: each case matches its picture in src/test/resources/golden, so a look
- *   doesn't change by accident. A missing golden is written to build/screenshots/golden to be
- *   checked in; after a deliberate change, replace the goldens with those.
+ *   doesn't change by accident (and a broken render, such as an all-black one, fails). Every
+ *   render is also written to build/screenshots/golden: after a deliberate change, or for a
+ *   new case, look at those and check them in.
  *
  * Writes the numbers to build/screenshots/render.txt and, per case, golden | now | difference x8.
  */
@@ -146,7 +147,8 @@ class RenderTest {
                     File(outDir, "render-$name.png").outputStream().use { sideBySide(gp, whole, sw, sh).compress(Bitmap.CompressFormat.PNG, 100, it) }
                 }
             } else {
-                line = "recorded"
+                line = "no golden"
+                failures += "$name: no golden; check in build/screenshots/golden/$name.png once it looks right"
             }
             File(recorded, "$name.png").outputStream().use { now.compress(Bitmap.CompressFormat.PNG, 100, it) }
             report.append("$name\t${"%.3f".format(t.mean)}/${t.p99}/${t.max}\t$line\n")
