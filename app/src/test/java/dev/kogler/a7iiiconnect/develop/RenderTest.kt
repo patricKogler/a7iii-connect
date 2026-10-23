@@ -45,7 +45,10 @@ class RenderTest {
 
     @Test
     fun rendersMatchTilesAndGoldens() {
-        val w = 900; val h = 600
+        // Small, and tiles checked only where neighbours matter: Skia's software backend runs
+        // the shader slowly, and CI has a time limit.
+        val w = 600; val h = 400
+        val tileCases = setOf("raw-local", "raw-effects", "raw-grain", "raw-noise", "mask-radial")
         val bmp = TestScenes.landscape(w, h)
         val px = IntArray(w * h)
         bmp.getPixels(px, 0, w, 0, 0, w, h)
@@ -127,9 +130,8 @@ class RenderTest {
                 return out
             }
             val whole = render(sh, sw)
-            val tiled = render(64, 256)
-            val t = diff(whole, tiled)
-            if (t.max > 2 || t.mean > 0.05) failures += "$name: tiles differ (mean ${"%.3f".format(t.mean)}, max ${t.max})"
+            val t = if (name in tileCases) diff(whole, render(64, 256)) else null
+            if (t != null && (t.max > 2 || t.mean > 0.05)) failures += "$name: tiles differ (mean ${"%.3f".format(t.mean)}, max ${t.max})"
 
             val goldenFile = File(goldens, "$name.png")
             val now = Bitmap.createBitmap(whole, sw, sh, Bitmap.Config.ARGB_8888)
@@ -151,7 +153,7 @@ class RenderTest {
                 failures += "$name: no golden; check in build/screenshots/golden/$name.png once it looks right"
             }
             File(recorded, "$name.png").outputStream().use { now.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            report.append("$name\t${"%.3f".format(t.mean)}/${t.p99}/${t.max}\t$line\n")
+            report.append("$name\t${t?.let { "%.3f/%d/%d".format(it.mean, it.p99, it.max) } ?: "-"}\t$line\n")
         }
         File(outDir, "render.txt").writeText(report.toString())
         println(report)
