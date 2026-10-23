@@ -3,6 +3,7 @@ package dev.kogler.a7iiiconnect.develop
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -501,8 +502,11 @@ fun EditorScreen(
                 renderCount++
                 if (!d) {
                     delay(120)
-                    val h = withContext(Dispatchers.Default) { histogramOf(o, s, crop, guides) }
-                    rendered = Rendered(layer, h, s, crop)
+                    // A failed side render costs the histogram, never the editor.
+                    val h = withContext(Dispatchers.Default) {
+                        runCatching { histogramOf(o, s, crop, guides) }.onFailure { Log.w("Editor", "histogram render failed", it) }.getOrNull()
+                    }
+                    if (h != null) rendered = Rendered(layer, h, s, crop)
                 }
             } else {
                 val src = if (d) o.draft else o.preview

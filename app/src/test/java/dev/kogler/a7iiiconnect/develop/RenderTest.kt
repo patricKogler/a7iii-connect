@@ -2,6 +2,7 @@ package dev.kogler.a7iiiconnect.develop
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.hardware.HardwareBuffer
 import dev.kogler.a7iiiconnect.develop.engine.CameraColor
 import dev.kogler.a7iiiconnect.develop.engine.Curve
 import dev.kogler.a7iiiconnect.develop.engine.DevelopSource
@@ -44,6 +45,13 @@ import kotlin.math.abs
 class RenderTest {
 
     private class Diff(val mean: Double, val p99: Int, val max: Int)
+
+    @Test
+    fun offscreenBuffersAreCpuReadable() {
+        // Robolectric reads any buffer back; a phone can't lock one without a CPU read usage, and
+        // the editor closed on open (its histogram render threw).
+        assertTrue(OFFSCREEN_USAGE and HardwareBuffer.USAGE_CPU_READ_OFTEN != 0L)
+    }
 
     @Test
     fun rendersMatchTilesAndGoldens() {
