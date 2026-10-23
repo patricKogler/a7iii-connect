@@ -10,6 +10,8 @@ import dev.kogler.a7iiiconnect.develop.engine.ImageSampler
 import dev.kogler.a7iiiconnect.develop.engine.LinearImage
 import dev.kogler.a7iiiconnect.develop.engine.LocalP
 import dev.kogler.a7iiiconnect.develop.engine.Look
+import dev.kogler.a7iiiconnect.develop.engine.Lut
+import dev.kogler.a7iiiconnect.develop.engine.Luts
 import dev.kogler.a7iiiconnect.develop.engine.Mask
 import dev.kogler.a7iiiconnect.develop.engine.MaskImage
 import dev.kogler.a7iiiconnect.develop.engine.P
@@ -158,6 +160,46 @@ class RenderTest {
         File(outDir, "render.txt").writeText(report.toString())
         println(report)
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /** The LUT taps in the shader: an identity LUT changes nothing, a red/blue swap swaps them. */
+    @Test
+    fun lutsRecolour() {
+        val w = 120; val h = 80
+        val bmp = TestScenes.landscape(w, h)
+        val px = IntArray(w * h)
+        bmp.getPixels(px, 0, w, 0, 0, w, h)
+        val src = DevelopSource(LinearImage.fromArgb(px, w, h), CameraColor.SRGB, floatArrayOf(1f, 1f, 1f), false)
+        val n = Lut.SIZE
+        Luts.register("test-identity") { Lut.identity() }
+        Luts.register("test-swap") {
+            val id = Lut.identity()
+            Lut(n, FloatArray(id.data.size) { i -> id.data[i - i % 3 + 2 - i % 3] })
+        }
+        fun render(s: Settings): IntArray {
+            val geom = Geometry(s, w.toDouble(), h.toDouble(), null)
+            val look = Look(src, s)
+            val sampler = ImageSampler(src.image, geom)
+            val out = IntArray(sampler.width * sampler.height)
+            renderBands(look, sampler, look.guide(src.image, geom)) { y, rows, part -> System.arraycopy(part, 0, out, y * sampler.width, rows * sampler.width) }
+            return out
+        }
+        val plain = render(Settings())
+        val same = render(Settings(lut = "test-identity"))
+        val swapped = render(Settings(lut = "test-swap"))
+        val half = render(Settings(lut = "test-swap").with(P.LUT_AMOUNT to 50f))
+        fun ch(p: Int, c: Int) = (p shr (16 - 8 * c)) and 0xff
+        var worstSame = 0; var worstSwap = 0; var worstHalf = 0
+        for (i in plain.indices) {
+            for (c in 0..2) worstSame = maxOf(worstSame, abs(ch(plain[i], c) - ch(same[i], c)))
+            worstSwap = maxOf(worstSwap, abs(ch(plain[i], 0) - ch(swapped[i], 2)), abs(ch(plain[i], 2) - ch(swapped[i], 0)), abs(ch(plain[i], 1) - ch(swapped[i], 1)))
+            worstHalf = maxOf(worstHalf, abs((ch(plain[i], 0) + ch(plain[i], 2)) / 2 - ch(half[i], 0)))
+        }
+        assertTrue("identity LUT changed the photo by $worstSame levels", worstSame <= 2)
+        assertTrue("swap LUT is off by $worstSwap levels", worstSwap <= 2)
+        assertTrue("half a swap is off by $worstHalf levels", worstHalf <= 2)
+        // Not a photo that happens to be grey, where a swap would show nothing.
+        assertTrue(plain.indices.any { abs(ch(plain[it], 0) - ch(plain[it], 2)) > 30 })
     }
 
     private fun diff(a: IntArray, b: IntArray): Diff {

@@ -11,6 +11,7 @@ import android.util.Half
 import dev.kogler.a7iiiconnect.develop.engine.Geometry
 import dev.kogler.a7iiiconnect.develop.engine.Guide
 import dev.kogler.a7iiiconnect.develop.engine.LinearImage
+import dev.kogler.a7iiiconnect.develop.engine.Lut
 import dev.kogler.a7iiiconnect.develop.engine.MaskImage
 import dev.kogler.a7iiiconnect.develop.engine.ShaderParams
 import dev.kogler.a7iiiconnect.develop.engine.parallelRows
@@ -45,6 +46,8 @@ internal class GpuPreview(source: String = AGSL) {
         val coords: Bitmap?,
         val subject: Bitmap?,
         val place: Placement = Placement(scene.width, scene.height),
+        /** [ShaderParams.lut] as a texture (see [lutBitmap]). */
+        val lut: Bitmap? = null,
     )
 
     /**
@@ -77,6 +80,7 @@ internal class GpuPreview(source: String = AGSL) {
         shader.setInputShader("guide", linear(f.guide ?: f.tone))
         shader.setInputShader("coords", linear(f.coords ?: f.tone))
         shader.setInputShader("subject", linear(f.subject ?: f.tone))
+        shader.setInputShader("lut", linear(f.lut ?: f.tone))
         u("frameSize", at.frameWidth.toFloat(), at.frameHeight.toFloat())
         u("origin", at.originX.toFloat(), at.originY.toFloat())
         u("scenePad", at.padX.toFloat(), at.padY.toFloat())
@@ -132,6 +136,8 @@ internal class GpuPreview(source: String = AGSL) {
         u("hasSubject", if (f.subject != null && p.subject != null) 1f else 0f)
         u("hasSky", if (f.subject != null && p.sky != null) 1f else 0f)
         u("subjSize", (f.subject?.width ?: 1).toFloat(), (f.subject?.height ?: 1).toFloat())
+        u("lutAmount", if (f.lut != null) p.lutAmount else 0f)
+        u("lutSize", (f.lut?.height ?: 2).toFloat())
     }
 
     /** Draws the developed photo into [canvas] at (left, top), [w] x [h] on screen. */
@@ -175,8 +181,22 @@ internal class GpuPreview(source: String = AGSL) {
             return Frame(
                 scene, guideBitmap, guide?.air ?: FloatArray(3), tone, curves, params,
                 coords.takeIf { params.maskCount > 0 }, subject.takeIf { params.maskCount > 0 && (params.subject != null || params.sky != null) },
-                place,
+                place, params.lut?.let { lutBitmap(it) },
             )
+        }
+
+        private val lutBitmaps = java.util.WeakHashMap<Lut, Bitmap>()
+
+        /**
+         * A LUT as one texture: its blue slices side by side, red across each and green down, so
+         * the shader blends two bilinear taps (the slices either side) into a trilinear one. Made
+         * once per LUT, since every tile of a render asks again.
+         */
+        fun lutBitmap(lut: Lut): Bitmap = synchronized(lutBitmaps) {
+            lutBitmaps.getOrPut(lut) {
+                val n = lut.size
+                floatBitmap(n * n, n) { y, x, c -> if (c == 3) 1f else lut.data[(((x / n) * n + y) * n + x % n) * 3 + c] }
+            }
         }
 
         /** Frame pixels per node of [coordsBitmap]. */
@@ -316,6 +336,9 @@ uniform float hasSubject;
 uniform float hasSky;
 uniform float maskCount;
 uniform float maskData[152];
+uniform shader lut;
+uniform float lutAmount;
+uniform float lutSize;
 
 const float LUT_SIZE = 4096.0;
 const float LUT_MAX = 64.0;
@@ -590,6 +613,16 @@ half4 main(float2 p) {
     if (lSat != 0.0) {
         float ls = luma(c);
         c = ls + (c - ls) * (1.0 + lSat);
+    }
+
+    // A film look from a LUT, on the finished colour (display sRGB, as LUTs expect).
+    if (lutAmount > 0.0) {
+        float3 v = clamp(c, 0.0, 1.0) * (lutSize - 1.0);
+        float z0 = min(floor(v.b), lutSize - 2.0);
+        float2 xy = v.rg + 0.5;
+        float3 a = EVAL(lut, float2(xy.x + z0 * lutSize, xy.y)).rgb;
+        float3 b = EVAL(lut, float2(xy.x + (z0 + 1.0) * lutSize, xy.y)).rgb;
+        c = mix(c, mix(a, b, v.b - z0), lutAmount);
     }
 
     // Vignette (post-crop).

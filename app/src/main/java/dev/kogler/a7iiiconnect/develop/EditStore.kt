@@ -48,6 +48,11 @@ class EditStore(context: Context, folder: String = "develop") {
     private val markFile = File(dir, "flags.txt")
     private val prefs = context.getSharedPreferences("develop", Context.MODE_PRIVATE)
 
+    init {
+        // Edits can name imported LUTs; make them findable before anything renders one.
+        LutLibrary.ensure(context)
+    }
+
     private fun editFile(photo: LibraryPhoto) = File(editDir, fileName(photo.key) + ".txt")
 
     private val subjectDir = File(dir, "subjects").apply { mkdirs() }

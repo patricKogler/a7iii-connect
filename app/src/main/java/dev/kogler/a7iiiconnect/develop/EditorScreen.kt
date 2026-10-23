@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -222,8 +224,8 @@ private val Tool.section get() = Section.entries.firstOrNull { this in it.tools 
 /** Whether [t]'s panel has changed anything (the dot on its tab). The profile is picked in Looks, so it marks Looks, not Light. */
 private fun Tool.changed(s: Settings) = when (this) {
     Tool.MASKS -> s.masks.isNotEmpty()
-    Tool.PRESETS -> s.profile != Profile.COLOR
-    else -> s.copy(profile = Profile.COLOR).let { plain -> groups.any { !plain.isDefault(it) } }
+    Tool.PRESETS -> s.profile != Profile.COLOR || s.lut != null
+    else -> s.withoutProfile().let { plain -> groups.any { !plain.isDefault(it) } }
 }
 
 /** Checkpoints made before presets are capped; saved ones are kept until deleted. */
@@ -1362,7 +1364,7 @@ fun EditorScreen(
                 onReset = {
                     val reset = open.groups.fold(settings) { acc, g -> acc.reset(g) }
                     // The profile belongs to Looks, so Light's reset leaves it unless Looks is hidden.
-                    commit(if (allowed(Tool.PRESETS)) reset.copy(profile = settings.profile) else reset)
+                    commit(if (allowed(Tool.PRESETS)) reset.withProfileOf(settings) else reset)
                 },
             )
             // The panel's visible height reaches the curve editor, so its graph fits on screen.
@@ -2386,7 +2388,7 @@ private fun LightPanel(c: Controls, onAuto: (() -> Unit)?, curve: Boolean, chann
     Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Segmented(
             listOf("Sliders", "Curve"), if (curve) 1 else 0,
-            marked = listOf(!s.copy(profile = Profile.COLOR).isDefault(Group.LIGHT), !s.isDefault(Group.CURVE)),
+            marked = listOf(!s.withoutProfile().isDefault(Group.LIGHT), !s.isDefault(Group.CURVE)),
         ) { onCurve(it == 1) }
         Spacer(Modifier.weight(1f))
         if (onAuto != null && !curve) {
@@ -2831,10 +2833,15 @@ private fun GeometryPanel(c: Controls) {
 private fun PresetsPanel(c: Controls, presets: List<Preset>, current: Settings, onApply: (Preset) -> Unit, onDelete: (Preset) -> Unit, onCreate: () -> Unit) {
     var confirm by remember { mutableStateOf<Preset?>(null) }
     ProfilePicker(c)
+    Text("Film stocks", color = Color(0xFFA8A8A8), fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 16.dp, bottom = 6.dp))
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (p in presets.filter { it.film }) LookChip(p.name, p.isApplied(current), { onApply(p) })
+    }
+    LutPicker(c)
     Text("Presets", color = Color(0xFFA8A8A8), fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 16.dp))
     Text("Tap to apply. A look replaces the last one and keeps your exposure, white balance, crop and masks. Long-press your own presets to delete them.", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp))
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        for (p in presets) {
+        for (p in presets.filter { !it.film }) {
             val on = p.isApplied(current)
             Box(
                 Modifier.clip(RoundedCornerShape(8.dp))
@@ -2854,6 +2861,109 @@ private fun PresetsPanel(c: Controls, presets: List<Preset>, current: Settings, 
             onDismissRequest = { confirm = null },
             title = { Text("Delete \"${p.name}\"?") },
             confirmButton = { TextButton(onClick = { onDelete(p); confirm = null }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { confirm = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun LookChip(label: String, on: Boolean, onClick: () -> Unit, onLong: () -> Unit = {}) {
+    Box(
+        Modifier.clip(RoundedCornerShape(8.dp)).background(Color(0xFF2A2A2A))
+            .then(if (on) Modifier.border(1.5.dp, Color.White, RoundedCornerShape(8.dp)) else Modifier)
+            .combinedClickable(onClick = onClick, onLongClick = onLong)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) { Text(label, color = Color.White, fontSize = 13.sp) }
+}
+
+/**
+ * Film LUTs imported on this phone (.cube, Hald PNG, or a .zip of them), grouped by the folder
+ * they came from, with the amount once one is on. Long-press one to delete it or its folder.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LutPicker(c: Controls) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var luts by remember { mutableStateOf(LutLibrary.ensure(context)) }
+    var importing by remember { mutableStateOf<Int?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var confirm by remember { mutableStateOf<LutLibrary.Entry?>(null) }
+    val folders = luts.map { it.folder }.distinct()
+    var folder by remember { mutableStateOf(luts.firstOrNull { it.id == c.s.lut }?.folder ?: folders.firstOrNull()) }
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        importing = 0
+        message = null
+        scope.launch {
+            val added = ArrayList<LutLibrary.Entry>()
+            var skipped = 0
+            withContext(Dispatchers.IO) {
+                for (u in uris) {
+                    val before = added.size
+                    val r = runCatching { LutLibrary.import(context, u) { n -> importing = before + n } }.getOrNull()
+                    if (r == null) skipped++ else { added += r.added; skipped += r.skipped }
+                }
+            }
+            luts = LutLibrary.ensure(context)
+            importing = null
+            added.firstOrNull()?.let { folder = it.folder }
+            message = when {
+                added.isEmpty() -> "No LUTs found. Pick .cube files, Hald PNGs, or a .zip of them."
+                skipped > 0 -> "Added ${added.size} looks; $skipped files weren't LUTs."
+                else -> "Added ${added.size} looks."
+            }
+        }
+    }
+    Row(Modifier.fillMaxWidth().padding(top = 16.dp).fadeWhileAdjusting(), verticalAlignment = Alignment.CenterVertically) {
+        Text("Film LUTs", color = Color(0xFFA8A8A8), fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        TextButton(onClick = { pick.launch(arrayOf("*/*")) }, enabled = importing == null) { Text("+ Import", fontSize = 12.sp) }
+    }
+    importing?.let { n ->
+        LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp))
+        Text(if (n == 0) "Importing…" else "Importing… $n looks so far", color = Color.Gray, fontSize = 11.sp)
+    }
+    message?.let { Text(it, color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 2.dp)) }
+    if (luts.isEmpty()) {
+        if (importing == null) Text(
+            "Import film looks as .cube files or Hald PNGs, or a whole pack as a .zip (RawTherapee's free film simulation pack works).",
+            color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp),
+        )
+    } else {
+        if (folders.size > 1) Chips(folders, folders.indexOf(folder).coerceAtLeast(0), marked = folders.map { f -> luts.any { it.folder == f && it.id == c.s.lut } }) { folder = folders[it] }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp).fadeWhileAdjusting()) {
+            LookChip("None", c.s.lut == null, { c.commit(c.s.copy(lut = null)) })
+            for (e in luts.filter { it.folder == (folder ?: folders.first()) }) {
+                LookChip(e.name, e.id == c.s.lut, { c.commit(c.s.copy(lut = if (e.id == c.s.lut) null else e.id)) }, { confirm = e })
+            }
+        }
+    }
+    if (c.s.lut != null) {
+        if (luts.none { it.id == c.s.lut }) {
+            Text("This edit uses a LUT that isn't on this phone.", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp))
+        } else {
+            ParamSlider(P.LUT_AMOUNT, c)
+        }
+    }
+    confirm?.let { e ->
+        val inFolder = luts.count { it.folder == e.folder }
+        AlertDialog(
+            onDismissRequest = { confirm = null },
+            title = { Text("Delete \"${e.name}\"?") },
+            text = { Text("Photos that use it go back to no LUT.") },
+            confirmButton = {
+                Row {
+                    if (inFolder > 1) TextButton(onClick = {
+                        LutLibrary.deleteFolder(context, e.folder); luts = LutLibrary.ensure(context); folder = luts.firstOrNull()?.folder; confirm = null
+                    }) { Text("All $inFolder in ${e.folder}") }
+                    TextButton(onClick = {
+                        LutLibrary.delete(context, e.id); luts = LutLibrary.ensure(context)
+                        if (luts.none { it.folder == folder }) folder = luts.firstOrNull()?.folder
+                        confirm = null
+                    }) { Text("Delete") }
+                }
+            },
             dismissButton = { TextButton(onClick = { confirm = null }) { Text("Cancel") } },
         )
     }

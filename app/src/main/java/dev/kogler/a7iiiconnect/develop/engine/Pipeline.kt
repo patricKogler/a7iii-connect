@@ -212,6 +212,8 @@ class Look(private val source: DevelopSource, private val s: Settings) {
     private val grain = s[P.GRAIN] / 100f
     private val grainSize = s[P.GRAIN_SIZE] / 100f
     private val grainRough = s[P.GRAIN_ROUGHNESS] / 100f
+    private val lut = s.lut?.let { Luts[it] }
+    private val lutAmount = s[P.LUT_AMOUNT] / 100f
     private val sharpen = s[P.SHARPEN] / 100f + if (raw) 0.25f else 0f
     private val sharpenRadius = s[P.SHARPEN_RADIUS]
     private val sharpenDetail = s[P.SHARPEN_DETAIL] / 100f
@@ -451,7 +453,7 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         grain = grain, grainCell = (1.0 + grainSize * 4.0).toFloat(), grainRough = grainRough, scale = scale.toFloat(),
         maskCount = masks?.count ?: 0, masks = (masks?.params ?: FloatArray(0)).copyOf(MaskSet.MAX * MaskSet.STRIDE),
         sourceSize = floatArrayOf(source.fullWidth.toFloat(), source.fullHeight.toFloat()), subject = subjectMap,
-        sky = skyMap,
+        sky = skyMap, lut = lut?.takeIf { lutAmount > 0f }, lutAmount = lutAmount,
     )
 
     companion object {
@@ -514,6 +516,8 @@ class ShaderParams(
     /** [MaskSet.params] padded to [MaskSet.MAX] masks, and the full-size photo they're placed on. */
     val maskCount: Int, val masks: FloatArray, val sourceSize: FloatArray, val subject: MaskImage?,
     val sky: MaskImage? = null,
+    /** A film look on top, mixed in by [lutAmount]. */
+    val lut: Lut? = null, val lutAmount: Float = 0f,
 ) {
     companion object {
         const val LUT_SIZE = 4096
