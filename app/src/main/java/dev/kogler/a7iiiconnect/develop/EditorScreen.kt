@@ -69,7 +69,9 @@ import androidx.compose.material.icons.outlined.Lens
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Style
 import androidx.compose.material.icons.outlined.Swipe
+import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Transform
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material.icons.rounded.Compare
 import androidx.compose.material.icons.rounded.Flip
@@ -86,6 +88,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -115,6 +118,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -185,8 +189,8 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
- * The tool strip, in Lightroom mobile's order. Every entry opens a panel; Auto is a button in
- * the Light panel. [groups] are what the panel edits, for the "changed" dot and per-panel compare.
+ * The editor's panels. Each opens from its [Section] in the bottom bar; Auto is a button in the
+ * Light panel. [groups] are what the panel edits, for the "changed" dot and per-panel compare.
  */
 private enum class Tool(val label: String, val icon: ImageVector, val groups: List<Group>) {
     PRESETS("Presets", Icons.Outlined.Style, emptyList()),
@@ -202,8 +206,25 @@ private enum class Tool(val label: String, val icon: ImageVector, val groups: Li
     VERSIONS("Versions", Icons.Outlined.History, emptyList()),
 }
 
-/** Whether [t]'s panel has changed anything (the dot on its icon). */
-private fun Tool.changed(s: Settings) = if (this == Tool.MASKS) s.masks.isNotEmpty() else groups.any { !s.isDefault(it) }
+/**
+ * The bottom bar: four big targets instead of nine small ones. A section with more than one
+ * panel shows them as tabs along the top of the panel.
+ */
+private enum class Section(val label: String, val icon: ImageVector, val tools: List<Tool>) {
+    LOOKS("Looks", Icons.Outlined.Style, listOf(Tool.PRESETS)),
+    ADJUST("Adjust", Icons.Outlined.Tune, listOf(Tool.LIGHT, Tool.COLOR, Tool.EFFECTS, Tool.DETAIL)),
+    FRAME("Frame", Icons.Outlined.Crop, listOf(Tool.CROP, Tool.GEOMETRY, Tool.OPTICS)),
+    MASKS("Masks", Icons.Outlined.Layers, listOf(Tool.MASKS)),
+}
+
+private val Tool.section get() = Section.entries.firstOrNull { this in it.tools }
+
+/** Whether [t]'s panel has changed anything (the dot on its tab). The profile is picked in Looks, so it marks Looks, not Light. */
+private fun Tool.changed(s: Settings) = when (this) {
+    Tool.MASKS -> s.masks.isNotEmpty()
+    Tool.PRESETS -> s.profile != Profile.COLOR
+    else -> s.copy(profile = Profile.COLOR).let { plain -> groups.any { !plain.isDefault(it) } }
+}
 
 /** Checkpoints made before presets are capped; saved ones are kept until deleted. */
 private const val MAX_AUTO_CHECKPOINTS = 10
@@ -345,6 +366,8 @@ fun EditorScreen(
     var before by remember { mutableStateOf<ImageBitmap?>(null) }
     var showBefore by remember { mutableStateOf(false) }
     var tool by remember { mutableStateOf<Tool?>(Tool.LIGHT.takeIf(allowed) ?: Tool.entries.firstOrNull { it != Tool.VERSIONS && allowed(it) }) }
+    // The tab last open in each section, so the bottom bar goes back to it.
+    val lastTool = remember { mutableMapOf<Section, Tool>() }
     var menu by remember { mutableStateOf(false) }
     var shareMenu by remember { mutableStateOf(false) }
     var dialog by remember { mutableStateOf<String?>(null) }
@@ -618,7 +641,7 @@ fun EditorScreen(
         swipeNav.remember(path, menuTree)
         // The open panel follows the menu: its tool, then its chips.
         val t = SWIPE_TOOLS.firstOrNull { it.swipeId == path[0] } ?: return
-        if (tool != null && tool in SWIPE_TOOLS && tool != t) tool = t
+        if (tool != null && tool in SWIPE_TOOLS && tool != t) { tool = t; t.section?.let { lastTool[it] = t } }
         when (t) {
             Tool.LIGHT -> {
                 lightCurve = path.getOrNull(1) == "curve"
@@ -642,6 +665,7 @@ fun EditorScreen(
     }
     fun selectTool(t: Tool?) {
         tool = t
+        t?.section?.let { lastTool[it] = t }
         if (t != null && t in SWIPE_TOOLS) navigate(swipeNav.descend(menuTree, listOf(t.swipeId)))
     }
     val swipeRowStep = with(density) { 36.dp.toPx() }
@@ -1329,8 +1353,20 @@ fun EditorScreen(
             } }
 
             val panelArea: @Composable (Modifier) -> Unit = { m -> val o = opened
+            val open = tool
+            if (open != null) Column(m) {
+            // Adjust and Frame show their panels as tabs, with the open panel's reset beside them.
+            val tabs = open.section?.takeIf { it == Section.ADJUST || it == Section.FRAME }?.tools?.filter(allowed)
+            if (tabs != null) PanelTabs(
+                tabs, open, settings, onSelect = { selectTool(it) },
+                onReset = {
+                    val reset = open.groups.fold(settings) { acc, g -> acc.reset(g) }
+                    // The profile belongs to Looks, so Light's reset leaves it unless Looks is hidden.
+                    commit(if (allowed(Tool.PRESETS)) reset.copy(profile = settings.profile) else reset)
+                },
+            )
             // The panel's visible height reaches the curve editor, so its graph fits on screen.
-            if (tool != null) BoxWithConstraints(m) { val viewport = maxHeight
+            BoxWithConstraints(Modifier.weight(1f, fill = false).fillMaxWidth()) { val viewport = maxHeight
             CompositionLocalProvider(LocalAdjusting provides dragging, LocalPanelHeight provides viewport) {
                 Column(
                     Modifier.verticalScroll(rememberScrollState())
@@ -1344,6 +1380,7 @@ fun EditorScreen(
                     )
                     when (tool) {
                         Tool.PRESETS -> PresetsPanel(
+                            ctl,
                             presets = Preset.BUILT_IN + presets,
                             current = settings,
                             onApply = { p ->
@@ -1379,7 +1416,7 @@ fun EditorScreen(
                         })
                         Tool.LIGHT -> LightPanel(
                             ctl, onAuto = if (o != null) ({ auto() }) else null,
-                            curve = lightCurve, channel = curveChannel,
+                            curve = lightCurve, channel = curveChannel, showProfile = !allowed(Tool.PRESETS),
                             onCurve = { c -> navigate(if (c) swipeNav.descend(menuTree, listOf("light", "curve")) else swipeNav.ownLeaf(menuTree, listOf("light"))) },
                             onChannel = { ch ->
                                 navigate(if (ch < 0) swipeNav.ownLeaf(menuTree, listOf("light", "curve")) else listOf("light", "curve", CURVE_IDS[ch]))
@@ -1411,7 +1448,7 @@ fun EditorScreen(
                         else -> {}
                     }
                 }
-            } } }
+            } } } }
 
             if (fullscreen) {
                 photoArea(Modifier.weight(1f).fillMaxWidth())
@@ -1440,22 +1477,34 @@ fun EditorScreen(
                 }
             }
 
-            // Tool strip: every tool fits on screen; a dot marks the ones with edits.
-            if (!fullscreen) Row(Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 2.dp)) {
-                for (t in Tool.entries.filter { it != Tool.VERSIONS && allowed(it) }) {
-                    val selected = tool == t
-                    val changed = t.changed(settings)
+            // Bottom bar: a section opens its last tab, and tapping the open one closes the panel.
+            // A dot marks the sections with edits.
+            if (!fullscreen) Row(Modifier.fillMaxWidth().background(Color(0xFF0E0E0E)).padding(vertical = 8.dp, horizontal = 4.dp)) {
+                for (s in Section.entries) {
+                    val own = s.tools.filter(allowed)
+                    if (own.isEmpty()) continue
+                    val selected = tool?.section == s
+                    val changed = own.any { it.changed(settings) }
+                    val primary = MaterialTheme.colorScheme.primary
                     Column(
-                        Modifier.weight(1f).testTag("tool-${t.name}").clip(RoundedCornerShape(8.dp))
-                            .clickable { selectTool(if (selected) null else t) }.padding(vertical = 4.dp),
+                        Modifier.weight(1f).testTag("section-${s.name}").clip(RoundedCornerShape(12.dp))
+                            .clickable { selectTool(if (selected) null else lastTool[s]?.takeIf { it in own } ?: own.first()) }
+                            .padding(vertical = 2.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        val c = if (selected) MaterialTheme.colorScheme.primary else Color.White
-                        Box {
-                            Icon(t.icon, null, tint = c)
-                            if (changed) ChangedDot(Modifier.align(Alignment.TopEnd).offset(x = 5.dp, y = (-1).dp))
+                        Box(
+                            Modifier.size(width = 60.dp, height = 32.dp).clip(RoundedCornerShape(16.dp))
+                                .background(if (selected) primary else Color.Transparent),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(s.icon, null, tint = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White)
+                            if (changed) Box(
+                                Modifier.align(Alignment.TopEnd).padding(top = 5.dp, end = 15.dp).size(6.dp)
+                                    .background(if (selected) MaterialTheme.colorScheme.onPrimary else primary, CircleShape),
+                            )
                         }
-                        Text(t.label, color = c, fontSize = 11.sp, maxLines = 1, softWrap = false)
+                        Spacer(Modifier.height(4.dp))
+                        Text(s.label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
                     }
                 }
             }
@@ -2260,30 +2309,95 @@ private fun Chips(options: List<String>, selected: Int, marked: List<Boolean> = 
     }
 }
 
+/**
+ * A row of mutually exclusive views or values, as one pill (Sliders | Curve, the profiles). Unlike
+ * [Chips] it never scrolls, so every option stays in sight. A dot marks options with edits.
+ */
 @Composable
-private fun LightPanel(c: Controls, onAuto: (() -> Unit)?, curve: Boolean, channel: Int, onCurve: (Boolean) -> Unit, onChannel: (Int) -> Unit) {
-    val s = c.s
-    Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp).fadeWhileAdjusting(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("Profile", color = Color.White, fontSize = 13.sp)
-        for (p in Profile.entries) {
-            FilterChip(selected = s.profile == p, onClick = { c.commit(s.copy(profile = p)) }, label = { Text(p.label) })
-        }
-    }
-    Chips(listOf("Sliders", "Curve"), if (curve) 1 else 0, listOf(!s.isDefault(Group.LIGHT), !s.isDefault(Group.CURVE))) { onCurve(it == 1) }
-    if (!curve) {
-        SectionHeader("Light", c, Group.LIGHT) {
-            if (onAuto != null) {
-                TextButton(onClick = onAuto) {
-                    Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Auto", fontSize = 12.sp)
-                }
+private fun Segmented(
+    options: List<String>, selected: Int, modifier: Modifier = Modifier,
+    /** Share the full width equally, rather than each option as wide as its label. */
+    fill: Boolean = false,
+    marked: List<Boolean> = emptyList(), onSelect: (Int) -> Unit,
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    val shape = RoundedCornerShape(18.dp)
+    Row(modifier.height(36.dp).clip(shape).border(1.dp, Color(0xFF5A5A5A), shape).fadeWhileAdjusting()) {
+        options.forEachIndexed { i, label ->
+            val on = i == selected
+            if (i > 0) Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF5A5A5A)))
+            Row(
+                (if (fill) Modifier.weight(1f) else Modifier).fillMaxHeight().background(if (on) primary else Color.Transparent)
+                    .clickable { onSelect(i) }.padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val ink = if (on) MaterialTheme.colorScheme.onPrimary else Color.White
+                Text(label, color = ink, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                if (marked.getOrElse(i) { false }) Box(Modifier.padding(start = 6.dp).size(6.dp).background(if (on) ink else primary, CircleShape))
             }
         }
+    }
+}
+
+/** The tabs of the open section, with a reset for the open panel at the end. */
+@Composable
+private fun PanelTabs(tabs: List<Tool>, open: Tool, s: Settings, onSelect: (Tool) -> Unit, onReset: () -> Unit) {
+    val primary = MaterialTheme.colorScheme.primary
+    Row(
+        Modifier.fillMaxWidth().height(48.dp).drawBehind {
+            drawLine(Color(0xFF262626), Offset(0f, size.height - 0.5f), Offset(size.width, size.height - 0.5f), 1f)
+        },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        for (t in tabs) {
+            val on = t == open
+            Row(
+                Modifier.weight(1f).fillMaxHeight().testTag("tool-${t.name}").clickable { onSelect(t) }
+                    .drawBehind { if (on) drawRect(primary, Offset(0f, size.height - 3.dp.toPx()), Size(size.width, 3.dp.toPx())) },
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(t.label, color = if (on) primary else Color(0xFFBDBDBD), fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                if (t.changed(s)) ChangedDot(Modifier.padding(start = 5.dp))
+            }
+        }
+        IconButton(onClick = onReset, enabled = open.changed(s)) {
+            Icon(Icons.Outlined.RestartAlt, "Reset ${open.label}", tint = if (open.changed(s)) Color.White else Color(0xFF5A5A5A))
+        }
+    }
+}
+
+/** Color, Vivid, Neutral or B&W: the look everything else builds on. */
+@Composable
+private fun ProfilePicker(c: Controls) {
+    Text("Profile", color = Color(0xFFA8A8A8), fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp, bottom = 6.dp))
+    Segmented(
+        Profile.entries.map { if (it == Profile.MONOCHROME) "B&W" else it.label }, Profile.entries.indexOf(c.s.profile),
+        Modifier.fillMaxWidth(), fill = true,
+    ) { c.commit(c.s.copy(profile = Profile.entries[it])) }
+}
+
+/** [showProfile] when Looks isn't there to pick it (an edit battle's limited tools). */
+@Composable
+private fun LightPanel(c: Controls, onAuto: (() -> Unit)?, curve: Boolean, channel: Int, showProfile: Boolean, onCurve: (Boolean) -> Unit, onChannel: (Int) -> Unit) {
+    val s = c.s
+    if (showProfile) ProfilePicker(c)
+    Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Segmented(
+            listOf("Sliders", "Curve"), if (curve) 1 else 0,
+            marked = listOf(!s.copy(profile = Profile.COLOR).isDefault(Group.LIGHT), !s.isDefault(Group.CURVE)),
+        ) { onCurve(it == 1) }
+        Spacer(Modifier.weight(1f))
+        if (onAuto != null && !curve) {
+            FilledTonalButton(onClick = onAuto, contentPadding = PaddingValues(horizontal = 12.dp), modifier = Modifier.height(36.dp).fadeWhileAdjusting()) {
+                Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Auto", fontSize = 13.sp)
+            }
+        }
+    }
+    if (!curve) {
         for (p in listOf(P.EXPOSURE, P.CONTRAST, P.HIGHLIGHTS, P.SHADOWS, P.WHITES, P.BLACKS)) ParamSlider(p, c)
     } else {
         CurvePanel(c, channel, onChannel)
@@ -2297,7 +2411,6 @@ private const val CURVE_REMOVE = 0.15f
 
 @Composable
 private fun CurvePanel(c: Controls, channel: Int, onChannel: (Int) -> Unit) {
-    SectionHeader("Tone curve", c, Group.CURVE)
     Chips(listOf("Parametric", "RGB", "Red", "Green", "Blue"), channel + 1) { onChannel(it - 1) }
     if (channel < 0) {
         for (p in listOf(P.CURVE_HIGHLIGHTS, P.CURVE_LIGHTS, P.CURVE_DARKS, P.CURVE_SHADOWS)) ParamSlider(p, c)
@@ -2478,7 +2591,10 @@ private fun ColorPanel(
     onMode: (Int) -> Unit, onBand: (Int) -> Unit, onZone: (Int) -> Unit,
 ) {
     val s = c.s
-    Chips(listOf("Basic", "Mix", "Grading"), mode, listOf(!s.isDefault(Group.COLOR), !s.isDefault(Group.MIXER), !s.isDefault(Group.GRADING)), onMode)
+    Segmented(
+        listOf("Basic", "Mix", "Grading"), mode, Modifier.padding(top = 10.dp, bottom = 4.dp),
+        marked = listOf(!s.isDefault(Group.COLOR), !s.isDefault(Group.MIXER), !s.isDefault(Group.GRADING)), onSelect = onMode,
+    )
     when (mode) {
         0 -> BasicColor(c, source)
         1 -> MixPanel(c, band, onBand)
@@ -2657,7 +2773,6 @@ private fun DrawScope.drawHueWheel(hue: Float, sat: Float) {
 
 @Composable
 private fun EffectsPanel(c: Controls) {
-    SectionHeader("Effects", c, Group.EFFECTS)
     ParamSlider(P.TEXTURE, c)
     ParamSlider(P.CLARITY, c)
     ParamSlider(P.DEHAZE, c)
@@ -2674,7 +2789,6 @@ private fun EffectsPanel(c: Controls) {
 
 @Composable
 private fun DetailPanel(c: Controls) {
-    SectionHeader("Detail", c, Group.DETAIL)
     ParamSlider(P.SHARPEN, c)
     if (c.s[P.SHARPEN] != 0f) {
         ParamSlider(P.SHARPEN_RADIUS, c, "   Radius")
@@ -2689,7 +2803,6 @@ private fun DetailPanel(c: Controls) {
 
 @Composable
 private fun OpticsPanel(c: Controls, hasLensProfile: Boolean, isRaw: Boolean) {
-    SectionHeader("Optics", c, Group.OPTICS)
     if (isRaw) {
         ParamSwitch(P.REMOVE_CA, c)
         ParamSwitch(P.LENS_PROFILE, c)
@@ -2709,15 +2822,16 @@ private fun OpticsPanel(c: Controls, hasLensProfile: Boolean, isRaw: Boolean) {
 
 @Composable
 private fun GeometryPanel(c: Controls) {
-    SectionHeader("Geometry", c, Group.GEOMETRY)
     for (p in listOf(P.VERTICAL, P.HORIZONTAL, P.ROTATE, P.SCALE, P.OFFSET_X, P.OFFSET_Y)) ParamSlider(p, c)
     Text("A grid shows while you drag, to line up verticals.", color = Color.Gray, fontSize = 11.sp)
 }
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
-private fun PresetsPanel(presets: List<Preset>, current: Settings, onApply: (Preset) -> Unit, onDelete: (Preset) -> Unit, onCreate: () -> Unit) {
+private fun PresetsPanel(c: Controls, presets: List<Preset>, current: Settings, onApply: (Preset) -> Unit, onDelete: (Preset) -> Unit, onCreate: () -> Unit) {
     var confirm by remember { mutableStateOf<Preset?>(null) }
+    ProfilePicker(c)
+    Text("Presets", color = Color(0xFFA8A8A8), fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 16.dp))
     Text("Tap to apply. A look replaces the last one and keeps your exposure, white balance, crop and masks. Long-press your own presets to delete them.", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp))
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         for (p in presets) {
@@ -2887,32 +3001,38 @@ internal fun AdjustSlider(
     val haptics = LocalHapticFeedback.current
     val fade by animateFloatAsState(if (LocalAdjusting.current && !active) 0f else 1f, label = "fade")
     val resetNow by rememberUpdatedState({ if (reset != null) reset() else { onChange(default); onDone() } })
-    Column(Modifier.fillMaxWidth().graphicsLayer { alpha = fade }) {
-        Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Row(
-                Modifier.weight(1f).pointerInput(Unit) {
-                    detectTapGestures(
-                        onDoubleTap = { resetNow() },
-                        onLongPress = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); resetNow() },
-                    )
-                }.padding(vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(label, color = Color.White, fontSize = 13.sp)
-                if (changed) ChangedDot(Modifier.padding(start = 6.dp))
-            }
-            if (speed < 1f) Text(speedLabel(speed), color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(end = 6.dp))
+    // One line: label, slider, value, so a whole panel fits without scrolling. A label that starts
+    // with spaces belongs to the slider above it and is indented.
+    val sub = label.startsWith(" ")
+    Row(Modifier.fillMaxWidth().height(44.dp).graphicsLayer { alpha = fade }, verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.width(104.dp).fillMaxHeight().pointerInput(Unit) {
+                detectTapGestures(
+                    onDoubleTap = { resetNow() },
+                    onLongPress = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); resetNow() },
+                )
+            }.padding(start = if (sub) 12.dp else 0.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // While scrubbing slowly, the label shows the speed.
+            val text = if (speed < 1f) speedLabel(speed) else label.trim()
             Text(
-                format(value), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium,
-                modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { typing = true }
-                    .background(Color.White.copy(alpha = 0.08f)).padding(horizontal = 6.dp, vertical = 2.dp),
+                text, color = if (speed < 1f || sub) Color(0xFFBDBDBD) else Color.White, fontSize = 13.sp,
+                lineHeight = 15.sp, maxLines = 2, modifier = Modifier.weight(1f, fill = false),
             )
+            if (changed) ChangedDot(Modifier.padding(start = 5.dp))
         }
         PrecisionSlider(
             value = value, range = range, default = default, track = track,
             onChange = onChange, onDone = onDone,
             onActive = { active = it }, onSpeed = { speed = it },
             onDoubleTap = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); resetNow() },
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            format(value), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1,
+            textAlign = TextAlign.End,
+            modifier = Modifier.width(52.dp).clip(RoundedCornerShape(4.dp)).clickable { typing = true }.padding(vertical = 8.dp),
         )
     }
     if (typing) {
