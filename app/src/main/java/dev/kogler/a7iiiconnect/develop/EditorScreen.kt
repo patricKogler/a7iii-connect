@@ -2348,7 +2348,7 @@ private fun Segmented(
 private fun PanelTabs(tabs: List<Tool>, open: Tool, s: Settings, onSelect: (Tool) -> Unit, onReset: () -> Unit) {
     val primary = MaterialTheme.colorScheme.primary
     Row(
-        Modifier.fillMaxWidth().height(48.dp).drawBehind {
+        Modifier.fillMaxWidth().height(38.dp).drawBehind {
             drawLine(Color(0xFF262626), Offset(0f, size.height - 0.5f), Offset(size.width, size.height - 0.5f), 1f)
         },
         verticalAlignment = Alignment.CenterVertically,
@@ -2357,16 +2357,19 @@ private fun PanelTabs(tabs: List<Tool>, open: Tool, s: Settings, onSelect: (Tool
             val on = t == open
             Row(
                 Modifier.weight(1f).fillMaxHeight().testTag("tool-${t.name}").clickable { onSelect(t) }
-                    .drawBehind { if (on) drawRect(primary, Offset(0f, size.height - 3.dp.toPx()), Size(size.width, 3.dp.toPx())) },
+                    .drawBehind { if (on) drawRect(primary, Offset(0f, size.height - 2.dp.toPx()), Size(size.width, 2.dp.toPx())) },
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(t.label, color = if (on) primary else Color(0xFFBDBDBD), fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                Text(t.label, color = if (on) primary else Color(0xFFBDBDBD), fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
                 if (t.changed(s)) ChangedDot(Modifier.padding(start = 5.dp))
             }
         }
-        IconButton(onClick = onReset, enabled = open.changed(s)) {
-            Icon(Icons.Outlined.RestartAlt, "Reset ${open.label}", tint = if (open.changed(s)) Color.White else Color(0xFF5A5A5A))
+        Box(
+            Modifier.width(44.dp).fillMaxHeight().clickable(enabled = open.changed(s), onClick = onReset),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Outlined.RestartAlt, "Reset ${open.label}", Modifier.size(20.dp), tint = if (open.changed(s)) Color.White else Color(0xFF5A5A5A))
         }
     }
 }
