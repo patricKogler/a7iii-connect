@@ -93,6 +93,7 @@ object LutLibrary {
     fun delete(context: Context, id: String) {
         val app = context.applicationContext
         File(dir(app), "$id.lut").delete()
+        File(dir(app), "$id.jpg").delete()
         Luts.unregister(id)
         save(app, ensure(app).filter { it.id != id })
     }
@@ -101,8 +102,60 @@ object LutLibrary {
     fun deleteFolder(context: Context, folder: String) {
         val app = context.applicationContext
         val (gone, kept) = ensure(app).partition { it.folder == folder }
-        for (e in gone) { File(dir(app), "${e.id}.lut").delete(); Luts.unregister(e.id) }
+        for (e in gone) { File(dir(app), "${e.id}.lut").delete(); File(dir(app), "${e.id}.jpg").delete(); Luts.unregister(e.id) }
         save(app, kept)
+    }
+
+    /** A look's preview picture, when its pack came with one (the G'MIC pack does). */
+    fun thumbnail(context: Context, id: String): File? = File(dir(context), "$id.jpg").takeIf { it.exists() }
+
+    /**
+     * Downloads the G'MIC film pack (github.com/YahiaAngelo/Film-Luts, 296 film stocks) onto this
+     * phone when asked. It isn't shipped in the app: the LUTs' origin and licence are unclear.
+     * Its film_luts.json gives each look its name, category and thumbnail. Ids are fixed per
+     * file ("gmic-…"), so two phones that both have the pack name the same look the same way, and
+     * running it again only fetches what's missing. [progress] gets (done, total).
+     */
+    fun downloadGmicPack(context: Context, progress: (Int, Int) -> Unit = { _, _ -> }): Result {
+        val app = context.applicationContext
+        val list = GmicPack.parse(fetch(GmicPack.BASE + GmicPack.INDEX).decodeToString())
+        val have = ensure(app).mapTo(HashSet()) { it.id }
+        val added = ArrayList<Entry>()
+        var skipped = 0
+        var done = 0
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+        try {
+            val jobs = list.map { item ->
+                pool.submit<Entry?> {
+                    if (item.id in have) return@submit null
+                    val lut = Lut.parseCube(fetch(GmicPack.BASE + item.file).decodeToString()).first
+                    item.thumbnail?.let { t -> runCatching { File(dir(app), "${item.id}.jpg").writeBytes(fetch(GmicPack.BASE + t)) } }
+                    synchronized(this) { store(app, lut.resized(Lut.SIZE), item.name, item.category, item.id) }
+                }
+            }
+            for (j in jobs) {
+                val e = runCatching { j.get() }.getOrElse { skipped++; null }
+                if (e != null) added += e
+                progress(++done, jobs.size)
+            }
+        } finally {
+            pool.shutdown()
+        }
+        if (added.isNotEmpty()) save(app, ensure(app) + added)
+        if (added.isEmpty() && skipped == list.size && list.isNotEmpty()) error("couldn't download the LUTs")
+        return Result(added, skipped)
+    }
+
+    private fun fetch(url: String): ByteArray {
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 30_000
+        try {
+            if (conn.responseCode != 200) error("HTTP ${conn.responseCode} for $url")
+            return conn.inputStream.use { it.readBytes() }
+        } finally {
+            conn.disconnect()
+        }
     }
 
     private fun isLut(path: String) = path.endsWith(".cube", ignoreCase = true) || path.endsWith(".png", ignoreCase = true)
@@ -124,12 +177,15 @@ object LutLibrary {
         }
     }
 
-    private fun store(context: Context, lut: Lut, name: String, folder: String): Entry {
-        val taken = ensure(context).mapTo(HashSet()) { it.id }
-        val base = "${folder}-$name".lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').take(60).ifEmpty { "lut" }
-        var id = base
-        var n = 2
-        while (id in taken || File(dir(context), "$id.lut").exists()) id = "$base-${n++}"
+    private fun store(context: Context, lut: Lut, name: String, folder: String, fixedId: String? = null): Entry {
+        val id = fixedId ?: run {
+            val taken = ensure(context).mapTo(HashSet()) { it.id }
+            val base = "${folder}-$name".lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').take(60).ifEmpty { "lut" }
+            var id = base
+            var n = 2
+            while (id in taken || File(dir(context), "$id.lut").exists()) id = "$base-${n++}"
+            id
+        }
         File(dir(context), "$id.lut").outputStream().use { lut.write(it) }
         val e = Entry(id, name.replace('\t', ' '), folder.replace('\t', ' '))
         register(context, e)

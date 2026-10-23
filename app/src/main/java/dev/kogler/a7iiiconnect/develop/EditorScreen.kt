@@ -2894,7 +2894,32 @@ private fun LutPicker(c: Controls) {
     var importing by remember { mutableStateOf<Int?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var confirm by remember { mutableStateOf<LutLibrary.Entry?>(null) }
+    /** While the G'MIC pack downloads: its size, with [importing] counting the files done. */
+    var downloadTotal by remember { mutableStateOf<Int?>(null) }
     val folders = luts.map { it.folder }.distinct()
+    val getPack: () -> Unit = {
+        importing = 0
+        message = null
+        scope.launch {
+            val r = withContext(Dispatchers.IO) {
+                runCatching { LutLibrary.downloadGmicPack(context) { done, total -> importing = done; downloadTotal = total } }
+            }
+            luts = LutLibrary.ensure(context)
+            importing = null
+            downloadTotal = null
+            r.getOrNull()?.added?.firstOrNull()?.let { folder = it.folder }
+            message = r.fold(
+                { res ->
+                    when {
+                        res.added.isEmpty() && res.skipped == 0 -> "You already have the whole film pack."
+                        res.skipped > 0 -> "Added ${res.added.size} film looks; ${res.skipped} didn't download. Tap Get film pack again to retry."
+                        else -> "Added ${res.added.size} film looks."
+                    }
+                },
+                { "Couldn't download the film pack. Is the phone online (not on the camera's Wi-Fi)?" },
+            )
+        }
+    }
     var folder by remember { mutableStateOf(luts.firstOrNull { it.id == c.s.lut }?.folder ?: folders.firstOrNull()) }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
@@ -2922,16 +2947,23 @@ private fun LutPicker(c: Controls) {
     }
     Row(Modifier.fillMaxWidth().padding(top = 16.dp).fadeWhileAdjusting(), verticalAlignment = Alignment.CenterVertically) {
         Text("Film LUTs", color = Color(0xFFA8A8A8), fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        TextButton(onClick = getPack, enabled = importing == null) { Text("Get film pack", fontSize = 12.sp) }
         TextButton(onClick = { pick.launch(arrayOf("*/*")) }, enabled = importing == null) { Text("+ Import", fontSize = 12.sp) }
     }
     importing?.let { n ->
-        LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp))
-        Text(if (n == 0) "Importing…" else "Importing… $n looks so far", color = Color.Gray, fontSize = 11.sp)
+        val total = downloadTotal
+        if (total != null) {
+            LinearProgressIndicator(progress = { n / total.toFloat() }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
+            Text("Downloading the film pack… $n of $total", color = Color.Gray, fontSize = 11.sp)
+        } else {
+            LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp))
+            Text(if (n == 0) "Working…" else "Importing… $n looks so far", color = Color.Gray, fontSize = 11.sp)
+        }
     }
     message?.let { Text(it, color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 2.dp)) }
     if (luts.isEmpty()) {
         if (importing == null) Text(
-            "Import film looks as .cube files or Hald PNGs, or a whole pack as a .zip (RawTherapee's free film simulation pack works).",
+            "Get film pack downloads about 300 free film looks (Portra, Ektar, Velvia, Tri-X, Polaroid…) from the G'MIC collection on GitHub, about 40 MB. Or import your own .cube files, Hald PNGs, or a .zip of them.",
             color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp),
         )
     } else {
