@@ -102,6 +102,38 @@ class LutTest {
     }
 
     @Test
+    fun readsTheGmicPackIndex() {
+        val json = """
+            {
+                "filmLUTs": [
+                    {
+                        "name": "Kodak Portra 400 Vc +",
+                        "lut_file": "luts/negative_old/kodak_portra_400_vc_+.cube",
+                        "category": "Negative Old",
+                        "thumbnail": "thumbnails/negative_old/kodak_portra_400_vc_+.jpg"
+                    },
+                    {
+                        "name": "Fuji Xtrans Iii Classic Chrome",
+                        "lut_file": "luts/fuji_xtrans_iii/fuji_xtrans_iii_classic_chrome.cube",
+                        "category": "Fujixtransiii",
+                        "thumbnail": "thumbnails/fuji_xtrans_iii/fuji_xtrans_iii_classic_chrome.jpg"
+                    },
+                    { "name": "Not a LUT", "lut_file": "README.md", "category": "Bw" }
+                ]
+            }
+        """
+        val items = GmicPack.parse(json)
+        assertEquals(2, items.size)
+        val portra = items[0]
+        assertEquals("gmic-negative-old-kodak-portra-400-vc-p", portra.id)
+        assertEquals("Kodak Portra 400 VC +", portra.name)
+        assertEquals("Negative (classic)", portra.category)
+        assertEquals("thumbnails/negative_old/kodak_portra_400_vc_+.jpg", portra.thumbnail)
+        assertEquals("Fuji X-Trans III Classic Chrome", items[1].name)
+        assertEquals("Fuji X-Trans III", items[1].category)
+    }
+
+    @Test
     fun everyFilmStockIsDistinct() {
         val looks = Preset.FILM.map { it.settings }
         assertEquals(looks.size, looks.toSet().size)
