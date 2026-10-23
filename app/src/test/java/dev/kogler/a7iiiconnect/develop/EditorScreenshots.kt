@@ -69,14 +69,16 @@ class EditorScreenshots {
 
         tool("EFFECTS"); shot("06-effects")
         tool("DETAIL"); shot("07-detail")
-        tool("OPTICS"); shot("08-optics")
+        section("FRAME"); tool("OPTICS"); shot("08-optics")
         tool("GEOMETRY"); shot("09-geometry")
-        tool("PRESETS"); shot("10-presets")
+        section("LOOKS"); shot("10-presets")
+        // A section opens on the tab it was left on.
+        section("FRAME"); compose.onNodeWithText("Vertical").assertExists()
         tool("CROP"); awaitRender(); shot("11-crop")
 
         // Closing the panel brings the filmstrip back.
-        tool("CROP"); awaitRender(); shot("12-no-panel")
-        tool("LIGHT")
+        section("FRAME"); awaitRender(); shot("12-no-panel")
+        section("ADJUST"); tool("LIGHT")
         compose.onNodeWithTag("compare").performClick()
         awaitRender(); shot("13-split")
 
@@ -98,7 +100,7 @@ class EditorScreenshots {
                 Mask.radial(1.5f).copy(x0 = 0.68f, y0 = 0.47f, x1 = 0.12f, y1 = 0.16f, angle = 10f).with(LocalP.EXPOSURE, 0.5f).with(LocalP.TINT, 15f),
             )),
         )
-        tool("MASKS"); awaitRender()
+        section("MASKS"); awaitRender()
         shot("17-masks-linear")
         compose.onNodeWithText("2 · Radial").performClick(); settle()
         shot("18-masks-radial")
@@ -123,7 +125,7 @@ class EditorScreenshots {
         compose.onNodeWithTag("fullscreen").performClick(); settle()
         restore.emulateSavedInstanceStateRestore()
         settle()
-        compose.onNodeWithTag("tool-LIGHT").assertDoesNotExist()
+        compose.onNodeWithTag("section-ADJUST").assertDoesNotExist()
     }
 
     /** The phone turned sideways: the panel sits beside the photo. */
@@ -429,8 +431,15 @@ class EditorScreenshots {
         shot("53-slideshow")
     }
 
+    /** A tab of the open section. */
     private fun tool(name: String) {
         compose.onNodeWithTag("tool-$name").performClick()
+        settle()
+    }
+
+    /** A section of the bottom bar: opens it, or closes it when it's open. */
+    private fun section(name: String) {
+        compose.onNodeWithTag("section-$name").performClick()
         settle()
     }
 
