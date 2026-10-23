@@ -1483,34 +1483,31 @@ fun EditorScreen(
                 }
             }
 
-            // Bottom bar: a section opens its last tab, and tapping the open one closes the panel.
-            // A dot marks the sections with edits.
-            if (!fullscreen) Row(Modifier.fillMaxWidth().background(Color(0xFF0E0E0E)).padding(vertical = 8.dp, horizontal = 4.dp)) {
+            // Bottom bar, icons only: a section opens its last tab, and tapping the open one closes
+            // the panel. A dot marks the sections with edits.
+            if (!fullscreen) Row(Modifier.fillMaxWidth().background(Color(0xFF0E0E0E)).padding(vertical = 2.dp, horizontal = 4.dp)) {
                 for (s in Section.entries) {
                     val own = s.tools.filter(allowed)
                     if (own.isEmpty()) continue
                     val selected = tool?.section == s
                     val changed = own.any { it.changed(settings) }
                     val primary = MaterialTheme.colorScheme.primary
-                    Column(
-                        Modifier.weight(1f).testTag("section-${s.name}").clip(RoundedCornerShape(12.dp))
-                            .clickable { selectTool(if (selected) null else lastTool[s]?.takeIf { it in own } ?: own.first()) }
-                            .padding(vertical = 2.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                    Box(
+                        Modifier.weight(1f).height(48.dp).testTag("section-${s.name}").clip(RoundedCornerShape(12.dp))
+                            .clickable { selectTool(if (selected) null else lastTool[s]?.takeIf { it in own } ?: own.first()) },
+                        contentAlignment = Alignment.Center,
                     ) {
                         Box(
-                            Modifier.size(width = 60.dp, height = 32.dp).clip(RoundedCornerShape(16.dp))
+                            Modifier.size(width = 56.dp, height = 32.dp).clip(RoundedCornerShape(16.dp))
                                 .background(if (selected) primary else Color.Transparent),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Icon(s.icon, null, tint = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White)
+                            Icon(s.icon, s.label, tint = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White)
                             if (changed) Box(
-                                Modifier.align(Alignment.TopEnd).padding(top = 5.dp, end = 15.dp).size(6.dp)
+                                Modifier.align(Alignment.TopEnd).padding(top = 5.dp, end = 13.dp).size(6.dp)
                                     .background(if (selected) MaterialTheme.colorScheme.onPrimary else primary, CircleShape),
                             )
                         }
-                        Spacer(Modifier.height(4.dp))
-                        Text(s.label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
                     }
                 }
             }
