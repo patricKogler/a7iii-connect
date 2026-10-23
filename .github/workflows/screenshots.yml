@@ -19,7 +19,7 @@ permissions:
 jobs:
   screenshots:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -28,7 +28,8 @@ jobs:
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
       - name: Render
-        timeout-minutes: 15
+        # The editor's photo and RenderTest are drawn by Skia's software backend, which is slow.
+        timeout-minutes: 25
         run: |
           set -o pipefail
           ./gradlew --no-daemon testDebugUnitTest --tests '*EditorScreenshots*' --tests '*CameraScreenshots*' --tests '*RenderTest*' --tests '*DuelTest*' --tests '*LookTest*' --tests '*AlbumsTest*' --tests '*GridLinesTest*' --tests '*SmartTest*' --tests '*TogetherScreenshots*' --tests 'dev.kogler.a7iiiconnect.duo.*Test' 2>&1 | tee test.log

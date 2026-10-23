@@ -89,7 +89,9 @@ private class Offscreen(val width: Int, val height: Int) : AutoCloseable {
     private val reader = ImageReader.newInstance(
         width, height, PixelFormat.RGBA_8888, 2, HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or HardwareBuffer.USAGE_GPU_COLOR_OUTPUT,
     )
-    private val node = RenderNode("develop").apply { setPosition(0, 0, width, height) }
+    // Not `apply { setPosition(0, 0, width, height) }`: inside it those names are the node's own
+    // (still 0 x 0) size, and a 0 x 0 node draws nothing.
+    private val node = RenderNode("develop").also { it.setPosition(0, 0, this.width, this.height) }
     private val renderer = HardwareRenderer().apply {
         setSurface(reader.surface)
         setContentRoot(node)
