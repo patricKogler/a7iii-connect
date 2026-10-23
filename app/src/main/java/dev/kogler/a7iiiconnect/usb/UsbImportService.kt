@@ -352,5 +352,4 @@ class UsbImportService : Service() {
 }
 
 private fun Intent.parcelableDevice(): UsbDevice? =
-    if (android.os.Build.VERSION.SDK_INT >= 33) getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-    else @Suppress("DEPRECATION") getParcelableExtra(UsbManager.EXTRA_DEVICE)
+    getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)

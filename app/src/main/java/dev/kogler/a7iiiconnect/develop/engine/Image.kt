@@ -13,6 +13,10 @@ class LinearImage(val width: Int, val height: Int) {
     val g = FloatArray(width * height)
     val b = FloatArray(width * height)
 
+    fun copy(): LinearImage = LinearImage(width, height).also {
+        r.copyInto(it.r); g.copyInto(it.g); b.copyInto(it.b)
+    }
+
     /** Area-averaged copy whose longer edge is at most [maxEdge]. */
     fun downscaled(maxEdge: Int): LinearImage {
         val scale = maxEdge.toDouble() / maxOf(width, height)

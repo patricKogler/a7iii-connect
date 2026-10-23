@@ -105,7 +105,7 @@ class FullImage(
 class FullSampler(
     private val img: FullImage,
     private val orientation: Int,
-    private val geom: Geometry,
+    override val geometry: Geometry,
     region: Region? = null,
 ) : Sampler {
     override val scale = region?.scale ?: 1.0
@@ -115,49 +115,7 @@ class FullSampler(
     override val height = region?.height ?: frameHeight
     override val originX = region?.x0 ?: 0
     override val originY = region?.y0 ?: 0
-
-    /** The geometry's map every [GRID_STEP] output pixels, for the Rust render. */
-    private val grid: Pair<FloatArray, FloatArray?> by lazy {
-        val nx = (width - 1) / GRID_STEP + 2
-        val ny = (height - 1) / GRID_STEP + 2
-        val map = FloatArray(nx * ny * 6)
-        val vig = if (geom.hasVignetteCorrection) FloatArray(nx * ny) else null
-        parallelRows(ny) { j ->
-            val m = DoubleArray(6)
-            val oy = (originY + j * GRID_STEP + 0.5) / scale
-            for (i in 0 until nx) {
-                geom.map((originX + i * GRID_STEP + 0.5) / scale, oy, m)
-                val n = j * nx + i
-                for (k in 0..5) map[n * 6 + k] = m[k].toFloat()
-                if (vig != null) vig[n] = geom.vignetteGain(m[2], m[3])
-            }
-        }
-        map to vig
-    }
-
-    /** Renders rows [y0, y1) with the Rust engine into [out]; false when it isn't available. */
-    fun renderNative(look: Look, guide: Guide?, out: IntArray, y0: Int, y1: Int): Boolean {
-        if (!Native.available) return false
-        val (map, vig) = grid
-        val masks = look.nativeMasks()
-        val subject = if (masks != null) look.subjectMap else null
-        val sky = if (masks != null) look.skyMap else null
-        val nx = (width - 1) / GRID_STEP + 2
-        val ny = (height - 1) / GRID_STEP + 2
-        return Native.render(
-            look.nativeParams(), look.toneTable, look.nativeCurves(),
-            guide?.let { intArrayOf(it.width, it.height) }, guide?.base, guide?.medium, guide?.dark, guide?.air,
-            img.data,
-            doubleArrayOf(img.width.toDouble(), img.height.toDouble(), img.left.toDouble(), img.top.toDouble(),
-                img.sensorWidth.toDouble(), img.sensorHeight.toDouble(), orientation.toDouble()),
-            map, floatArrayOf(originX.toFloat(), originY.toFloat(), nx.toFloat(), ny.toFloat(), GRID_STEP.toFloat()), vig,
-            doubleArrayOf(width.toDouble(), height.toDouble(), frameWidth.toDouble(), frameHeight.toDouble(),
-                originX.toDouble(), originY.toDouble(), scale),
-            masks, subject?.let { intArrayOf(it.width, it.height) }, subject?.data,
-            sky?.let { intArrayOf(it.width, it.height) }, sky?.data,
-            y0, y1, out,
-        )
-    }
+    private val geom get() = geometry
 
     override fun fill(y0: Int, rows: Int, out: LinearImage, uv: FloatArray?) {
         val vig = geom.hasVignetteCorrection
@@ -178,10 +136,6 @@ class FullSampler(
                 }
             }
         }
-    }
-
-    private companion object {
-        const val GRID_STEP = 8
     }
 
     /** Channel [c] at upright position (ux, uy), bilinear, black outside the photo. */
@@ -250,16 +204,4 @@ fun sensorBounds(geom: Geometry, orientation: Int, sensorW: Int, sensorH: Int, r
         (x0.toInt() - pad).coerceIn(0, sensorW - 1), (y0.toInt() - pad).coerceIn(0, sensorH - 1),
         (x1.toInt() + pad + 1).coerceIn(1, sensorW), (y1.toInt() + pad + 1).coerceIn(1, sensorH),
     )
-}
-
-/** Renders [sampler] through [look] in bands; [sink] receives each finished band of ARGB rows. */
-fun renderBands(look: Look, sampler: Sampler, guide: Guide?, band: Int = 128, sink: (y: Int, rows: Int, px: IntArray) -> Unit) {
-    val px = IntArray(sampler.width * band)
-    var y = 0
-    while (y < sampler.height) {
-        val y1 = minOf(sampler.height, y + band)
-        if (!(sampler is FullSampler && sampler.renderNative(look, guide, px, y, y1))) look.render(sampler, guide, px, y, y1)
-        sink(y, y1 - y, px)
-        y = y1
-    }
 }

@@ -1,12 +1,10 @@
 //! JNI entry points for `dev.kogler.a7iiiconnect.develop.engine.Native`. Arrays are pinned with
 //! GetPrimitiveArrayCritical (no copies of 24 MP buffers); no other JNI call happens while they
-//! are held. A panic is caught and reported as `false`, so Kotlin falls back to its own engine.
+//! are held. A panic is caught and reported as `false`, so Kotlin falls back to its own demosaic.
 
 mod demosaic;
-mod filters;
-mod render;
 
-use jni_sys::{jboolean, jclass, jdoubleArray, jfloatArray, jint, jintArray, jobject, jshortArray, jsize, JNIEnv, JNI_ABORT};
+use jni_sys::{jboolean, jclass, jfloatArray, jint, jintArray, jobject, jshortArray, jsize, JNIEnv, JNI_ABORT};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr::null_mut;
 
@@ -122,154 +120,6 @@ pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native
             scale: [sc.slice()[0], sc.slice()[1], sc.slice()[2]],
         };
         demosaic::demosaic(&raw, y0 as usize, y1 as usize, x0 as usize, x1 as usize, &mut o.slice_mut()[out_offset as usize..]);
-        Some(())
-    })
-}
-
-/// Renders output rows [y0, y1) of a band into `out` (ARGB).
-///
-/// `src_info`: width, height, left, top, sensor width, sensor height, orientation.
-/// `grid_info`: x0, y0, nx, ny, step. `frame`: width, height, frame width, frame height,
-/// origin x, origin y, scale. `guide_size`: width, height (null when there is no guide).
-/// `masks`: count, photo width, photo height, then the masks (null without any);
-/// `subject_size`: width, height of `subject` (null when there is no subject map); `sky_size`
-/// and `sky` likewise for the sky map.
-#[no_mangle]
-pub unsafe extern "system" fn Java_dev_kogler_a7iiiconnect_develop_engine_Native_render(
-    env: *mut JNIEnv,
-    _class: jclass,
-    params: jfloatArray,
-    tone: jfloatArray,
-    curves: jfloatArray,
-    guide_size: jintArray,
-    base: jfloatArray,
-    medium: jfloatArray,
-    dark: jfloatArray,
-    air: jfloatArray,
-    src: jshortArray,
-    src_info: jdoubleArray,
-    grid: jfloatArray,
-    grid_info: jfloatArray,
-    vig: jfloatArray,
-    frame: jdoubleArray,
-    masks: jfloatArray,
-    subject_size: jintArray,
-    subject: jfloatArray,
-    sky_size: jintArray,
-    sky: jfloatArray,
-    y0: jint,
-    y1: jint,
-    out: jintArray,
-) -> jboolean {
-    guarded(|| {
-        let lens: Vec<usize> = [params, tone, curves, guide_size, base, medium, dark, air, src, src_info, grid, grid_info, vig, frame, out, masks, subject_size, subject, sky_size, sky]
-            .iter()
-            .map(|&a| len(env, a))
-            .collect();
-        if lens[0] < render::idx::COUNT || lens[1] < 4097 || lens[9] < 7 || lens[11] < 5 || lens[13] < 7 {
-            return None;
-        }
-        let si = Pinned::<f64>::new(env, src_info, lens[9], false)?;
-        let gi = Pinned::<f32>::new(env, grid_info, lens[11], false)?;
-        let fi = Pinned::<f64>::new(env, frame, lens[13], false)?;
-        let (si, gi, fi) = (si.slice().to_vec(), gi.slice().to_vec(), fi.slice().to_vec());
-        let fr = render::Frame {
-            width: fi[0] as usize,
-            height: fi[1] as usize,
-            frame_width: fi[2] as usize,
-            frame_height: fi[3] as usize,
-            origin_x: fi[4] as usize,
-            origin_y: fi[5] as usize,
-            scale: fi[6],
-        };
-        let (sw, sh) = (si[0] as usize, si[1] as usize);
-        let (nx, ny) = (gi[2] as usize, gi[3] as usize);
-        if y0 < 0 || y1 < y0 || y1 as usize > fr.height || fr.width == 0 || nx < 1 || ny < 1 || sw == 0 || sh == 0 {
-            return None;
-        }
-        if lens[8] < sw * sh * 3 || lens[10] < nx * ny * 6 || (lens[12] != 0 && lens[12] < nx * ny) || lens[14] < fr.width * (y1 - y0) as usize {
-            return None;
-        }
-        if lens[2] != 0 && lens[2] < 3 * 1024 {
-            return None;
-        }
-
-        let p = Pinned::<f32>::new(env, params, lens[0], false)?;
-        let tn = Pinned::<f32>::new(env, tone, lens[1], false)?;
-        let cv = Pinned::<f32>::new(env, curves, lens[2], false)?;
-        let gs = Pinned::<i32>::new(env, guide_size, lens[3], false)?;
-        let gb = Pinned::<f32>::new(env, base, lens[4], false)?;
-        let gm = Pinned::<f32>::new(env, medium, lens[5], false)?;
-        let gd = Pinned::<f32>::new(env, dark, lens[6], false)?;
-        let ga = Pinned::<f32>::new(env, air, lens[7], false)?;
-        let s = Pinned::<u16>::new(env, src, lens[8], false)?;
-        let g = Pinned::<f32>::new(env, grid, lens[10], false)?;
-        let v = Pinned::<f32>::new(env, vig, lens[12], false)?;
-        let mk = Pinned::<f32>::new(env, masks, lens[15], false)?;
-        let ss = Pinned::<i32>::new(env, subject_size, lens[16], false)?;
-        let sj = Pinned::<f32>::new(env, subject, lens[17], false)?;
-        let ks = Pinned::<i32>::new(env, sky_size, lens[18], false)?;
-        let kj = Pinned::<f32>::new(env, sky, lens[19], false)?;
-        let mut o = Pinned::<i32>::new(env, out, lens[14], true)?;
-
-        let guide = if gs.slice().len() >= 2 {
-            let (w, h) = (gs.slice()[0] as usize, gs.slice()[1] as usize);
-            let n = w * h;
-            if w == 0 || h == 0 || gb.slice().len() < n || gm.slice().len() < n || gd.slice().len() < n || ga.slice().len() < 3 {
-                return None;
-            }
-            Some(render::Guide {
-                width: w,
-                height: h,
-                base: gb.slice(),
-                medium: gm.slice(),
-                dark: gd.slice(),
-                air: [ga.slice()[0], ga.slice()[1], ga.slice()[2]],
-            })
-        } else {
-            None
-        };
-        let masks = if mk.slice().len() >= 3 {
-            let m = mk.slice();
-            let count = m[0] as usize;
-            if count > 64 || m.len() < 3 + count * render::MASK_STRIDE || m[1] <= 0.0 || m[2] <= 0.0 {
-                return None;
-            }
-            let subject = if ss.slice().len() >= 2 {
-                let (w, h) = (ss.slice()[0] as usize, ss.slice()[1] as usize);
-                if w == 0 || h == 0 || sj.slice().len() < w * h {
-                    return None;
-                }
-                Some(render::Subject { width: w, height: h, data: sj.slice() })
-            } else {
-                None
-            };
-            let sky = if ks.slice().len() >= 2 {
-                let (w, h) = (ks.slice()[0] as usize, ks.slice()[1] as usize);
-                if w == 0 || h == 0 || kj.slice().len() < w * h {
-                    return None;
-                }
-                Some(render::Subject { width: w, height: h, data: kj.slice() })
-            } else {
-                None
-            };
-            Some(render::Masks { count, src_w: m[1], src_h: m[2], p: &m[3..3 + count * render::MASK_STRIDE], subject, sky })
-        } else {
-            None
-        };
-        let look = render::Look { p: p.slice(), tone: tn.slice(), curves: cv.slice() };
-        let source = render::Source {
-            data: s.slice(),
-            width: sw,
-            height: sh,
-            left: si[2],
-            top: si[3],
-            sensor_width: si[4],
-            sensor_height: si[5],
-            orientation: si[6] as i32,
-        };
-        let grid = render::Grid { x0: gi[0], y0: gi[1], nx, ny, step: gi[4], map: g.slice(), vig: v.slice() };
-        look.render(guide.as_ref(), masks.as_ref(), &source, &grid, &fr, y0 as usize, y1 as usize, o.slice_mut());
         Some(())
     })
 }

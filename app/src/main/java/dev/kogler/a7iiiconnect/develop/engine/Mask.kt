@@ -143,8 +143,8 @@ class MaskMaps {
 
 /**
  * A photo's masks ready to evaluate: per mask, its shape in full-size pixels and its sliders,
- * flattened into [params] ([STRIDE] floats per mask; the Rust engine and the GPU shader read the
- * same layout). [add] sums every mask's sliders, weighted by its coverage, at one pixel.
+ * flattened into [params] ([STRIDE] floats per mask, the layout the GPU shader reads). [weight]
+ * is one mask's coverage at a pixel, for the overlay.
  */
 class MaskSet(masks: List<Mask>, private val srcW: Double, private val srcH: Double, val subject: MaskImage?, val sky: MaskImage? = null) {
     val count = minOf(MAX, masks.size)
@@ -204,19 +204,6 @@ class MaskSet(masks: List<Mask>, private val srcW: Double, private val srcH: Dou
 
     private fun subjectAt(x: Float, y: Float): Float = subject?.at((x / srcW).toFloat(), (y / srcH).toFloat()) ?: 0f
     private fun skyAt(x: Float, y: Float): Float = sky?.at((x / srcW).toFloat(), (y / srcH).toFloat()) ?: 0f
-
-    /** Adds every mask's [LOCALS] at full-size pixel ([x], [y]) into [out]. */
-    fun add(x: Float, y: Float, out: FloatArray) {
-        for (k in 0 until count) {
-            val w = weight(k, x, y)
-            if (w <= 0f) continue
-            val o = k * STRIDE + 10
-            for (i in LOCALS.indices) out[i] += w * params[o + i]
-        }
-    }
-
-    /** [count] and the photo's size, then [params]: what the Rust engine takes. */
-    fun packed(): FloatArray = floatArrayOf(count.toFloat(), srcW.toFloat(), srcH.toFloat()) + params
 
     companion object {
         const val MAX = 8

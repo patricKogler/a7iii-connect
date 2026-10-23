@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-# The develop engine's hot loops (full-size demosaic and the export render) in Rust, called from
-# Kotlin over JNI. The Kotlin engine stays the reference and the fallback.
+# The full-size demosaic in Rust, called from Kotlin over JNI (the look itself runs on the GPU,
+# see GpuPreview.kt). The Kotlin demosaic stays the reference and the fallback.
 [lib]
 crate-type = ["cdylib"]
 path = "src/lib.rs"
