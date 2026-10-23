@@ -7,9 +7,7 @@ import android.graphics.ColorSpace
 import android.graphics.Paint
 import android.graphics.RuntimeShader
 import android.graphics.Shader
-import android.os.Build
 import android.util.Half
-import androidx.annotation.RequiresApi
 import dev.kogler.a7iiiconnect.develop.engine.Geometry
 import dev.kogler.a7iiiconnect.develop.engine.Guide
 import dev.kogler.a7iiiconnect.develop.engine.LinearImage
@@ -19,12 +17,12 @@ import dev.kogler.a7iiiconnect.develop.engine.parallelRows
 import java.nio.ShortBuffer
 
 /**
- * The live preview on the GPU: the photo's geometry-corrected camera pixels go up once as a
- * 16-bit float texture, and an AGSL shader runs the per-pixel develop pipeline every frame, so
- * sliders are live. It mirrors [dev.kogler.a7iiiconnect.develop.engine.Look.render]; noise
- * reduction and defringe are left to the CPU render (sharp zoom and export).
+ * The develop pipeline on the GPU, for the live preview and every other render (see
+ * [renderBands]): the photo's geometry-corrected camera pixels go up as a 16-bit float texture,
+ * and an AGSL shader runs the per-pixel pipeline, so sliders are live. This shader is the only
+ * implementation of the look; noise reduction and defringe are done to the scene beforehand
+ * ([dev.kogler.a7iiiconnect.develop.engine.Look.prepare]).
  */
-@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 internal class GpuPreview(source: String = AGSL) {
     private val shader = compile(source)
     private val paint = Paint().apply { shader = this@GpuPreview.shader }
@@ -36,6 +34,7 @@ internal class GpuPreview(source: String = AGSL) {
 
     /** All of one frame's inputs, built off the main thread by [GpuPreview.prepare]. */
     class Frame(
+        /** Camera pixels: the drawn area, plus [Placement.padX] / [Placement.padY] of margin. */
         val scene: Bitmap,
         val guide: Bitmap?,
         val air: FloatArray,
@@ -45,6 +44,19 @@ internal class GpuPreview(source: String = AGSL) {
         /** Source position per frame position (see [coordsBitmap]); null without masks. */
         val coords: Bitmap?,
         val subject: Bitmap?,
+        val place: Placement = Placement(scene.width, scene.height),
+    )
+
+    /**
+     * The drawn area's size and where it sits in the whole frame: a tile of a bigger render is
+     * [width] x [height] at ([originX], [originY]) of a [frameWidth] x [frameHeight] frame, and
+     * its scene has [padX] / [padY] pixels of margin around it for the neighbour taps.
+     */
+    class Placement(
+        val width: Int, val height: Int,
+        val originX: Int = 0, val originY: Int = 0,
+        val frameWidth: Int = width, val frameHeight: Int = height,
+        val padX: Int = 0, val padY: Int = 0,
     )
 
     /**
@@ -55,8 +67,9 @@ internal class GpuPreview(source: String = AGSL) {
 
     /** Applies a prepared frame (main thread). */
     fun set(f: Frame) {
-        width = f.scene.width
-        height = f.scene.height
+        val at = f.place
+        width = at.width
+        height = at.height
         val p = f.params
         shader.setInputShader("scene", linear(f.scene))
         shader.setInputShader("toneLut", linear(f.tone))
@@ -64,8 +77,10 @@ internal class GpuPreview(source: String = AGSL) {
         shader.setInputShader("guide", linear(f.guide ?: f.tone))
         shader.setInputShader("coords", linear(f.coords ?: f.tone))
         shader.setInputShader("subject", linear(f.subject ?: f.tone))
-        u("frameSize", width.toFloat(), height.toFloat())
-        u("guideScale", (f.guide?.width ?: 1).toFloat() / width, (f.guide?.height ?: 1).toFloat() / height)
+        u("frameSize", at.frameWidth.toFloat(), at.frameHeight.toFloat())
+        u("origin", at.originX.toFloat(), at.originY.toFloat())
+        u("scenePad", at.padX.toFloat(), at.padY.toFloat())
+        u("guideScale", (f.guide?.width ?: 1).toFloat() / at.frameWidth, (f.guide?.height ?: 1).toFloat() / at.frameHeight)
         val m = p.matrix
         u("row0", m[0], m[1], m[2])
         u("row1", m[3], m[4], m[5])
@@ -153,12 +168,14 @@ internal class GpuPreview(source: String = AGSL) {
         fun prepare(
             scene: Bitmap, guide: Guide?, guideBitmap: Bitmap?, params: ShaderParams,
             coords: Bitmap? = null, subject: Bitmap? = null,
+            place: Placement = Placement(scene.width, scene.height),
         ): Frame {
             val tone = floatBitmap(params.tone.size, 1) { _, x, c -> if (c == 3) 1f else params.tone[x] }
             val curves = params.curves?.let { cv -> floatBitmap(cv[0].size, 3) { y, x, c -> if (c == 3) 1f else cv[y][x] } }
             return Frame(
                 scene, guideBitmap, guide?.air ?: FloatArray(3), tone, curves, params,
                 coords.takeIf { params.maskCount > 0 }, subject.takeIf { params.maskCount > 0 && (params.subject != null || params.sky != null) },
+                place,
             )
         }
 
@@ -166,18 +183,19 @@ internal class GpuPreview(source: String = AGSL) {
         const val COORD_STEP = 8
 
         /**
-         * Where each part of a [w] x [h] frame (at [scale] frame pixels per full-size pixel) comes
-         * from in the upright photo, as fractions of its size: one node every [COORD_STEP] pixels,
-         * which the shader interpolates. Masks are placed by these positions.
+         * Where each part of a [w] x [h] area at ([ox], [oy]) of the frame (at [scale] frame
+         * pixels per full-size pixel) comes from in the upright photo, as fractions of its size:
+         * one node every [COORD_STEP] pixels, which the shader interpolates. Masks are placed by
+         * these positions.
          */
-        fun coordsBitmap(geom: Geometry, scale: Double, w: Int, h: Int): Bitmap {
+        fun coordsBitmap(geom: Geometry, scale: Double, w: Int, h: Int, ox: Int = 0, oy: Int = 0): Bitmap {
             val nx = w / COORD_STEP + 2
             val ny = h / COORD_STEP + 2
             val pos = FloatArray(nx * ny * 2)
             parallelRows(ny) { j ->
                 val m = DoubleArray(6)
                 for (i in 0 until nx) {
-                    geom.map(i * COORD_STEP / scale, j * COORD_STEP / scale, m)
+                    geom.map((ox + i * COORD_STEP) / scale, (oy + j * COORD_STEP) / scale, m)
                     pos[(j * nx + i) * 2] = (m[2] / geom.srcW).toFloat()
                     pos[(j * nx + i) * 2 + 1] = (m[3] / geom.srcH).toFloat()
                 }
@@ -205,9 +223,9 @@ internal class GpuPreview(source: String = AGSL) {
             }
         }
 
-        /** The geometry-corrected camera pixels as a float texture. */
-        fun sceneBitmap(img: LinearImage): Bitmap = floatBitmap(img.width, img.height) { y, x, c ->
-            val i = y * img.width + x
+        /** The geometry-corrected camera pixels (columns [x0] to [x0] + [w]) as a float texture. */
+        fun sceneBitmap(img: LinearImage, x0: Int = 0, w: Int = img.width): Bitmap = floatBitmap(w, img.height) { y, x, c ->
+            val i = y * img.width + x0 + x
             when (c) { 0 -> img.r[i]; 1 -> img.g[i]; 2 -> img.b[i]; else -> 1f }
         }
 
@@ -245,6 +263,8 @@ uniform shader toneLut;
 uniform shader curves;
 uniform shader guide;
 uniform float2 frameSize;
+uniform float2 origin;
+uniform float2 scenePad;
 uniform float2 guideScale;
 uniform float3 row0;
 uniform float3 row1;
@@ -304,8 +324,9 @@ const float MID = -3.0588937;
 float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
 float logv(float v) { return log2(max(v, 0.00001)); }
 
+// p is a position in the drawn area; the scene texture has a margin around it.
 float3 lin(float2 p) {
-    float3 c = EVAL(scene, p).rgb;
+    float3 c = EVAL(scene, p + scenePad).rgb;
     return max(float3(dot(row0, c), dot(row1, c), dot(row2, c)), float3(0.0));
 }
 
@@ -406,6 +427,40 @@ float skyAt(float2 uv) {
 }
 float displayLum(float2 p) { return tone(luma(lin(p))); }
 
+// Binomial weights 1 4 6 4 1.
+float bw(int i) { return i == 2 ? 6.0 : (i == 1 || i == 3 ? 4.0 : 1.0); }
+
+// Blurs of log luminance (Texture) and display luminance (Sharpen) with sigma about r: nine
+// taps for the small radii of the preview, 25 for full-size renders, where the taps would
+// otherwise sit too far apart.
+float blurLum(float2 p, float r) {
+    if (r > 1.5) {
+        float s = 0.0;
+        for (int j = 0; j < 5; j++) {
+            for (int i = 0; i < 5; i++) s += bw(i) * bw(j) * lumAt(p + float2(float(i - 2), float(j - 2)) * r);
+        }
+        return s / 256.0;
+    }
+    float d = r * 1.4;
+    return (4.0 * lumAt(p)
+        + 2.0 * (lumAt(p + float2(d, 0.0)) + lumAt(p - float2(d, 0.0)) + lumAt(p + float2(0.0, d)) + lumAt(p - float2(0.0, d)))
+        + lumAt(p + float2(d, d)) + lumAt(p - float2(d, d)) + lumAt(p + float2(d, -d)) + lumAt(p - float2(d, -d))) / 16.0;
+}
+
+float blurDisplay(float2 p, float r) {
+    if (r > 1.5) {
+        float s = 0.0;
+        for (int j = 0; j < 5; j++) {
+            for (int i = 0; i < 5; i++) s += bw(i) * bw(j) * displayLum(p + float2(float(i - 2), float(j - 2)) * r);
+        }
+        return s / 256.0;
+    }
+    float d = r * 1.4;
+    return (4.0 * displayLum(p)
+        + 2.0 * (displayLum(p + float2(d, 0.0)) + displayLum(p - float2(d, 0.0)) + displayLum(p + float2(0.0, d)) + displayLum(p - float2(0.0, d)))
+        + displayLum(p + float2(d, d)) + displayLum(p - float2(d, d)) + displayLum(p + float2(d, -d)) + displayLum(p - float2(d, -d))) / 16.0;
+}
+
 // Sine-free hash on small (wrapped) cell coordinates: sin() of large arguments loses precision
 // on phone GPUs, which showed up as diagonal stripes in the grain.
 float hash(float2 q) {
@@ -425,6 +480,8 @@ float valueNoise(float2 q) {
 
 half4 main(float2 p) {
     float3 c = lin(p);
+    // Position in the whole frame, for what's placed by it (guide maps, vignette, grain).
+    float2 fp = p + origin;
 
     // Masks: this pixel's local sliders, summed over the masks by how much each covers it.
     float lEv = 0.0;
@@ -483,7 +540,7 @@ half4 main(float2 p) {
     float med = 0.0;
     float hazeRatio = 0.0;
     if (hasGuide > 0.0) {
-        float3 g = EVAL(guide, p * guideScale).rgb;
+        float3 g = EVAL(guide, fp * guideScale).rgb;
         base = g.r * 40.0 - 20.0 + ev + lEv;
         med = g.g * 40.0 - 20.0 + ev + lEv;
         hazeRatio = g.b * 2.0;
@@ -516,12 +573,9 @@ half4 main(float2 p) {
         }
     }
     if (textureAmt != 0.0) {
-        float r = textureRadius * 1.4;
-        float s = 4.0 * l
-            + 2.0 * (lumAt(p + float2(r, 0.0)) + lumAt(p - float2(r, 0.0)) + lumAt(p + float2(0.0, r)) + lumAt(p - float2(0.0, r)))
-            + lumAt(p + float2(r, r)) + lumAt(p - float2(r, r)) + lumAt(p + float2(r, -r)) + lumAt(p - float2(r, -r));
-        // The neighbours are sampled without the mask's exposure; it varies slowly, so add it back.
-        d += textureAmt * clamp(l - s / 16.0 - lEv * 0.75, -1.5, 1.5);
+        // Detail of the scene as it came in: mask exposure and dehaze vary slowly, so leaving
+        // them out of both sides changes nothing but the cost.
+        d += textureAmt * clamp(lumAt(p) - blurLum(p, textureRadius), -1.5, 1.5);
     }
     if (d != 0.0) c *= exp2(d);
 
@@ -544,8 +598,8 @@ half4 main(float2 p) {
         float ay = vigRound >= 0.0 ? 1.0 : 1.0 - vigRound * 0.6;
         float e0 = 0.3 + vigMid * 0.7;
         float e1 = e0 + 0.05 + vigFeather * 0.9;
-        float v = (p.y / frameSize.y * 2.0 - 1.0) / ay;
-        float u = (p.x / frameSize.x * 2.0 - 1.0) * ax / max(1.0, ax);
+        float v = (fp.y / frameSize.y * 2.0 - 1.0) / ay;
+        float u = (fp.x / frameSize.x * 2.0 - 1.0) * ax / max(1.0, ax);
         float t = smoothstep(e0, e1, sqrt(u * u + v * v) / 1.4142 * 1.25);
         if (vignette < 0.0) {
             float lv = luma(c);
@@ -557,12 +611,8 @@ half4 main(float2 p) {
 
     // Sharpening: unsharp mask on (approximate) display luminance.
     if (sharpen > 0.0) {
-        float r = sharpenRadius * 1.4;
         float l0 = displayLum(p);
-        float b = 4.0 * l0
-            + 2.0 * (displayLum(p + float2(r, 0.0)) + displayLum(p - float2(r, 0.0)) + displayLum(p + float2(0.0, r)) + displayLum(p - float2(0.0, r)))
-            + displayLum(p + float2(r, r)) + displayLum(p - float2(r, r)) + displayLum(p + float2(r, -r)) + displayLum(p - float2(r, -r));
-        float sd = clamp(l0 - b / 16.0, -sharpenLimit, sharpenLimit) * sharpen;
+        float sd = clamp(l0 - blurDisplay(p, sharpenRadius), -sharpenLimit, sharpenLimit) * sharpen;
         if (sharpenMasking > 0.0) {
             float grad = abs(displayLum(p + float2(1.0, 0.0)) - displayLum(p - float2(1.0, 0.0)))
                 + abs(displayLum(p + float2(0.0, 1.0)) - displayLum(p - float2(0.0, 1.0)));
@@ -573,7 +623,7 @@ half4 main(float2 p) {
 
     // Grain anchored to full-size pixel positions.
     if (grain > 0.0) {
-        float2 q = p / scale / grainCell;
+        float2 q = fp / scale / grainCell;
         float nz = valueNoise(q) * (1.0 - grainRough) + hash(floor(q * 3.0)) * grainRough;
         float lg = luma(c);
         c += nz * grain * 0.16 * (0.35 + 2.6 * lg * (1.0 - lg));

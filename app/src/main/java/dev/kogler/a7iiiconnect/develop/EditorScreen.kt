@@ -10,8 +10,6 @@ import androidx.core.view.WindowInsetsControllerCompat
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
-import android.os.Build
-import androidx.annotation.RequiresApi
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -170,7 +168,6 @@ import dev.kogler.a7iiiconnect.develop.engine.Settings
 import dev.kogler.a7iiiconnect.develop.engine.WhiteBalance
 import dev.kogler.a7iiiconnect.develop.engine.autoTone
 import dev.kogler.a7iiiconnect.develop.engine.histogram
-import dev.kogler.a7iiiconnect.develop.engine.renderBands
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -304,9 +301,7 @@ internal fun DrawScope.drawLayer(layer: PhotoLayer, r: Rect) {
             layer.image, dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()),
             dstSize = IntSize(r.width.roundToInt(), r.height.roundToInt()), filterQuality = FilterQuality.Medium,
         )
-        is GpuLayer -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            drawIntoCanvas { layer.gpu.draw(it.nativeCanvas, r.left, r.top, r.width, r.height) }
-        }
+        is GpuLayer -> drawIntoCanvas { layer.gpu.draw(it.nativeCanvas, r.left, r.top, r.width, r.height) }
     }
 }
 
@@ -461,19 +456,19 @@ fun EditorScreen(
         if (result.isSuccess) { tile = null; subjectVersion++ }
     }
 
-    // Re-render on every change. On Android 13+ the GPU runs the develop shader, so only geometry
-    // changes touch the CPU; otherwise the CPU renders, using the smaller draft while a slider
-    // moves. The crop tool shows the whole frame so the crop box can be moved over it.
-    // Shaders only draw on a hardware canvas, so a software-drawn window keeps the CPU render.
+    // Re-render on every change. The GPU runs the develop shader on the window's canvas, so only
+    // geometry and noise reduction changes touch the CPU. A software-drawn window can't draw
+    // shaders, so it gets offscreen renders instead, from the smaller draft while a slider moves.
+    // The crop tool shows the whole frame so the crop box can be moved over it.
     val hardware = LocalView.current.isHardwareAccelerated
     LaunchedEffect(opened) {
         val o = opened ?: return@LaunchedEffect
-        val gpu = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && hardware && gpuPreviewEnabled) runCatching { GpuPreview() }.getOrNull() else null
+        val gpu = if (hardware && gpuPreviewEnabled) runCatching { GpuPreview() }.getOrNull() else null
         val pool = BitmapPool()
-        val scenes = if (gpu != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) SceneCache() else null
+        val scenes = if (gpu != null) SceneCache() else null
         var version = 0
         snapshotFlow { RenderKey(settings, dragging, tool == Tool.CROP, subjectVersion) }.collectLatest { (s, d, crop) ->
-            if (gpu != null && scenes != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (gpu != null && scenes != null) {
                 val frame = withContext(Dispatchers.Default) { scenes.frame(o, s, d, crop, guides) }
                 gpu.set(frame)
                 val layer = GpuLayer(gpu, frame.scene.width, frame.scene.height, ++version)
@@ -498,7 +493,7 @@ fun EditorScreen(
         }
     }
 
-    // Swipe mode's probe: re-rendered (small, on the CPU) once the settings settle.
+    // Swipe mode's probe: re-rendered (small, offscreen) once the settings settle.
     LaunchedEffect(opened, swipeMode) {
         val o = opened ?: return@LaunchedEffect
         if (!swipeMode) { probe = null; return@LaunchedEffect }
@@ -509,7 +504,7 @@ fun EditorScreen(
             }
     }
 
-    // Split view: render the "before" half on the CPU whenever it would look different.
+    // Split view: render the "before" half offscreen whenever it would look different.
     val compareGuides = remember { GuideCache() }
     LaunchedEffect(split, opened) {
         val o = opened ?: return@LaunchedEffect
@@ -1536,21 +1531,22 @@ private class GuideCache {
 
     /** The guide as a GPU texture. */
     @Synchronized
-    fun bitmapOf(g: Guide): Bitmap? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null
+    fun bitmapOf(g: Guide): Bitmap {
         if (g !== guide) return GpuPreview.guideBitmap(g)
         return bitmap ?: GpuPreview.guideBitmap(g).also { bitmap = it }
     }
 }
 
 /**
- * The GPU preview's input: the photo's camera pixels with lens, geometry and crop applied. Built
- * from the small draft while geometry sliders move, and from the full preview otherwise.
+ * The GPU preview's input: the photo's camera pixels with lens, geometry and crop applied, and
+ * noise reduction and defringe done ([Look.prepare]). Built from the small draft while geometry
+ * or those sliders move, and from the full preview otherwise.
  */
-@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 private class SceneCache {
     private var key: Any? = null
     private var fromPreview = false
+    private var filled: LinearImage? = null
+    private var prepKey: Any? = null
     private var scene: Bitmap? = null
     private var scale = 1.0
     private var coords: Bitmap? = null
@@ -1561,18 +1557,25 @@ private class SceneCache {
     fun frame(o: OpenedPhoto, s: Settings, dragging: Boolean, crop: Boolean, guides: GuideCache): GpuPreview.Frame {
         val k = geometryKey(o, s, crop)
         val geom = o.geometry(s, crop)
-        if (k != key || scene == null || (!fromPreview && !dragging)) {
+        val look = Look(o.preview, s)
+        if (k != key || filled == null || (!fromPreview && !dragging)) {
             val src = if (dragging) o.draft else o.preview
             val sampler = ImageSampler(src.image, geom)
             val img = LinearImage(sampler.width, sampler.height)
             sampler.fill(0, sampler.height, img)
-            scene = GpuPreview.sceneBitmap(img)
+            filled = img
             scale = sampler.scale
             key = k
             fromPreview = !dragging
             coords = null
+            scene = null
         }
-        val look = Look(o.preview, s)
+        val pk = if (look.prepares) look.prepareKey else null
+        if (scene == null || pk != prepKey) {
+            val img = filled!!
+            scene = GpuPreview.sceneBitmap(if (pk == null) img else img.copy().also { look.prepare(it, scale) })
+            prepKey = pk
+        }
         val guide = guides.get(o, look, s, crop, allowStale = dragging)
         val params = look.shaderParams(scale)
         val sc = scene!!
@@ -1599,7 +1602,7 @@ private fun probeOf(o: OpenedPhoto, s: Settings, guides: GuideCache): Probe {
     return Probe(px, sampler.width, sampler.height)
 }
 
-/** Histogram of a small CPU render, for the overlay (the GPU frame isn't read back). */
+/** Histogram of a small offscreen render, for the overlay (the live frame isn't read back). */
 private fun histogramOf(o: OpenedPhoto, s: Settings, crop: Boolean, guides: GuideCache): Array<IntArray> {
     val look = Look(o.preview, s)
     val sampler = ImageSampler(o.preview.image, o.geometry(s, crop), 360)

@@ -6,7 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
 /**
- * Material You colours from the phone's wallpaper (Android 12+, which is our minimum). Always
+ * Material You colours from the phone's wallpaper (Android 12+; our minimum is 13). Always
  * dark, so the Camera and Remote screens match Photos and the editor.
  */
 @Composable

@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "dev.kogler.a7iiiconnect"
-        minSdk = 31
+        minSdk = 33
         targetSdk = 35
         versionCode = 65
         versionName = "0.39.4"
