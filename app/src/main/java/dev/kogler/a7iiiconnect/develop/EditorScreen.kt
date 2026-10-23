@@ -2897,6 +2897,7 @@ private fun LutPicker(c: Controls) {
     /** While the G'MIC pack downloads: its size, with [importing] counting the files done. */
     var downloadTotal by remember { mutableStateOf<Int?>(null) }
     val folders = luts.map { it.folder }.distinct()
+    var folder by remember { mutableStateOf(luts.firstOrNull { it.id == c.s.lut }?.folder ?: folders.firstOrNull()) }
     val getPack: () -> Unit = {
         importing = 0
         message = null
@@ -2920,7 +2921,6 @@ private fun LutPicker(c: Controls) {
             )
         }
     }
-    var folder by remember { mutableStateOf(luts.firstOrNull { it.id == c.s.lut }?.folder ?: folders.firstOrNull()) }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         importing = 0
