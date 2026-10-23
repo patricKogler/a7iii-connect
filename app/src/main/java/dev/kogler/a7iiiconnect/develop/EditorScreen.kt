@@ -184,7 +184,9 @@ import dev.kogler.a7iiiconnect.develop.engine.autoTone
 import dev.kogler.a7iiiconnect.develop.engine.histogram
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
@@ -493,6 +495,9 @@ fun EditorScreen(
     // geometry and noise reduction changes touch the CPU. A software-drawn window can't draw
     // shaders, so it gets offscreen renders instead, from the smaller draft while a slider moves.
     // The crop tool shows the whole frame so the crop box can be moved over it.
+    // Frames are conflated, not cancelled: a frame that takes longer than the gap between slider
+    // moves (a geometry change resamples the scene) still lands, then the newest settings go next.
+    // Cancelling it would show nothing until the finger stopped.
     val hardware = LocalView.current.isHardwareAccelerated
     LaunchedEffect(opened) {
         val o = opened ?: return@LaunchedEffect
@@ -500,21 +505,29 @@ fun EditorScreen(
         val pool = BitmapPool()
         val scenes = if (gpu != null) SceneCache() else null
         var version = 0
-        snapshotFlow { RenderKey(settings, dragging, tool == Tool.CROP, subjectVersion) }.collectLatest { (s, d, crop) ->
+        // The histogram follows a frame once the settings rest; a newer frame cancels it.
+        val histogramFor = MutableStateFlow<Rendered?>(null)
+        launch {
+            histogramFor.collectLatest { r ->
+                if (r == null) return@collectLatest
+                delay(120)
+                // A failed side render costs the histogram, never the editor.
+                val h = withContext(Dispatchers.Default) {
+                    runCatching { histogramOf(o, r.settings, r.cropMode, guides) }.onFailure { Log.w("Editor", "histogram render failed", it) }.getOrNull()
+                }
+                if (h != null && rendered === r) rendered = Rendered(r.layer, h, r.settings, r.cropMode)
+            }
+        }
+        snapshotFlow { RenderKey(settings, dragging, tool == Tool.CROP, subjectVersion) }.conflate().collect { (s, d, crop) ->
             if (gpu != null && scenes != null) {
+                histogramFor.value = null
                 val frame = withContext(Dispatchers.Default) { scenes.frame(o, s, d, crop, guides) }
                 gpu.set(frame)
                 val layer = GpuLayer(gpu, frame.scene.width, frame.scene.height, ++version)
-                rendered = Rendered(layer, rendered?.histogram, s, crop)
+                val r = Rendered(layer, rendered?.histogram, s, crop)
+                rendered = r
                 renderCount++
-                if (!d) {
-                    delay(120)
-                    // A failed side render costs the histogram, never the editor.
-                    val h = withContext(Dispatchers.Default) {
-                        runCatching { histogramOf(o, s, crop, guides) }.onFailure { Log.w("Editor", "histogram render failed", it) }.getOrNull()
-                    }
-                    if (h != null) rendered = Rendered(layer, h, s, crop)
-                }
+                if (!d) histogramFor.value = r
             } else {
                 val src = if (d) o.draft else o.preview
                 rendered = withContext(Dispatchers.Default) { pool.render(o, src, s, crop, guides) }
