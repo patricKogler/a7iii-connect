@@ -354,9 +354,9 @@ pub fn details(app: &mut App, ui: &mut Ui) {
         return;
     };
     let Some(shot) = app.library.shots.iter().find(|s| s.key() == key).cloned() else { return };
-    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        // The edit screen already shows the shot large.
-        let in_edit = app.view == View::Edit;
+    // The edit screen already shows the shot large, and its panel scrolls on its own.
+    let in_edit = app.view == View::Edit;
+    let mut body = |ui: &mut Ui| {
         if !in_edit {
             let show = shot.display();
             let w = ui.available_width();
@@ -439,5 +439,10 @@ pub fn details(app: &mut App, ui: &mut Ui) {
         if !in_edit && seal_button(ui, "Open large  E").clicked() {
             app.view = View::Edit;
         }
-    });
+    };
+    if in_edit {
+        body(ui);
+    } else {
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, body);
+    }
 }
