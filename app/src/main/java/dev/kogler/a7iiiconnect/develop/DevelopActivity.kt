@@ -9,6 +9,10 @@ import android.provider.MediaStore
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
+import dev.kogler.a7iiiconnect.computer.ComputerSync
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import androidx.activity.ComponentActivity
@@ -119,6 +123,11 @@ class DevelopActivity : ComponentActivity() {
         if (savedInstanceState == null) handleIntent(intent)
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+
+        // A sync with the computer that brought photos, marks or edits: show them.
+        lifecycleScope.launch {
+            ComputerSync.status.map { it.landed }.distinctUntilChanged().drop(1).collect { reloadUnlessEditing() }
         }
 
         setContent {
@@ -423,6 +432,7 @@ class DevelopActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         CameraTouch.startReading(this)
+        ComputerSync.startIfDue(this)
     }
 
     override fun onPause() {

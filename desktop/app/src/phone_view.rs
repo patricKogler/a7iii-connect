@@ -35,7 +35,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     section_label(ui, "Pairing");
                     subheading(ui, "Scan this with your phone");
                     ui.add_space(4.0);
-                    hint(ui, "In Shootback on the phone, open the Computer card and tap Pair. Both need to be on the same Wi-Fi.");
+                    hint(ui, "In Shootback on the phone, tap the camera button, then Pair under Computer. Both need to be on the same Wi-Fi.");
                     ui.add_space(12.0);
                     let host = crate::state::local_ip().unwrap_or_else(|| "127.0.0.1".into());
                     let uri = sync::pairing_uri(&app.settings.device_id, &sync::computer_name(), &host, port, secret);

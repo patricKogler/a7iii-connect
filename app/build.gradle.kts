@@ -12,8 +12,8 @@ android {
         applicationId = "dev.kogler.a7iiiconnect"
         minSdk = 33
         targetSdk = 35
-        versionCode = 72
-        versionName = "0.43.1"
+        versionCode = 73
+        versionName = "0.44.0"
         // The Rust engine is built for arm64 only; this keeps other libraries' native code out too.
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -81,6 +81,8 @@ dependencies {
     // Subject masks: on-device subject segmentation (the model ships with Google Play services).
     implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
     implementation("com.google.android.gms:play-services-base:18.5.0")
+    // Scanning the desktop app's pairing code, without a camera permission.
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     // Smart library: faces and open eyes, what's in a photo, and text in it (models from Play services).
     implementation("com.google.android.gms:play-services-mlkit-face-detection:17.1.0")
     implementation("com.google.android.gms:play-services-mlkit-image-labeling:16.0.8")

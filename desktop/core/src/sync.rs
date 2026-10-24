@@ -90,7 +90,7 @@ pub struct Hello {
 
 /// A new pairing secret: 32 random bytes as hex.
 pub fn new_secret() -> String {
-    let mut b = [0u8; 32];
+    let mut b = [0u8; 16];
     getrandom::fill(&mut b).expect("system randomness");
     b.iter().map(|v| format!("{v:02x}")).collect()
 }

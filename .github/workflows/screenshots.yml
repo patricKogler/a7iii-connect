@@ -10,6 +10,7 @@ on:
       - 'app/src/main/java/dev/kogler/a7iiiconnect/develop/**'
       - 'app/src/main/java/dev/kogler/a7iiiconnect/ui/**'
       - 'app/src/main/java/dev/kogler/a7iiiconnect/duo/**'
+      - 'app/src/main/java/dev/kogler/a7iiiconnect/computer/**'
       - 'app/src/test/**'
       - '.github/workflows/screenshots.yml'
 
@@ -32,7 +33,7 @@ jobs:
         timeout-minutes: 25
         run: |
           set -o pipefail
-          ./gradlew --no-daemon testDebugUnitTest --tests '*EditorScreenshots*' --tests '*CameraScreenshots*' --tests '*RenderTest*' --tests '*DuelTest*' --tests '*LookTest*' --tests '*LutTest*' --tests '*AlbumsTest*' --tests '*GridLinesTest*' --tests '*SmartTest*' --tests '*TogetherScreenshots*' --tests 'dev.kogler.a7iiiconnect.duo.*Test' 2>&1 | tee test.log
+          ./gradlew --no-daemon testDebugUnitTest --tests '*EditorScreenshots*' --tests '*CameraScreenshots*' --tests '*RenderTest*' --tests '*DuelTest*' --tests '*LookTest*' --tests '*LutTest*' --tests '*AlbumsTest*' --tests '*GridLinesTest*' --tests '*SmartTest*' --tests '*SyncPlanTest*' --tests '*TogetherScreenshots*' --tests 'dev.kogler.a7iiiconnect.duo.*Test' 2>&1 | tee test.log
       - name: Report errors
         if: failure()
         run: |
