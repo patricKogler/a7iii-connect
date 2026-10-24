@@ -83,6 +83,8 @@ class ComputerClient(var computer: Computer, private val phoneId: String, privat
     fun text(method: String, path: String, body: String? = null, headers: Map<String, String> = emptyMap()): String =
         call(method, path, body?.toByteArray(), headers) { it.readBytes().decodeToString() }
 
+    fun bytes(method: String, path: String, body: ByteArray? = null): ByteArray = call(method, path, body) { it.readBytes() }
+
     /** Sends a photo; answers false when the computer already had it. */
     fun upload(name: String, taken: Long, size: Long, input: InputStream): Boolean {
         val c = open("PUT", "/v1/photo?name=${enc(name)}&taken=$taken", timeout = 120_000)

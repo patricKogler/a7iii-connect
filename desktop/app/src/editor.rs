@@ -9,6 +9,7 @@ use eframe::egui_wgpu::{self, wgpu};
 use shootback_core::develop::image::LinearImage;
 use shootback_core::develop::look::{natural_scale, sample, Guide, Look};
 use shootback_core::develop::lut::{self, Lut};
+use shootback_core::develop::luts;
 use shootback_core::develop::params::{p, Group};
 use shootback_core::develop::{self, EditStore, Opened, Settings, PREVIEW_EDGE};
 use shootback_core::library::Shot;
@@ -53,6 +54,9 @@ pub struct ExportStatus {
     pub last: Option<PathBuf>,
 }
 
+/// A LUT by id: its table (None when it isn't here), texture and name.
+type LoadedLut = (String, Option<Lut>, Option<Tex>, Option<String>);
+
 pub struct Editor {
     engine: Option<Arc<Engine>>,
     render_state: Option<egui_wgpu::RenderState>,
@@ -65,6 +69,8 @@ pub struct Editor {
     pub opened: Option<Arc<Opened>>,
     pub error: Option<String>,
     pub s: Settings,
+    /// Shown instead of the edit while a preset or LUT is hovered, never saved.
+    pub peek: Option<Settings>,
     saved: Settings,
     undo: Vec<Settings>,
     redo: Vec<Settings>,
@@ -75,7 +81,7 @@ pub struct Editor {
     done: Receiver<Prepared>,
     requested: String,
     scene: Option<Scene>,
-    lut: Option<(String, Option<Lut>, Option<Tex>)>,
+    lut: Option<LoadedLut>,
     target: Option<(Tex, egui::TextureId)>,
     /// The settings the preview shows, or None when it needs drawing.
     drawn: Option<Settings>,
@@ -107,6 +113,7 @@ impl Editor {
             opened: None,
             error: None,
             s: Settings::default(),
+            peek: None,
             saved: Settings::default(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -143,6 +150,7 @@ impl Editor {
     /// slider is held.
     pub fn reload(&mut self) {
         self.edited = self.store.edited();
+        self.forget_lut();
         if let (Some(key), false) = (&self.key, self.gesture) {
             let s = self.store.load(key);
             if s != self.saved {
@@ -292,9 +300,14 @@ impl Editor {
         }
     }
 
-    /// Loads the LUT the edit names, once.
-    fn load_lut(&mut self) {
-        let Some(id) = self.s.lut.clone() else { return };
+    /// What the preview shows: the edit, or the look being hovered.
+    fn shown(&self) -> &Settings {
+        self.peek.as_ref().unwrap_or(&self.s)
+    }
+
+    /// Loads the LUT `s` names, once.
+    fn load_lut(&mut self, s: &Settings) {
+        let Some(id) = s.lut.clone() else { return };
         if self.lut.as_ref().map(|l| &l.0) != Some(&id) {
             let found = lut::find(&self.root, &id);
             let tex = match (&self.engine, &found) {
@@ -304,13 +317,71 @@ impl Editor {
                 }
                 _ => None,
             };
-            self.lut = Some((id, found, tex));
+            let name = luts::name(&self.root, &id);
+            self.lut = Some((id, found, tex, name));
         }
     }
 
     /// Whether the edit names a LUT this library doesn't have.
     pub fn lut_missing(&self) -> bool {
-        self.s.lut.is_some() && self.lut.as_ref().is_some_and(|l| l.1.is_none())
+        self.s.lut.as_ref().is_some_and(|id| self.lut.as_ref().is_some_and(|l| &l.0 == id && l.1.is_none()))
+    }
+
+    /// The edit's LUT's name, once it's loaded.
+    pub fn lut_name(&self) -> Option<String> {
+        let l = self.lut.as_ref()?;
+        (Some(&l.0) == self.s.lut.as_ref()).then(|| l.3.clone()).flatten()
+    }
+
+    /// Reads the LUT again, after the library's LUTs changed (an import, or a sync).
+    pub fn forget_lut(&mut self) {
+        self.lut = None;
+        self.drawn = None;
+    }
+
+    /// The preview without its LUT, as sRGB bytes at most `max` pixels wide, for the LUT tiles
+    /// (a LUT works on the finished colour, so applying one to this shows its look).
+    pub fn snapshot(&mut self, max: usize) -> Option<(usize, usize, Vec<u8>)> {
+        let engine = self.engine.clone()?;
+        let opened = self.opened.clone()?;
+        let scene = self.scene.as_ref()?;
+        let s = Settings { lut: None, ..self.s.clone() };
+        let look = Look::new(&opened.source, &s);
+        let params = look.shader_params(scene.scale);
+        let tone = engine.texture(params.tone.len(), 1, &gpu::tone_data(&params.tone));
+        let curves = params.curves.as_ref().map(|c| engine.texture(c[0].len(), 3, &gpu::curves_data(c)));
+        let (w, h) = (scene.tex.width, scene.tex.height);
+        let inputs = Inputs {
+            scene: &scene.tex,
+            tone: &tone,
+            curves: curves.as_ref(),
+            guide: scene.guide.as_ref().map(|(t, a)| (t, *a)),
+            coords: scene.coords.as_ref(),
+            lut: None,
+            params: &params,
+            place: Placement::whole(w, h),
+        };
+        let target = engine.target(w, h);
+        engine.draw(&inputs, &target);
+        let rgba = engine.read(&target, w, h);
+        let k = w.div_ceil(max).max(1);
+        let (tw, th) = (w / k, h / k);
+        let mut out = Vec::with_capacity(tw * th * 3);
+        for y in 0..th {
+            for x in 0..tw {
+                let mut sum = [0u32; 3];
+                for j in 0..k {
+                    for i in 0..k {
+                        let o = ((y * k + j) * w + x * k + i) * 4;
+                        for c in 0..3 {
+                            sum[c] += rgba[o + c] as u32;
+                        }
+                    }
+                }
+                out.extend(sum.map(|v| (v / (k * k) as u32) as u8));
+            }
+        }
+        Some((tw, th, out))
     }
 
     /// Takes in finished work and redraws the preview when anything changed. Returns the
@@ -327,10 +398,11 @@ impl Editor {
         }
         let opened = self.opened.clone()?;
         let engine = self.engine.clone()?;
-        let key = slow_key(&opened, &self.s, self.cropping);
+        let shown = self.shown().clone();
+        let key = slow_key(&opened, &shown, self.cropping);
         if key != self.requested {
             self.requested = key.clone();
-            let _ = self.jobs.send(Job { opened: opened.clone(), s: self.s.clone(), whole_frame: self.cropping, key });
+            let _ = self.jobs.send(Job { opened: opened.clone(), s: shown.clone(), whole_frame: self.cropping, key });
         }
         let mut fresh = None;
         while let Ok(p) = self.done.try_recv() {
@@ -347,8 +419,8 @@ impl Editor {
             });
             self.drawn = None;
         }
-        if self.drawn.as_ref() != Some(&self.s) && self.scene.is_some() {
-            self.draw(&engine, &opened);
+        if self.drawn.as_ref() != Some(&shown) && self.scene.is_some() {
+            self.draw(&engine, &opened, shown);
         }
         self.target.as_ref().map(|(t, id)| (*id, egui::vec2(t.width as f32, t.height as f32)))
     }
@@ -358,9 +430,8 @@ impl Editor {
         self.scene.as_ref().is_none_or(|s| s.key != self.requested)
     }
 
-    fn draw(&mut self, engine: &Engine, opened: &Opened) {
-        self.load_lut();
-        let s = self.s.clone();
+    fn draw(&mut self, engine: &Engine, opened: &Opened, s: Settings) {
+        self.load_lut(&s);
         let Some(scene) = &self.scene else { return };
         let lut = if s.lut.is_some() { self.lut.as_ref().and_then(|l| l.2.as_ref()) } else { None };
         let look = Look::new(&opened.source, &s);

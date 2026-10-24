@@ -5,15 +5,21 @@
 //!
 //! Endpoints (all under `/v1`, `Authorization: Bearer <secret>`):
 //! - `GET hello`: who this computer is. The first call with a new pairing's secret completes it.
-//! - `GET state`: photos (key, name, time, size), marks, edits (text and time) and albums.
+//! - `GET state`: photos (key, name, time, size), marks, edits (text and time), albums, presets
+//!   (text and time, by name) and the LUTs (id, name, folder). Phones from before presets and
+//!   LUTs synced just don't read those.
 //! - `GET photo?key=`: a photo's file. `PUT photo?name=&taken=`: a photo for the library.
 //! - `POST marks`: `key<TAB>PICK|REJECT|-` lines to apply (`-` clears).
 //! - `PUT edit?key=`: an edit's text (empty clears), its time in `X-Modified`.
 //! - `POST albums`: the phone's albums; answers the merged ones.
+//! - `PUT preset?name=`: a preset's text (empty deletes it), its time in `X-Modified`.
+//! - `GET lut?id=`: a LUT in its stored form. `PUT lut?id=&name=&folder=`: one for the library
+//!   (empty deletes it).
+//! - `GET lut-thumb?id=` / `PUT lut-thumb?id=`: a LUT's preview picture, when it has one.
 //! - `POST done`: the sync finished.
 
 use crate::albums::{self, AlbumStore};
-use crate::develop::file_name;
+use crate::develop::{file_name, luts, presets};
 use crate::import::{day_folder, PartFile};
 use crate::library::{self, write_atomic, Index, Photo, MATCH_WINDOW_MS, STATE_DIR};
 use crate::marks::{self, Mark};
@@ -79,6 +85,18 @@ pub struct State {
     pub marks: BTreeMap<String, String>,
     pub edits: BTreeMap<String, EditInfo>,
     pub albums: String,
+    #[serde(default)]
+    pub presets: BTreeMap<String, EditInfo>,
+    #[serde(default)]
+    pub luts: Vec<LutInfo>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct LutInfo {
+    pub id: String,
+    pub name: String,
+    pub folder: String,
+    pub thumbnail: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -238,6 +256,14 @@ impl Library {
             marks: marks.into_iter().map(|(k, v)| (k, v.as_str().to_string())).collect(),
             edits,
             albums: fs::read_to_string(self.state_dir().join("albums.txt")).unwrap_or_default(),
+            presets: presets::files(&self.root)
+                .into_iter()
+                .map(|(name, f)| (name, EditInfo { text: fs::read_to_string(&f).unwrap_or_default(), modified: modified(&f) }))
+                .collect(),
+            luts: luts::list(&self.root)
+                .into_iter()
+                .map(|e| LutInfo { thumbnail: luts::thumbnail(&self.root, &e.id).is_some(), id: e.id, name: e.name, folder: e.folder })
+                .collect(),
         }
     }
 
@@ -397,6 +423,52 @@ impl Library {
                 let modified = header("X-Modified").and_then(|m| m.parse().ok());
                 match text().and_then(|t| self.put_edit(&key, &t, modified)) {
                     Ok(()) => Reply::text(200, "ok"),
+                    Err(e) => fail(e),
+                }
+            }
+            ("PUT", "/v1/preset") => {
+                let Some(name) = q.get("name").cloned() else { return Reply::text(400, "name needed") };
+                let modified = header("X-Modified").and_then(|m| m.parse().ok());
+                match text().and_then(|t| presets::put(&self.root, &name, &t, modified)) {
+                    Ok(()) => {
+                        self.shared.changed.store(true, Ordering::Relaxed);
+                        Reply::text(200, "ok")
+                    }
+                    Err(e) => fail(e),
+                }
+            }
+            ("GET", "/v1/lut") | ("GET", "/v1/lut-thumb") => {
+                let Some(id) = q.get("id") else { return Reply::text(400, "id needed") };
+                let f = if path == "/v1/lut" { Some(luts::file(&self.root, id)) } else { luts::thumbnail(&self.root, id) };
+                match f.map(fs::read) {
+                    Some(Ok(b)) => Reply { status: 200, kind: "application/octet-stream", body: Body::Bytes(b) },
+                    _ => Reply::text(404, "no such LUT"),
+                }
+            }
+            ("PUT", "/v1/lut") | ("PUT", "/v1/lut-thumb") => {
+                let Some(id) = q.get("id").cloned() else { return Reply::text(400, "id needed") };
+                let mut bytes = Vec::new();
+                if let Err(e) = body.take(16 << 20).read_to_end(&mut bytes) {
+                    return fail(e);
+                }
+                let r = if path == "/v1/lut" && bytes.is_empty() {
+                    luts::delete(&self.root, &[id])
+                } else if path == "/v1/lut" {
+                    self.activity(format!("Receiving LUTs from {}", phone.name));
+                    let e = luts::Entry {
+                        name: q.get("name").cloned().unwrap_or_else(|| id.clone()),
+                        folder: q.get("folder").cloned().unwrap_or_else(|| "Phone".into()),
+                        id,
+                    };
+                    luts::store_raw(&self.root, &e, &bytes, None)
+                } else {
+                    luts::put_thumbnail(&self.root, &id, &bytes)
+                };
+                match r {
+                    Ok(()) => {
+                        self.shared.changed.store(true, Ordering::Relaxed);
+                        Reply::text(200, "ok")
+                    }
                     Err(e) => fail(e),
                 }
             }
@@ -569,6 +641,40 @@ mod tests {
 
         call(&mut lib, "POST", "/v1/done", "s3cret", b"");
         assert!(shared.phones.lock().unwrap()[0].last_sync > 0);
+    }
+
+    #[test]
+    fn presets_and_luts_round_trip() {
+        let (_d, mut lib, _) = call_ready();
+        let preset = "groups=LIGHT\nv=2\nprofile=COLOR\ncontrast=20\n";
+        assert_eq!(call(&mut lib, "PUT", "/v1/preset?name=Punchy%2Fmine", "s3cret", preset.as_bytes()).0, 200);
+        let lut = crate::develop::lut::Lut::identity(3).write_sbl();
+        assert_eq!(call(&mut lib, "PUT", "/v1/lut?id=kodak-gold&name=Kodak%20Gold&folder=Kodak", "s3cret", &lut).0, 200);
+        assert_eq!(call(&mut lib, "PUT", "/v1/lut-thumb?id=kodak-gold", "s3cret", b"jpg").0, 200);
+        assert_eq!(call(&mut lib, "PUT", "/v1/lut-thumb?id=nope", "s3cret", b"jpg").0, 500);
+        assert_eq!(call(&mut lib, "PUT", "/v1/lut?id=bad", "s3cret", b"not a lut").0, 500);
+        let (_, body) = call(&mut lib, "GET", "/v1/state", "s3cret", b"");
+        let st: State = serde_json::from_slice(&body).unwrap();
+        assert_eq!(st.presets.keys().collect::<Vec<_>>(), vec!["Punchymine"]);
+        assert_eq!(st.presets["Punchymine"], EditInfo { text: preset.into(), modified: 1700000000000 });
+        assert_eq!(st.luts, vec![LutInfo { id: "kodak-gold".into(), name: "Kodak Gold".into(), folder: "Kodak".into(), thumbnail: true }]);
+        assert_eq!(call(&mut lib, "GET", "/v1/lut?id=kodak-gold", "s3cret", b"").1, lut);
+        assert_eq!(call(&mut lib, "GET", "/v1/lut-thumb?id=kodak-gold", "s3cret", b"").1, b"jpg");
+        assert_eq!(call(&mut lib, "GET", "/v1/lut?id=other", "s3cret", b"").0, 404);
+        call(&mut lib, "PUT", "/v1/lut?id=kodak-gold", "s3cret", b"");
+        assert_eq!(call(&mut lib, "GET", "/v1/lut?id=kodak-gold", "s3cret", b"").0, 404);
+        call(&mut lib, "PUT", "/v1/preset?name=Punchymine", "s3cret", b"");
+        let (_, body) = call(&mut lib, "GET", "/v1/state", "s3cret", b"");
+        assert!(serde_json::from_slice::<State>(&body).unwrap().presets.is_empty());
+        // A phone from before reads the state without the new keys, and an old state still parses.
+        let old = r#"{"id":"a","name":"b","photos":[],"marks":{},"edits":{},"albums":""}"#;
+        assert!(serde_json::from_str::<State>(old).unwrap().luts.is_empty());
+    }
+
+    fn call_ready() -> (tempfile::TempDir, Library, Arc<Shared>) {
+        let (d, mut lib, shared) = lib();
+        assert_eq!(call(&mut lib, "GET", "/v1/hello", "s3cret", b"").0, 200);
+        (d, lib, shared)
     }
 
     #[test]

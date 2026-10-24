@@ -214,6 +214,20 @@ class EditStore(context: Context, folder: String = "develop") {
 
     fun deletePreset(name: String) { File(presetDir, "$name.txt").delete() }
 
+    /** Each preset file's text and when it changed, by name, for syncing with the computer. */
+    fun presetFiles(): Map<String, Pair<String, Long>> =
+        presetDir.listFiles()?.filter { it.name.endsWith(".txt") }?.associate { it.name.removeSuffix(".txt") to (it.readText() to it.lastModified()) }
+            ?: emptyMap()
+
+    /** Writes a preset from the computer as it is (empty text deletes it), dated [modified]. */
+    fun putPreset(name: String, text: String, modified: Long) {
+        val safe = name.replace(Regex("[^\\p{L}\\p{N} _-]"), "").trim().ifEmpty { return }
+        val f = File(presetDir, "$safe.txt")
+        if (text.isBlank()) { f.delete(); return }
+        f.writeText(text)
+        if (modified > 0) f.setLastModified(modified)
+    }
+
     // Versions. The active version's edit stays in edits/ so the library, albums and exports
     // read it as before; the others wait in versions/<photo>/<id>.txt beside each version's
     // checkpoints and undo history.

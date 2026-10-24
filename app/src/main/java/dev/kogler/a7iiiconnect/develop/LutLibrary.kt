@@ -177,6 +177,24 @@ object LutLibrary {
         }
     }
 
+    /** A look's stored form, for sending to the computer. */
+    fun bytes(context: Context, id: String): ByteArray? =
+        File(dir(context), "$id.lut").takeIf { safeId(id) && it.exists() }?.readBytes()
+
+    /** Adds a look that came from the computer in its stored form, with its preview if any. */
+    fun addFromSync(context: Context, e: Entry, bytes: ByteArray, thumb: ByteArray?) {
+        val app = context.applicationContext
+        require(safeId(e.id)) { "bad LUT id" }
+        bytes.inputStream().use { Lut.read(it) }
+        File(dir(app), "${e.id}.lut").writeBytes(bytes)
+        thumb?.let { File(dir(app), "${e.id}.jpg").writeBytes(it) }
+        val clean = Entry(e.id, e.name.replace('\t', ' ').replace('\n', ' '), e.folder.replace('\t', ' ').replace('\n', ' '))
+        register(app, clean)
+        synchronized(this) { save(app, ensure(app).filter { it.id != e.id } + clean) }
+    }
+
+    private fun safeId(id: String) = id.matches(Regex("[A-Za-z0-9_@-][A-Za-z0-9._@-]*"))
+
     private fun store(context: Context, lut: Lut, name: String, folder: String, fixedId: String? = null): Entry {
         val id = fixedId ?: run {
             val taken = ensure(context).mapTo(HashSet()) { it.id }

@@ -32,6 +32,7 @@ pub struct App {
     pub naming: Option<(String, String)>,
     pub show_log: bool,
     pub editor: Editor,
+    pub looks: crate::looks::Looks,
     pub phone_sync: PhoneSync,
 }
 
@@ -47,6 +48,7 @@ impl App {
         let mut phone_sync = PhoneSync::new(settings.phones.clone());
         phone_sync.start(&root, &settings.device_id);
         let mut app = App {
+            looks: crate::looks::Looks::new(&cc.egui_ctx, &root),
             editor,
             phone_sync,
             library: Library::open(root),

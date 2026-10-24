@@ -27,7 +27,7 @@ pub fn panels(ui: &mut Ui, ed: &Editor, s: &mut Settings) {
 }
 
 /// A panel: Mincho title, a Reset when it's changed, and its controls.
-fn section(ui: &mut Ui, title: &str, s: &mut Settings, group: Option<Group>, open: bool, body: impl FnOnce(&mut Ui, &mut Settings)) {
+pub(crate) fn section(ui: &mut Ui, title: &str, s: &mut Settings, group: Option<Group>, open: bool, body: impl FnOnce(&mut Ui, &mut Settings)) {
     let pal = palette(ui.ctx());
     let id = ui.make_persistent_id(("develop-section", title));
     let state = CollapsingState::load_with_default_open(ui.ctx(), id, open);
@@ -138,7 +138,8 @@ fn light(ui: &mut Ui, ed: &Editor, s: &mut Settings) {
         ui.horizontal(|ui| {
             let missing = ed.lut_missing();
             let pal = palette(ui.ctx());
-            ui.label(RichText::new(format!("Look: {id}")).color(if missing { pal.accent } else { pal.text }));
+            let name = ed.lut_name().unwrap_or(id);
+            ui.label(RichText::new(format!("LUT: {name}")).color(if missing { pal.accent } else { pal.text }));
             if ui.add(egui::Label::new(RichText::new("Remove").size(12.0).color(pal.text3)).sense(Sense::click())).clicked() {
                 s.lut = None;
             }

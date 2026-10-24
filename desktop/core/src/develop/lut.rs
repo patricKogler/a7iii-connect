@@ -61,6 +61,16 @@ impl Lut {
         Some(Lut { size: n, data })
     }
 
+    /// A .cube file's TITLE, when it has one.
+    pub fn cube_title(text: &str) -> Option<String> {
+        text.lines().take(50).find_map(|l| {
+            let l = l.trim();
+            let rest = l.get(..5).filter(|h| h.eq_ignore_ascii_case("TITLE")).map(|_| l[5..].trim())?;
+            let t = rest.trim_matches('"').trim();
+            (!t.is_empty()).then(|| t.to_string())
+        })
+    }
+
     /// An Adobe/Resolve .cube file (3D only).
     pub fn parse_cube(text: &str) -> Result<Lut, String> {
         let mut size = 0;
@@ -119,6 +129,30 @@ impl Lut {
             }
         }
         Ok(Lut { size, data })
+    }
+
+    /// The phone's compact storage, the other way.
+    pub fn write_sbl(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(6 + self.data.len() * 2);
+        out.extend(MAGIC.to_be_bytes());
+        out.extend((self.size as u16).to_be_bytes());
+        for v in &self.data {
+            out.extend(((v.clamp(0.0, 1.0) * 65535.0).round() as u16).to_be_bytes());
+        }
+        out
+    }
+
+    /// A Hald CLUT image (square, level³ pixels a side) from its 8-bit RGB pixels, row by row.
+    pub fn from_hald(width: usize, height: usize, rgb: &[u8]) -> Result<Lut, String> {
+        if width != height {
+            return Err("a Hald image is square".into());
+        }
+        let level = (2..64).find(|l| l * l * l >= width).ok_or("too big for a Hald image")?;
+        if level * level * level != width || rgb.len() < width * height * 3 {
+            return Err(format!("{width}x{height} isn't a Hald image size"));
+        }
+        let n = level * level;
+        Ok(Lut { size: n, data: rgb[..n * n * n * 3].iter().map(|&v| v as f32 / 255.0).collect() })
     }
 
     pub fn identity(n: usize) -> Lut {

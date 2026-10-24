@@ -24,12 +24,18 @@ data class Base(
     val marks: Map<String, String> = emptyMap(),
     val edits: Map<String, String> = emptyMap(),
     val known: Set<String> = emptySet(),
+    /** Each preset both had, by name, as a hash of its text. */
+    val presets: Map<String, String> = emptyMap(),
+    /** The LUTs both had, by id. */
+    val luts: Set<String> = emptySet(),
 ) {
-    /** Tab-separated lines: `K key` for each known photo, `M key mark`, `E key hash`. */
+    /** Tab-separated lines: `K key` for each known photo, `M key mark`, `E key hash`, `P name hash`, `L id`. */
     fun encode(): String = buildString {
         known.sorted().forEach { append("K\t$it\n") }
         marks.toSortedMap().forEach { (k, v) -> append("M\t$k\t$v\n") }
         edits.toSortedMap().forEach { (k, v) -> append("E\t$k\t$v\n") }
+        presets.toSortedMap().forEach { (k, v) -> append("P\t$k\t$v\n") }
+        luts.sorted().forEach { append("L\t$it\n") }
     }
 
     companion object {
@@ -37,15 +43,19 @@ data class Base(
             val marks = HashMap<String, String>()
             val edits = HashMap<String, String>()
             val known = HashSet<String>()
+            val presets = HashMap<String, String>()
+            val luts = HashSet<String>()
             for (line in text.lineSequence()) {
                 val p = line.split('\t')
                 when {
                     p[0] == "K" && p.size >= 2 -> known += p[1]
                     p[0] == "M" && p.size >= 3 -> marks[p[1]] = p[2]
                     p[0] == "E" && p.size >= 3 -> edits[p[1]] = p[2]
+                    p[0] == "P" && p.size >= 3 -> presets[p[1]] = p[2]
+                    p[0] == "L" && p.size >= 2 -> luts += p[1]
                 }
             }
-            return Base(marks, edits, known)
+            return Base(marks, edits, known, presets, luts)
         }
     }
 }
@@ -183,6 +193,32 @@ object SyncPlan {
             if (result.text.isNotEmpty()) agreed[pk] = hash(result.text)
         }
         return Changes(toPhone, toComputer) to agreed
+    }
+
+    /**
+     * Presets put together like edits, matched by name: one made or changed on a side goes to the
+     * other, one deleted on a side is deleted on the other, and when both changed it the later wins.
+     */
+    fun presets(
+        phone: Map<String, SyncEdit>,
+        computer: Map<String, SyncEdit>,
+        base: Map<String, String>,
+    ): Pair<Changes<SyncEdit>, Map<String, String>> =
+        edits(phone, computer, base, (phone.keys + computer.keys + base.keys).associateWith { it })
+
+    /** What one sync does with LUTs, by id. */
+    data class LutPlan(val download: Set<String>, val upload: Set<String>, val deleteHere: Set<String>, val deleteThere: Set<String>, val agreed: Set<String>)
+
+    /**
+     * LUTs are files that don't change, so only which ones each side has matters: a new one is
+     * copied over, and one that both had and a side deleted since ([known]) goes on the other.
+     */
+    fun luts(phone: Set<String>, computer: Set<String>, known: Set<String>): LutPlan {
+        val download = computer - phone - known
+        val upload = phone - computer - known
+        val deleteHere = (phone intersect known) - computer
+        val deleteThere = (computer intersect known) - phone
+        return LutPlan(download, upload, deleteHere, deleteThere, (phone intersect computer) + download + upload)
     }
 
     fun hash(text: String): String =
