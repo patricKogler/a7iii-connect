@@ -3,10 +3,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod develop_view;
+mod editor;
+mod gpu;
 mod images;
 mod import_view;
 mod library_view;
+#[cfg(test)]
+mod parity;
 mod phone_view;
+mod render;
 mod state;
 mod theme;
 mod viewer;

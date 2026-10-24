@@ -195,3 +195,61 @@ pub fn hint(ui: &mut Ui, text: &str) {
 pub fn right_to_left(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     ui.with_layout(egui::Layout::right_to_left(Align::Center), add);
 }
+
+/// A develop slider: label and value over a thin track, filled in vermilion from the slider's
+/// resting point to its value. Drag or click to set; Shift drags finely; double-click resets.
+pub struct DevelopSlider<'a> {
+    pub label: &'a str,
+    /// The value as shown.
+    pub text: String,
+    pub value: f32,
+    pub min: f32,
+    pub max: f32,
+    /// Where the fill starts.
+    pub origin: f32,
+    /// What a double-click restores.
+    pub default: f32,
+    pub swatch: Option<Color32>,
+}
+
+impl DevelopSlider<'_> {
+    /// The new value, when it changed.
+    pub fn show(self, ui: &mut Ui) -> Option<f32> {
+        let p = palette(ui.ctx());
+        let w = ui.available_width();
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 36.0), Sense::click_and_drag());
+        let resp = resp.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        let painter = ui.painter();
+        let mut x = rect.left();
+        if let Some(c) = self.swatch {
+            painter.rect_filled(Rect::from_min_size(egui::pos2(x, rect.top() + 3.0), Vec2::splat(9.0)), 1.0, c);
+            x += 15.0;
+        }
+        let active = resp.hovered() || resp.dragged();
+        painter.text(egui::pos2(x, rect.top()), egui::Align2::LEFT_TOP, self.label, FontId::proportional(12.5), if active { p.text } else { p.text2 });
+        painter.text(egui::pos2(rect.right(), rect.top()), egui::Align2::RIGHT_TOP, &self.text, FontId::proportional(12.5), p.text);
+        let y = rect.bottom() - 8.0;
+        let track = Rect::from_min_max(egui::pos2(rect.left() + 4.0, y - 1.0), egui::pos2(rect.right() - 4.0, y + 1.0));
+        let span = self.max - self.min;
+        let x_of = |v: f32| track.left() + ((v - self.min) / span).clamp(0.0, 1.0) * track.width();
+        painter.rect_filled(track, 0.0, p.border);
+        let (a, b) = (x_of(self.origin), x_of(self.value));
+        painter.rect_filled(Rect::from_x_y_ranges(a.min(b)..=a.max(b), track.y_range()), 0.0, p.accent);
+        let knob = Rect::from_center_size(egui::pos2(b, y), Vec2::new(if active { 7.0 } else { 5.0 }, 14.0));
+        painter.rect_filled(knob, 1.0, if active { p.strong } else { p.text });
+        if resp.double_clicked() {
+            return Some(self.default);
+        }
+        let fine = ui.input(|i| i.modifiers.shift);
+        let new = if resp.dragged() && fine {
+            self.value + resp.drag_delta().x / track.width() * span * 0.1
+        } else if resp.is_pointer_button_down_on() {
+            let px = resp.interact_pointer_pos()?.x;
+            self.min + (px - track.left()) / track.width() * span
+        } else {
+            return None;
+        };
+        let new = new.clamp(self.min, self.max);
+        (new != self.value).then_some(new)
+    }
+}

@@ -1,5 +1,6 @@
 //! The window: top bar with the three modules, the current screen, and the status line.
 
+use crate::editor::Editor;
 use crate::images::Images;
 use crate::state::{self, Filter, FtpInbox, Importer, Library, Settings, ThemeChoice};
 use crate::theme::{self, palette};
@@ -30,6 +31,7 @@ pub struct App {
     /// Album being named (new or renamed): its id, or "" for a new one, and the text so far.
     pub naming: Option<(String, String)>,
     pub show_log: bool,
+    pub editor: Editor,
 }
 
 const SETTINGS_KEY: &str = "settings";
@@ -40,7 +42,9 @@ impl App {
         let settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, SETTINGS_KEY)).unwrap_or_default();
         let root = settings.library.clone().unwrap_or_else(state::default_library);
         let _ = std::fs::create_dir_all(&root);
+        let editor = Editor::new(&cc.egui_ctx, cc.wgpu_render_state.clone(), &root);
         let mut app = App {
+            editor,
             library: Library::open(root),
             images: Images::new(&cc.egui_ctx),
             importer: Importer::new(),
@@ -82,6 +86,7 @@ impl App {
 
     pub fn set_library(&mut self, ctx: &egui::Context, root: std::path::PathBuf) {
         self.library = Library::open(root.clone());
+        self.editor.set_root(&root);
         self.settings.library = Some(root);
         self.selected = None;
         self.filter = Filter::All;
@@ -261,7 +266,7 @@ impl App {
                 if (i.key_pressed(Key::Enter) || i.key_pressed(Key::E)) && self.selected.is_some() {
                     self.view = View::Edit;
                 }
-            } else if self.view == View::Edit && (i.key_pressed(Key::Escape) || i.key_pressed(Key::G)) {
+            } else if self.view == View::Edit && !self.editor.cropping && (i.key_pressed(Key::Escape) || i.key_pressed(Key::G)) {
                 self.view = View::Library;
             }
         });
@@ -287,6 +292,7 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         self.keys(ctx);
+        crate::viewer::keys(self, ctx);
         self.top_bar(ctx);
         self.footer(ctx);
         match self.view {
@@ -302,6 +308,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        self.editor.close();
         self.importer.cancel();
         self.ftp.stop();
     }

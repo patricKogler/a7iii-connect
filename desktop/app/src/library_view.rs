@@ -289,6 +289,9 @@ fn tile_ui(app: &mut App, ui: &mut Ui, idx: usize, rect: Rect, label_h: f32) {
         Some(Mark::Reject) => paint_badge(ui, &painter, rect.right_top() + Vec2::new(-6.0, 6.0), "Reject", Align2::RIGHT_TOP, true),
         None => {}
     }
+    if app.editor.is_edited(&shot) {
+        paint_badge(ui, &painter, rect.right_bottom() + Vec2::new(-6.0, -6.0), "Edited", Align2::RIGHT_BOTTOM, false);
+    }
     let selected = app.selected.as_deref() == Some(key.as_str());
     if selected {
         painter.rect_stroke(rect.expand(2.0), 1.0, Stroke::new(2.0_f32, p.accent));

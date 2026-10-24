@@ -4,6 +4,7 @@
 
 pub mod albums;
 pub mod camera;
+pub mod develop;
 pub mod ftp;
 pub mod import;
 pub mod library;

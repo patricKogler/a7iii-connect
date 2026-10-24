@@ -419,3 +419,12 @@ pub fn local_ip() -> Option<String> {
     let ip = s.local_addr().ok()?.ip();
     (!ip.is_unspecified()).then(|| ip.to_string())
 }
+
+/// Shows a file in the system's file manager (its folder, on Linux).
+pub fn reveal(path: &Path) {
+    #[cfg(windows)]
+    let r = std::process::Command::new("explorer").arg("/select,").arg(path).spawn();
+    #[cfg(not(windows))]
+    let r = std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn();
+    let _ = r;
+}
