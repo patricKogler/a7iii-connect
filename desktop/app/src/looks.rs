@@ -436,7 +436,11 @@ fn lut_panel(ui: &mut Ui, looks: &mut Looks, s: &mut Settings, peek: &mut Option
         ui.horizontal(|ui| {
             let count = if total > 0 { format!("  {done} of {total}") } else { String::new() };
             ui.label(RichText::new(format!("{label}{count}")).size(12.0).color(pal.text2));
-            if ui.add(egui::Label::new(RichText::new("Cancel").size(12.0).color(pal.text3)).sense(Sense::click())).clicked() {
+            if ui
+                .add(egui::Label::new(RichText::new("Cancel").size(12.0).color(pal.text3)).selectable(false).sense(Sense::click()))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
                 task.cancel.store(true, Ordering::Relaxed);
             }
         });

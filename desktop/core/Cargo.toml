@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 roxmltree = "0.20"
-ureq = { version = "2.10", default-features = false, features = ["tls"] }
+ureq = { version = "2.10", default-features = false, features = ["tls", "native-certs"] }
 kamadak-exif = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 rayon = "1.10"

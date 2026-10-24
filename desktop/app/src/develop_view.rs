@@ -46,10 +46,14 @@ pub(crate) fn section(ui: &mut Ui, title: &str, s: &mut Settings, group: Option<
                 egui::TextFormat { font_id: FontId::proportional(8.0), color: pal.accent, valign: egui::Align::Center, ..Default::default() },
             );
         }
-        let r = ui.add(egui::Label::new(job).sense(Sense::click()));
+        let r = ui.add(egui::Label::new(job).selectable(false).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand);
         crate::widgets::right_to_left(ui, |ui| {
             if let (true, Some(g)) = (changed, group) {
-                if ui.add(egui::Label::new(RichText::new("Reset").size(12.0).color(pal.text3)).sense(Sense::click())).clicked() {
+                if ui
+                    .add(egui::Label::new(RichText::new("Reset").size(12.0).color(pal.text3)).selectable(false).sense(Sense::click()))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
                     s.reset(g);
                 }
             }
@@ -140,7 +144,11 @@ fn light(ui: &mut Ui, ed: &Editor, s: &mut Settings) {
             let pal = palette(ui.ctx());
             let name = ed.lut_name().unwrap_or(id);
             ui.label(RichText::new(format!("LUT: {name}")).color(if missing { pal.accent } else { pal.text }));
-            if ui.add(egui::Label::new(RichText::new("Remove").size(12.0).color(pal.text3)).sense(Sense::click())).clicked() {
+            if ui
+                .add(egui::Label::new(RichText::new("Remove").size(12.0).color(pal.text3)).selectable(false).sense(Sense::click()))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
                 s.lut = None;
             }
         });
@@ -462,7 +470,11 @@ fn masks(ui: &mut Ui, s: &mut Settings) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} {}", i + 1, kind)).color(palette(ui.ctx()).strong));
             crate::widgets::right_to_left(ui, |ui| {
-                if ui.add(egui::Label::new(RichText::new("Remove").size(12.0).color(palette(ui.ctx()).text3)).sense(Sense::click())).clicked() {
+                if ui
+                    .add(egui::Label::new(RichText::new("Remove").size(12.0).color(palette(ui.ctx()).text3)).selectable(false).sense(Sense::click()))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
                     remove = Some(i);
                 }
             });
