@@ -8,7 +8,9 @@ pub mod geometry;
 pub mod image;
 pub mod look;
 pub mod lut;
+pub mod luts;
 pub mod params;
+pub mod presets;
 pub mod raw;
 
 use crate::library::{write_atomic, STATE_DIR};

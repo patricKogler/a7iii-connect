@@ -105,7 +105,37 @@ class SyncPlanTest {
 
     @Test
     fun baseRoundTrips() {
-        val b = Base(mapOf("a@1" to "PICK"), mapOf("a@1" to "abc"), setOf("a@1", "A@2"))
+        val b = Base(mapOf("a@1" to "PICK"), mapOf("a@1" to "abc"), setOf("a@1", "A@2"), mapOf("Warm" to "def"), setOf("gmic-x"))
         assertEquals(b, Base.decode(b.encode()))
+    }
+
+    @Test
+    fun presetsGoBothWaysAndDeletionsFollow() {
+        val warm = SyncEdit("groups=LIGHT\ncontrast=10", t)
+        val cool = SyncEdit("groups=COLOR\nsaturation=-5", t)
+        // New on either side: copied over.
+        val (first, agreed) = SyncPlan.presets(mapOf("Warm" to warm), mapOf("Cool" to cool), emptyMap())
+        assertEquals(mapOf("Cool" to cool), first.phone)
+        assertEquals(mapOf("Warm" to warm), first.computer)
+        // Deleted on the phone since: deleted on the computer, not copied back.
+        val (second, _) = SyncPlan.presets(mapOf("Cool" to cool), mapOf("Warm" to warm, "Cool" to cool), agreed)
+        assertEquals(mapOf("Warm" to null), second.computer)
+        assertTrue(second.phone.isEmpty())
+        // Changed on both: the later one wins.
+        val newer = SyncEdit("groups=LIGHT\ncontrast=30", t + hour)
+        val (third, _) = SyncPlan.presets(mapOf("Warm" to SyncEdit("groups=LIGHT\ncontrast=20", t)), mapOf("Warm" to newer), agreed)
+        assertEquals(mapOf("Warm" to newer), third.phone)
+    }
+
+    @Test
+    fun lutsAreCopiedAndDeletionsFollow() {
+        val first = SyncPlan.luts(setOf("a", "b"), setOf("b", "c"), emptySet())
+        assertEquals(setOf("c"), first.download)
+        assertEquals(setOf("a"), first.upload)
+        assertEquals(setOf("a", "b", "c"), first.agreed)
+        val second = SyncPlan.luts(setOf("a", "c"), setOf("a", "b", "c"), first.agreed)
+        assertEquals(setOf("b"), second.deleteThere)
+        assertTrue(second.download.isEmpty() && second.deleteHere.isEmpty())
+        assertEquals(setOf("a", "c"), second.agreed)
     }
 }

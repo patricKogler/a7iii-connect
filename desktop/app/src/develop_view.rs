@@ -27,7 +27,7 @@ pub fn panels(ui: &mut Ui, ed: &Editor, s: &mut Settings) {
 }
 
 /// A panel: Mincho title, a Reset when it's changed, and its controls.
-fn section(ui: &mut Ui, title: &str, s: &mut Settings, group: Option<Group>, open: bool, body: impl FnOnce(&mut Ui, &mut Settings)) {
+pub(crate) fn section(ui: &mut Ui, title: &str, s: &mut Settings, group: Option<Group>, open: bool, body: impl FnOnce(&mut Ui, &mut Settings)) {
     let pal = palette(ui.ctx());
     let id = ui.make_persistent_id(("develop-section", title));
     let state = CollapsingState::load_with_default_open(ui.ctx(), id, open);
@@ -138,7 +138,8 @@ fn light(ui: &mut Ui, ed: &Editor, s: &mut Settings) {
         ui.horizontal(|ui| {
             let missing = ed.lut_missing();
             let pal = palette(ui.ctx());
-            ui.label(RichText::new(format!("Look: {id}")).color(if missing { pal.accent } else { pal.text }));
+            let name = ed.lut_name().unwrap_or(id);
+            ui.label(RichText::new(format!("LUT: {name}")).color(if missing { pal.accent } else { pal.text }));
             if ui.add(egui::Label::new(RichText::new("Remove").size(12.0).color(pal.text3)).sense(Sense::click())).clicked() {
                 s.lut = None;
             }
@@ -249,6 +250,7 @@ fn grading(ui: &mut Ui, s: &mut Settings) {
         }
     });
     ui.memory_mut(|m| m.data.insert_temp(id, zone));
+    grading_wheel(ui, s, &p::GRADE_HUE[zone], &p::GRADE_SAT[zone]);
     let hue = s.get(&p::GRADE_HUE[zone]);
     param_with(ui, s, &p::GRADE_HUE[zone], "Hue", Some(band_color(hue)));
     param(ui, s, &p::GRADE_SAT[zone]);
@@ -256,6 +258,45 @@ fn grading(ui: &mut Ui, s: &mut Settings) {
     ui.add_space(4.0);
     param(ui, s, &p::GRADE_BLENDING);
     param(ui, s, &p::GRADE_BALANCE);
+}
+
+/// The phone's color wheel: hue around (counter-clockwise from red at 3 o'clock), saturation
+/// outwards. Drag the dot anywhere on it; double-click puts it back in the middle.
+fn grading_wheel(ui: &mut Ui, s: &mut Settings, hue: &Param, sat: &Param) {
+    let side = ui.available_width().min(190.0);
+    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), side + 8.0), Sense::hover());
+    let rect = Rect::from_center_size(row.center(), Vec2::splat(side));
+    let resp = ui.interact(rect, ui.id().with(("wheel", hue.key)), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::Crosshair);
+    let (c, r) = (rect.center(), side / 2.0);
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(c, Color32::from_gray(128));
+    const STEPS: u32 = 96;
+    for i in 0..=STEPS {
+        let h = i as f32 / STEPS as f32 * 360.0;
+        let a = h.to_radians();
+        let rgb = hsv_to_rgb(h, 1.0, 1.0).map(|v| (v * 255.0) as u8);
+        mesh.colored_vertex(c + Vec2::new(a.cos(), -a.sin()) * r, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+        if i > 0 {
+            mesh.add_triangle(0, i, i + 1);
+        }
+    }
+    let painter = ui.painter();
+    painter.add(mesh);
+    painter.circle_stroke(c, r, Stroke::new(1.0_f32, Color32::from_white_alpha(150)));
+    if resp.double_clicked() {
+        s.set(hue, hue.default);
+        s.set(sat, sat.default);
+    } else if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on()) {
+        let d = pos - c;
+        let h = (-d.y).atan2(d.x).to_degrees().rem_euclid(360.0);
+        let v = (d.length() / r * sat.max).clamp(sat.min, sat.max);
+        s.set(hue, h.round());
+        s.set(sat, v.round());
+    }
+    let a = s.get(hue).to_radians();
+    let dot = c + Vec2::new(a.cos(), -a.sin()) * (s.get(sat) / sat.max * r);
+    painter.circle_filled(dot, 7.0, Color32::BLACK);
+    painter.circle_filled(dot, 5.0, Color32::WHITE);
 }
 
 fn effects(ui: &mut Ui, s: &mut Settings) {

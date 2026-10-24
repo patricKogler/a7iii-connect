@@ -534,6 +534,8 @@ pub fn install(ctx: &egui::Context) {
         s.spacing.item_spacing = egui::vec2(8.0, 6.0);
         s.spacing.button_padding = egui::vec2(12.0, 6.0);
         s.spacing.interact_size.y = 30.0;
+        // A scrollbar that takes its own lane, so it never covers slider values or buttons.
+        s.spacing.scroll = egui::style::ScrollStyle::solid();
     });
     apply(ctx, ThemeChoice::Washi);
 }

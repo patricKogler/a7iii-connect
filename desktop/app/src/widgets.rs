@@ -233,8 +233,19 @@ pub fn right_to_left(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     ui.with_layout(egui::Layout::right_to_left(Align::Center), add);
 }
 
-/// A develop slider: label and value over a thin track, filled in vermilion from the slider's
-/// resting point to its value. Drag or click to set; Shift drags finely; double-click resets.
+/// How much slower a slider moves when the pointer is `away` points above or below it.
+fn scrub_speed(away: f32) -> f32 {
+    match away {
+        a if a < 40.0 => 1.0,
+        a if a < 120.0 => 0.5,
+        a if a < 220.0 => 0.25,
+        _ => 0.1,
+    }
+}
+
+/// A develop slider: label and value over a thin track, filled in the accent from the slider's
+/// resting point to its value. Click to set, drag to move: finer as the pointer strays from the
+/// slider, and with Shift. Double-click resets.
 pub struct DevelopSlider<'a> {
     pub label: &'a str,
     /// The value as shown.
@@ -277,12 +288,33 @@ impl DevelopSlider<'_> {
         if resp.double_clicked() {
             return Some(self.default);
         }
-        let fine = ui.input(|i| i.modifiers.shift);
-        let new = if resp.dragged() && fine {
-            self.value + resp.drag_delta().x / track.width() * span * 0.1
+        // A press sets the value where it lands; a drag then moves it by how far the pointer
+        // travels, slower the further the pointer strays above or below the slider (as on the
+        // phone), and ten times slower with Shift. The unrounded value is kept while dragging, so
+        // slow drags still add up on whole-number sliders.
+        let raw_id = resp.id.with("raw");
+        let new = if resp.dragged() && !resp.drag_started() {
+            let pointer = resp.interact_pointer_pos()?;
+            let away = (rect.top() - pointer.y).max(pointer.y - rect.bottom()).max(0.0);
+            let speed = scrub_speed(away) * if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
+            if speed < 1.0 {
+                let label = match speed {
+                    s if s >= 0.5 => "Half speed",
+                    s if s >= 0.25 => "Fine",
+                    _ => "Very fine",
+                };
+                let at = egui::pos2(rect.center().x, rect.top());
+                ui.painter().text(at, egui::Align2::CENTER_TOP, label, FontId::proportional(11.5), p.accent);
+            }
+            let raw: f32 = ui.data(|d| d.get_temp(raw_id)).unwrap_or(self.value);
+            let raw = (raw + resp.drag_delta().x / track.width() * span * speed).clamp(self.min, self.max);
+            ui.data_mut(|d| d.insert_temp(raw_id, raw));
+            raw
         } else if resp.is_pointer_button_down_on() {
             let px = resp.interact_pointer_pos()?.x;
-            self.min + (px - track.left()) / track.width() * span
+            let v = (self.min + (px - track.left()) / track.width() * span).clamp(self.min, self.max);
+            ui.data_mut(|d| d.insert_temp(raw_id, v));
+            v
         } else {
             return None;
         };

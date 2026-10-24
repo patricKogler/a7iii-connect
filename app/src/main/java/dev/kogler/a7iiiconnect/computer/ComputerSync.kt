@@ -9,6 +9,7 @@ import dev.kogler.a7iiiconnect.develop.Albums
 import dev.kogler.a7iiiconnect.develop.EditStore
 import dev.kogler.a7iiiconnect.develop.Library
 import dev.kogler.a7iiiconnect.develop.LibraryPhoto
+import dev.kogler.a7iiiconnect.develop.LutLibrary
 import dev.kogler.a7iiiconnect.develop.Mark
 import dev.kogler.a7iiiconnect.develop.engine.Settings
 import dev.kogler.a7iiiconnect.duo.saveToLibrary
@@ -189,10 +190,71 @@ object ComputerSync {
             changed = true
         }
 
-        baseFile.writeText(Base(marks, edits, SyncPlan.known(phoneFiles, compFiles)).encode())
+        // Presets and LUTs, when the computer's app is new enough to have them.
+        var presetBase = base.presets
+        var lutBase = base.luts
+        if (state.has("presets") && state.has("luts")) {
+            say("Putting presets and LUTs together")
+            val (presetsChanged, agreedPresets) = syncPresets(client, store, state, base.presets)
+            val (lutsChanged, agreedLuts) = syncLuts(app, client, state, base.luts)
+            presetBase = agreedPresets
+            lutBase = agreedLuts
+            changed = changed || presetsChanged || lutsChanged
+        }
+
+        baseFile.writeText(Base(marks, edits, SyncPlan.known(phoneFiles, compFiles), presetBase, lutBase).encode())
         client.text("POST", "/v1/done")
         prefs.lastSync = System.currentTimeMillis()
         return changed
+    }
+
+    private fun syncPresets(client: ComputerClient, store: EditStore, state: JSONObject, base: Map<String, String>): Pair<Boolean, Map<String, String>> {
+        val phone = store.presetFiles().mapValues { (_, v) -> SyncEdit(v.first.trim(), v.second) }
+        val comp = HashMap<String, SyncEdit>()
+        state.optJSONObject("presets")?.let { o ->
+            for (k in o.keys()) o.optJSONObject(k)?.let { comp[k] = SyncEdit(it.optString("text").trim(), it.optLong("modified")) }
+        }
+        val (changes, agreed) = SyncPlan.presets(phone, comp, base)
+        for ((name, e) in changes.phone) store.putPreset(name, e?.text?.plus("\n") ?: "", e?.modified ?: 0)
+        for ((name, e) in changes.computer) {
+            client.text("PUT", "/v1/preset?name=${ComputerClient.enc(name)}", e?.text?.plus("\n") ?: "", if (e != null) mapOf("X-Modified" to e.modified.toString()) else emptyMap())
+        }
+        return changes.phone.isNotEmpty() to agreed
+    }
+
+    private fun syncLuts(app: Context, client: ComputerClient, state: JSONObject, base: Set<String>): Pair<Boolean, Set<String>> {
+        val mine = LutLibrary.ensure(app).associateBy { it.id }
+        val theirs = HashMap<String, Pair<LutLibrary.Entry, Boolean>>()
+        state.optJSONArray("luts")?.let { a ->
+            for (i in 0 until a.length()) a.optJSONObject(i)?.let {
+                val e = LutLibrary.Entry(it.optString("id"), it.optString("name"), it.optString("folder"))
+                if (e.id.isNotEmpty()) theirs[e.id] = e to it.optBoolean("thumbnail")
+            }
+        }
+        val plan = SyncPlan.luts(mine.keys, theirs.keys, base)
+        val failed = HashSet<String>()
+        plan.download.forEachIndexed { i, id ->
+            say("Fetching LUTs, ${i + 1} of ${plan.download.size}")
+            val (e, hasThumb) = theirs.getValue(id)
+            runCatching {
+                val bytes = client.bytes("GET", "/v1/lut?id=${ComputerClient.enc(id)}")
+                val thumb = if (hasThumb) runCatching { client.bytes("GET", "/v1/lut-thumb?id=${ComputerClient.enc(id)}") }.getOrNull() else null
+                LutLibrary.addFromSync(app, e, bytes, thumb)
+            }.onFailure { failed += id }
+        }
+        plan.upload.forEachIndexed { i, id ->
+            say("Sending LUTs, ${i + 1} of ${plan.upload.size}")
+            val e = mine.getValue(id)
+            runCatching {
+                val bytes = LutLibrary.bytes(app, id) ?: error("missing")
+                client.bytes("PUT", "/v1/lut?id=${ComputerClient.enc(id)}&name=${ComputerClient.enc(e.name)}&folder=${ComputerClient.enc(e.folder)}", bytes)
+                LutLibrary.thumbnail(app, id)?.let { t -> runCatching { client.bytes("PUT", "/v1/lut-thumb?id=${ComputerClient.enc(id)}", t.readBytes()) } }
+            }.onFailure { failed += id }
+        }
+        for (id in plan.deleteHere) LutLibrary.delete(app, id)
+        for (id in plan.deleteThere) client.bytes("PUT", "/v1/lut?id=${ComputerClient.enc(id)}", ByteArray(0))
+        val changed = (plan.download - failed).isNotEmpty() || plan.deleteHere.isNotEmpty()
+        return changed to (plan.agreed - failed)
     }
 
     private val LibraryPhoto.file get() = SyncFile(name, takenMillis)

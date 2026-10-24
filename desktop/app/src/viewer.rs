@@ -25,8 +25,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let preview = app.editor.poll();
     let before = app.editor.s.clone();
     egui::SidePanel::right("edit-panels")
-        .exact_width(320.0)
-        .resizable(false)
+        .default_width(320.0)
+        .width_range(280.0..=640.0)
+        .resizable(true)
         .frame(Frame::none().fill(p.panel).inner_margin(Margin::symmetric(14.0, 12.0)).stroke(Stroke::new(p.line, p.border)))
         .show(ctx, |ui| panel(app, ui));
     egui::TopBottomPanel::bottom("filmstrip")
@@ -75,7 +76,7 @@ fn panel(app: &mut App, ui: &mut Ui) {
     let export_h = 92.0;
     egui::ScrollArea::vertical().auto_shrink(false).max_height(ui.available_height() - export_h).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        let ed = &mut app.editor;
+        let (ed, looks) = (&mut app.editor, &mut app.looks);
         if !ed.has_gpu() {
             crate::widgets::hint(ui, "Editing needs a GPU renderer, and this window was started without one.");
             return;
@@ -84,6 +85,7 @@ fn panel(app: &mut App, ui: &mut Ui) {
             ui.label(RichText::new(e).color(p.accent));
         }
         let mut s = ed.s.clone();
+        crate::looks::panels(ui, looks, ed, &app.library.root, &mut s);
         crate::develop_view::panels(ui, ed, &mut s);
         ed.change(s);
         ui.add_space(10.0);

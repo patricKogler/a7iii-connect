@@ -9,6 +9,7 @@ mod gpu;
 mod images;
 mod import_view;
 mod library_view;
+mod looks;
 #[cfg(test)]
 mod parity;
 mod phone_view;

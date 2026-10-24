@@ -32,6 +32,7 @@ pub struct App {
     pub naming: Option<(String, String)>,
     pub show_log: bool,
     pub editor: Editor,
+    pub looks: crate::looks::Looks,
     pub phone_sync: PhoneSync,
 }
 
@@ -47,6 +48,7 @@ impl App {
         let mut phone_sync = PhoneSync::new(settings.phones.clone());
         phone_sync.start(&root, &settings.device_id);
         let mut app = App {
+            looks: crate::looks::Looks::new(&cc.egui_ctx, &root),
             editor,
             phone_sync,
             library: Library::open(root),
@@ -352,6 +354,19 @@ impl eframe::App for App {
             View::Edit => crate::viewer::show(self, ctx),
             View::Import => crate::import_view::show(self, ctx),
             View::Phone => crate::phone_view::show(self, ctx),
+        }
+    }
+
+    /// Wheel scrolling in egui is slow with mice that report pixels (as on Wayland), so speed it up.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        for e in &mut raw.events {
+            if let egui::Event::MouseWheel { unit, delta, .. } = e {
+                match unit {
+                    egui::MouseWheelUnit::Point => *delta *= 2.0,
+                    egui::MouseWheelUnit::Line => *delta *= 2.0,
+                    egui::MouseWheelUnit::Page => {}
+                }
+            }
         }
     }
 
