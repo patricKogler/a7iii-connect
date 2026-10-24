@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Library,
+    Cull,
     Edit,
     Import,
     Phone,
@@ -34,6 +35,7 @@ pub struct App {
     pub editor: Editor,
     pub looks: crate::looks::Looks,
     pub phone_sync: PhoneSync,
+    pub cull: crate::cull::Cull,
     wheel: crate::wheel::Wheel,
     wheel_wake: Option<f64>,
 }
@@ -51,6 +53,7 @@ impl App {
         phone_sync.start(&root, &settings.device_id);
         let mut app = App {
             looks: crate::looks::Looks::new(&cc.egui_ctx, &root),
+            cull: crate::cull::Cull::new(),
             wheel: Default::default(),
             wheel_wake: None,
             editor,
@@ -97,6 +100,7 @@ impl App {
         self.settings.library = Some(root);
         self.selected = None;
         self.filter = Filter::All;
+        self.cull.reset();
         if self.ftp.server.is_some() {
             self.start_ftp(ctx);
         }
@@ -189,7 +193,7 @@ impl App {
                     );
                     ui.label(job);
                     ui.add_space(20.0);
-                    for (v, name) in [(View::Library, "Library"), (View::Edit, "Edit"), (View::Import, "Import")] {
+                    for (v, name) in [(View::Library, "Library"), (View::Cull, "Cull"), (View::Edit, "Edit"), (View::Import, "Import")] {
                         if tab(ui, self.view == v, name).clicked() {
                             self.view = v;
                         }
@@ -271,7 +275,7 @@ impl App {
     }
 
     fn keys(&mut self, ctx: &egui::Context) {
-        if ctx.wants_keyboard_input() || self.naming.is_some() {
+        if ctx.wants_keyboard_input() || self.naming.is_some() || self.view == View::Cull {
             return;
         }
         let visible = self.visible();
@@ -305,6 +309,9 @@ impl App {
                 }
                 if (i.key_pressed(Key::Enter) || i.key_pressed(Key::E)) && self.selected.is_some() {
                     self.view = View::Edit;
+                }
+                if i.key_pressed(Key::C) && !i.modifiers.command {
+                    self.view = View::Cull;
                 }
             } else if self.view == View::Edit && !self.editor.cropping && (i.key_pressed(Key::Escape) || i.key_pressed(Key::G)) {
                 self.view = View::Library;
@@ -354,10 +361,12 @@ impl eframe::App for App {
         }
         self.keys(ctx);
         crate::viewer::keys(self, ctx);
+        crate::cull_view::keys(self, ctx);
         self.top_bar(ctx);
         self.footer(ctx);
         match self.view {
             View::Library => crate::library_view::show(self, ctx),
+            View::Cull => crate::cull_view::show(self, ctx),
             View::Edit => crate::viewer::show(self, ctx),
             View::Import => crate::import_view::show(self, ctx),
             View::Phone => crate::phone_view::show(self, ctx),
@@ -376,6 +385,7 @@ impl eframe::App for App {
 
     fn on_exit(&mut self) {
         self.editor.close();
+        self.cull.reset();
         self.phone_sync.stop();
         self.importer.cancel();
         self.ftp.stop();

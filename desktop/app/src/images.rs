@@ -17,6 +17,8 @@ use std::thread;
 /// Longer edge of a grid thumbnail and of the big view, in pixels.
 pub const THUMB: u32 = 384;
 pub const LARGE: u32 = 2048;
+/// Full size, for checking focus up close (capped to what a texture can hold).
+pub const FULL: u32 = 8192;
 
 type Key = (PathBuf, u32);
 
@@ -84,8 +86,8 @@ impl Images {
             };
             self.slots.insert(key, slot);
         }
-        // Thumbnails for about a thousand tiles; big views for a handful.
-        for (edge, cap) in [(THUMB, 1200), (LARGE, 6)] {
+        // Thumbnails for about a thousand tiles; big views for a handful, full size for two.
+        for (edge, cap) in [(THUMB, 1200), (LARGE, 6), (FULL, 2)] {
             let mut ready: Vec<(u64, Key)> = self
                 .slots
                 .iter()
@@ -131,7 +133,7 @@ impl Images {
 
     /// A ready picture at another size, to show while the asked-for one loads.
     pub fn any(&self, path: &Path) -> Option<TextureHandle> {
-        [LARGE, THUMB].into_iter().find_map(|e| match self.slots.get(&(path.to_path_buf(), e)) {
+        [FULL, LARGE, THUMB].into_iter().find_map(|e| match self.slots.get(&(path.to_path_buf(), e)) {
             Some(Slot::Ready(t, _)) => Some(t.clone()),
             _ => None,
         })

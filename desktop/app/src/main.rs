@@ -3,6 +3,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod cull;
+mod cull_view;
 mod denoise;
 mod develop_view;
 mod editor;

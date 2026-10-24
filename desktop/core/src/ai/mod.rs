@@ -10,6 +10,7 @@ pub mod catalog;
 
 pub mod denoise;
 pub mod depth;
+pub mod faces;
 
 pub mod objects;
 pub mod sky;

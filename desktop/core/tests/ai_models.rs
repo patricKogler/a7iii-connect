@@ -122,3 +122,23 @@ fn denoise_cleans_a_noisy_raw() {
     let cleaned = err(&den);
     assert!(cleaned < noisy / 3.0, "error {noisy} before, {cleaned} after");
 }
+
+#[test]
+fn faces_are_found_and_told_apart() {
+    let Some(dir) = setup() else { return };
+    let px = photo(&dir, "messi5.jpg", 1024);
+    let faces = ai::faces::find(&px).unwrap();
+    eprintln!("{} {}x{} {faces:?}", faces.len(), px.width, px.height);
+    assert!(!faces.is_empty());
+    let f = &faces[0];
+    assert!(f.turned() < 0.6, "turned {}", f.turned());
+    // The same face at another size points the same way; the truck has no face.
+    let a = ai::faces::embed(&px, f).unwrap();
+    let small = photo(&dir, "messi5.jpg", 600);
+    let g = ai::faces::find(&small).unwrap().remove(0);
+    let b = ai::faces::embed(&small, &g).unwrap();
+    let cos: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+    assert_eq!(a.len(), 128);
+    assert!(cos > 0.8, "same face {cos}");
+    assert!(ai::faces::find(&photo(&dir, "truck.jpg", 1024)).unwrap().is_empty());
+}
