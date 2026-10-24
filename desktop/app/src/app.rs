@@ -34,6 +34,8 @@ pub struct App {
     pub editor: Editor,
     pub looks: crate::looks::Looks,
     pub phone_sync: PhoneSync,
+    wheel: crate::wheel::Wheel,
+    wheel_wake: Option<f64>,
 }
 
 const SETTINGS_KEY: &str = "settings";
@@ -49,6 +51,8 @@ impl App {
         phone_sync.start(&root, &settings.device_id);
         let mut app = App {
             looks: crate::looks::Looks::new(&cc.egui_ctx, &root),
+            wheel: Default::default(),
+            wheel_wake: None,
             editor,
             phone_sync,
             library: Library::open(root),
@@ -317,6 +321,9 @@ pub fn library_columns(ctx: &egui::Context, tile: f32) -> usize {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(after) = self.wheel_wake.take() {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(after));
+        }
         self.images.poll(ctx);
         if self.library.poll() && self.selected.is_none() {
             self.selected = self.library.shots.first().map(|s| s.key());
@@ -359,15 +366,8 @@ impl eframe::App for App {
 
     /// Wheel scrolling in egui is slow with mice that report pixels (as on Wayland), so speed it up.
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        for e in &mut raw.events {
-            if let egui::Event::MouseWheel { unit, delta, .. } = e {
-                match unit {
-                    egui::MouseWheelUnit::Point => *delta *= 2.0,
-                    egui::MouseWheelUnit::Line => *delta *= 2.0,
-                    egui::MouseWheelUnit::Page => {}
-                }
-            }
-        }
+        // egui forgets repaint requests made before the frame starts, so `update` asks.
+        self.wheel_wake = self.wheel.feed(raw);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
