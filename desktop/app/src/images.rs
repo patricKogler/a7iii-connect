@@ -164,7 +164,7 @@ pub fn decode(path: &Path, edge: u32, orientation: u8) -> Option<ColorImage> {
     let info = d.info()?;
     let (w, h) = (info.width as u32, info.height as u32);
     let rgba: Vec<u8> = match info.pixel_format {
-        jpeg_decoder::PixelFormat::RGB24 => px.chunks_exact(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        jpeg_decoder::PixelFormat::RGB24 => px.as_chunks::<3>().0.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
         jpeg_decoder::PixelFormat::L8 => px.iter().flat_map(|&l| [l, l, l, 255]).collect(),
         _ => return None,
     };
