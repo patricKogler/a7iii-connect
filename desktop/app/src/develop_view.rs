@@ -1,12 +1,12 @@
 //! The Develop panels, in Lightroom's order: Light, Curve, Color, Mixer, Grading, Effects, Detail,
-//! Optics, Geometry and Crop, plus the masks made on the phone.
+//! Optics, Geometry and Crop. Masks have their own panel (mask_view).
 
 use crate::editor::Editor;
 use crate::theme::{display, palette};
 use crate::widgets::{chip, hint, outline_button, DevelopSlider};
 use eframe::egui::{self, collapsing_header::CollapsingState, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use shootback_core::develop::look::{hsv_to_rgb, Source};
-use shootback_core::develop::params::{local, p, Curve, Group, MaskKind, Param, Profile, Settings, WHITE_BALANCES};
+use shootback_core::develop::params::{p, Curve, Group, Param, Profile, Settings, WHITE_BALANCES};
 
 /// Shows every panel, editing `s` (the open photo's settings).
 pub fn panels(ui: &mut Ui, ed: &Editor, s: &mut Settings) {
@@ -21,9 +21,6 @@ pub fn panels(ui: &mut Ui, ed: &Editor, s: &mut Settings) {
     section(ui, "Optics", s, Some(Group::Optics), false, |ui, s| optics(ui, s, source));
     section(ui, "Geometry", s, Some(Group::Geometry), false, geometry);
     section(ui, "Crop", s, Some(Group::Crop), false, |ui, s| crop(ui, s, source));
-    if !s.masks.is_empty() {
-        section(ui, "Masks", s, None, false, masks);
-    }
 }
 
 /// A panel: Mincho title, a Reset when it's changed, and its controls.
@@ -71,7 +68,7 @@ pub(crate) fn section(ui: &mut Ui, title: &str, s: &mut Settings, group: Option<
     ui.add_space(4.0);
 }
 
-fn number(v: f32, decimals: u8, signed: bool) -> String {
+pub(crate) fn number(v: f32, decimals: u8, signed: bool) -> String {
     let t = format!("{:.*}", decimals as usize, v);
     let zero = t.trim_start_matches('-').chars().all(|c| c == '0' || c == '.');
     if zero {
@@ -94,7 +91,7 @@ fn origin(q: &Param) -> f32 {
     }
 }
 
-fn round_to(v: f32, decimals: u8) -> f32 {
+pub(crate) fn round_to(v: f32, decimals: u8) -> f32 {
     let k = 10f32.powi(decimals as i32);
     (v * k).round() / k
 }
@@ -445,47 +442,6 @@ fn crop(ui: &mut Ui, s: &mut Settings, source: Option<&Source>) {
                 set_crop_box(s, c);
             }
         }
-    }
-}
-
-fn masks(ui: &mut Ui, s: &mut Settings) {
-    hint(ui, "Masks made on the phone render here. Subject and sky masks need the phone's finder, so they select nothing yet.");
-    let mut remove = None;
-    for (i, m) in s.masks.iter_mut().enumerate() {
-        let kind = match m.kind {
-            MaskKind::Linear => "Linear gradient",
-            MaskKind::Radial => "Radial gradient",
-            MaskKind::Subject => "Subject",
-            MaskKind::Sky => "Sky",
-        };
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{} {}", i + 1, kind)).color(palette(ui.ctx()).strong));
-            crate::widgets::right_to_left(ui, |ui| {
-                if ui.add(egui::Label::new(RichText::new("Remove").size(12.0).color(palette(ui.ctx()).text3)).sense(Sense::click())).clicked() {
-                    remove = Some(i);
-                }
-            });
-        });
-        for q in local::ALL {
-            let v = m.get(&q);
-            let slider = DevelopSlider {
-                label: q.label,
-                text: number(v, q.decimals, true),
-                value: v,
-                min: q.min,
-                max: q.max,
-                origin: 0.0,
-                default: q.default,
-                swatch: None,
-            };
-            if let Some(n) = slider.show(ui) {
-                m.set(&q, round_to(n, q.decimals));
-            }
-        }
-    }
-    if let Some(i) = remove {
-        s.masks.remove(i);
     }
 }
 

@@ -10,6 +10,8 @@ mod images;
 mod import_view;
 mod library_view;
 mod looks;
+mod mask_view;
+mod masks;
 #[cfg(test)]
 mod parity;
 mod phone_view;
@@ -21,6 +23,10 @@ mod wheel;
 mod widgets;
 
 fn main() -> eframe::Result {
+    // Models and the runtime that runs them live beside the app's settings.
+    if let Some(dir) = eframe::storage_dir("shootback") {
+        shootback_core::ai::set_home(&dir.join("ai"));
+    }
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Shootback")

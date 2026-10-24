@@ -9,6 +9,7 @@ pub mod image;
 pub mod look;
 pub mod lut;
 pub mod luts;
+pub mod maps;
 pub mod params;
 pub mod presets;
 pub mod raw;

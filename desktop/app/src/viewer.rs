@@ -22,7 +22,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Some(shot) => app.editor.open(ctx, shot),
         None => app.editor.close(),
     }
-    let preview = app.editor.poll();
+    let preview = app.editor.poll(ctx);
     let before = app.editor.s.clone();
     egui::SidePanel::right("edit-panels")
         .default_width(320.0)
@@ -85,8 +85,13 @@ fn panel(app: &mut App, ui: &mut Ui) {
             ui.label(RichText::new(e).color(p.accent));
         }
         let mut s = ed.s.clone();
-        crate::looks::panels(ui, looks, ed, &app.library.root, &mut s);
-        crate::develop_view::panels(ui, ed, &mut s);
+        if ed.masking {
+            crate::mask_view::panel(ui, ed, &mut s);
+        } else {
+            ed.overlay = None;
+            crate::looks::panels(ui, looks, ed, &app.library.root, &mut s);
+            crate::develop_view::panels(ui, ed, &mut s);
+        }
         ed.change(s);
         ui.add_space(10.0);
         let id = ui.make_persistent_id("edit-info");
@@ -146,6 +151,12 @@ fn stage(app: &mut App, ui: &mut Ui, preview: Option<(egui::TextureId, Vec2)>) {
     ui.memory_mut(|m| m.data.insert_temp(id, before));
     if stage_chip(&mut bar_ui, app.editor.cropping, "Crop  R").on_hover_text("Drag the edges, corners or the middle of the box").clicked() {
         app.editor.cropping = !app.editor.cropping;
+        app.editor.masking = false;
+    }
+    let masks = if app.editor.s.masks.is_empty() { "Masks  M".to_string() } else { format!("Masks {}  M", app.editor.s.masks.len()) };
+    if stage_chip(&mut bar_ui, app.editor.masking, &masks).on_hover_text("Gradients, brush, subject, sky, objects and depth").clicked() {
+        app.editor.masking = !app.editor.masking;
+        app.editor.cropping = false;
     }
     let ed = &app.editor;
     let state = if ed.error.is_some() {
@@ -181,6 +192,8 @@ fn stage(app: &mut App, ui: &mut Ui, preview: Option<(egui::TextureId, Vec2)>) {
                 paint_badge(ui, ui.painter(), r.left_top() + Vec2::new(10.0, 10.0), "Before", Align2::LEFT_TOP, false);
             } else if app.editor.cropping && preview.is_some() {
                 crop_overlay(app, ui, r);
+            } else if app.editor.masking && preview.is_some() {
+                crate::mask_view::overlay(&mut app.editor, ui, r);
             }
         }
         None if app.images.failed(&show.path, LARGE) => {
@@ -329,6 +342,7 @@ pub fn keys(app: &mut App, ctx: &egui::Context) {
         return;
     }
     let ed = &mut app.editor;
+    crate::mask_view::keys(ed, ctx);
     let (undo, redo, export, copy, paste) = ctx.input(|i| {
         let cmd = i.modifiers.command;
         let shift = i.modifiers.shift;
@@ -361,10 +375,18 @@ pub fn keys(app: &mut App, ctx: &egui::Context) {
     if export {
         ed.export(ctx);
     }
-    let (crop, done) = ctx.input(|i| (!i.modifiers.any() && i.key_pressed(Key::R), i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape)));
+    let (crop, masks, done) = ctx.input(|i| {
+        (!i.modifiers.any() && i.key_pressed(Key::R), !i.modifiers.any() && i.key_pressed(Key::M), i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape))
+    });
     if crop && !ctx.wants_keyboard_input() {
         ed.cropping = !ed.cropping;
+        ed.masking = false;
+    } else if masks && !ctx.wants_keyboard_input() {
+        ed.masking = !ed.masking;
+        ed.cropping = false;
     } else if done && ed.cropping {
         ed.cropping = false;
+    } else if done && ed.masking && ed.tool.selected.is_none() {
+        ed.masking = false;
     }
 }

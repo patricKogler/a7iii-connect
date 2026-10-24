@@ -3,6 +3,7 @@
 //! on worker threads; the sliders only re-run the shader, so they stay live.
 
 use crate::gpu::{self, Engine, Inputs, Placement, Tex};
+use crate::masks::Maps;
 use crate::render;
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
@@ -57,6 +58,18 @@ pub struct ExportStatus {
 /// A LUT by id: its table (None when it isn't here), texture and name.
 type LoadedLut = (String, Option<Lut>, Option<Tex>, Option<String>);
 
+/// The masks' maps on the GPU: for which version of the maps and which slots, the found maps and
+/// the own ones.
+struct MapTextures {
+    version: u64,
+    ids: Vec<String>,
+    found: Option<(Tex, [bool; 3])>,
+    own: Option<Tex>,
+}
+
+/// What the preview last drew: the settings, the overlaid mask and the maps' version.
+type Drawn = (Settings, Option<usize>, u64);
+
 pub struct Editor {
     engine: Option<Arc<Engine>>,
     render_state: Option<egui_wgpu::RenderState>,
@@ -83,8 +96,17 @@ pub struct Editor {
     scene: Option<Scene>,
     lut: Option<LoadedLut>,
     target: Option<(Tex, egui::TextureId)>,
-    /// The settings the preview shows, or None when it needs drawing.
-    drawn: Option<Settings>,
+    /// What the preview shows, or None when it needs drawing.
+    drawn: Option<Drawn>,
+    /// The open photo's masks' maps.
+    pub maps: Maps,
+    map_tex: Option<MapTextures>,
+    /// The mask tinted on the preview, while its panel is being worked in.
+    pub overlay: Option<usize>,
+    /// The selected mask and the brush.
+    pub tool: crate::mask_view::MaskTool,
+    /// Masks mode: the panel shows the masks, and the photo takes their tools.
+    pub masking: bool,
     /// Crop mode: the preview shows the whole frame, with the crop box over it.
     pub cropping: bool,
     /// File names (see [`develop::file_name`]) of the shots with edits.
@@ -126,6 +148,11 @@ impl Editor {
             lut: None,
             target: None,
             drawn: None,
+            maps: Maps::new(root),
+            map_tex: None,
+            overlay: None,
+            tool: Default::default(),
+            masking: false,
             cropping: false,
             export: Default::default(),
             cancel: Default::default(),
@@ -142,6 +169,7 @@ impl Editor {
             self.close();
             self.root = root.to_path_buf();
             self.store = EditStore::new(root);
+            self.maps.set_root(root);
             self.edited = self.store.edited();
         }
     }
@@ -174,6 +202,10 @@ impl Editor {
         self.opened = None;
         self.scene = None;
         self.drawn = None;
+        self.maps.close();
+        self.map_tex = None;
+        self.overlay = None;
+        self.tool.selected = None;
         self.cropping = false;
         self.requested.clear();
         self.undo.clear();
@@ -284,10 +316,13 @@ impl Editor {
     fn save(&mut self) {
         let Some(key) = &self.key else { return };
         if self.s == self.saved {
+            self.maps.save();
             return;
         }
         match self.store.save(key, &self.s) {
             Ok(()) => {
+                self.maps.save();
+                self.maps.prune(&self.s);
                 self.saved = self.s.clone();
                 let name = develop::file_name(key);
                 if self.s.is_default() {
@@ -358,6 +393,9 @@ impl Editor {
             guide: scene.guide.as_ref().map(|(t, a)| (t, *a)),
             coords: scene.coords.as_ref(),
             lut: None,
+            found: self.map_tex.as_ref().and_then(|m| m.found.as_ref().map(|(t, f)| (t, *f))),
+            maps: self.map_tex.as_ref().and_then(|m| m.own.as_ref()),
+            overlay: None,
             params: &params,
             place: Placement::whole(w, h),
         };
@@ -386,12 +424,17 @@ impl Editor {
 
     /// Takes in finished work and redraws the preview when anything changed. Returns the
     /// preview's texture and size.
-    pub fn poll(&mut self) -> Option<(egui::TextureId, egui::Vec2)> {
+    pub fn poll(&mut self, ctx: &egui::Context) -> Option<(egui::TextureId, egui::Vec2)> {
         if let Some(rx) = &self.opening {
             if let Ok(r) = rx.try_recv() {
                 self.opening = None;
                 match r {
-                    Ok(o) => self.opened = Some(o),
+                    Ok(o) => {
+                        if let Some(key) = &self.key {
+                            self.maps.open(key, o.clone(), &self.s);
+                        }
+                        self.opened = Some(o);
+                    }
                     Err(e) => self.error = Some(format!("This photo can't be opened: {e}")),
                 }
             }
@@ -399,6 +442,9 @@ impl Editor {
         let opened = self.opened.clone()?;
         let engine = self.engine.clone()?;
         let shown = self.shown().clone();
+        self.maps.poll(ctx);
+        self.maps.follow(&shown, ctx);
+        self.upload_maps(&engine, &shown);
         let key = slow_key(&opened, &shown, self.cropping);
         if key != self.requested {
             self.requested = key.clone();
@@ -419,8 +465,9 @@ impl Editor {
             });
             self.drawn = None;
         }
-        if self.drawn.as_ref() != Some(&shown) && self.scene.is_some() {
-            self.draw(&engine, &opened, shown);
+        let want = (shown, self.overlay, self.maps.version);
+        if self.drawn.as_ref() != Some(&want) && self.scene.is_some() {
+            self.draw(&engine, &opened, want);
         }
         self.target.as_ref().map(|(t, id)| (*id, egui::vec2(t.width as f32, t.height as f32)))
     }
@@ -430,7 +477,20 @@ impl Editor {
         self.scene.as_ref().is_none_or(|s| s.key != self.requested)
     }
 
-    fn draw(&mut self, engine: &Engine, opened: &Opened, s: Settings) {
+    /// Puts the masks' maps on the GPU when they (or which masks have own maps) changed.
+    fn upload_maps(&mut self, engine: &Engine, s: &Settings) {
+        let ids: Vec<String> = s.masks.iter().filter(|m| m.kind.has_own_map()).map(|m| m.id.clone()).collect();
+        if self.map_tex.as_ref().is_some_and(|m| m.version == self.maps.version && m.ids == ids) {
+            return;
+        }
+        let found = gpu::found_data([self.maps.found[0].as_ref(), self.maps.found[1].as_ref(), self.maps.found[2].as_ref()])
+            .map(|(w, h, data, f)| (engine.texture(w, h, &data), f));
+        let own = gpu::maps_data(&self.maps.slots(s)).map(|(w, h, data)| engine.texture(w, h, &data));
+        self.map_tex = Some(MapTextures { version: self.maps.version, ids, found, own });
+    }
+
+    fn draw(&mut self, engine: &Engine, opened: &Opened, want: Drawn) {
+        let s = want.0.clone();
         self.load_lut(&s);
         let Some(scene) = &self.scene else { return };
         let lut = if s.lut.is_some() { self.lut.as_ref().and_then(|l| l.2.as_ref()) } else { None };
@@ -446,6 +506,9 @@ impl Editor {
             guide: scene.guide.as_ref().map(|(t, a)| (t, *a)),
             coords: scene.coords.as_ref(),
             lut,
+            found: self.map_tex.as_ref().and_then(|m| m.found.as_ref().map(|(t, f)| (t, *f))),
+            maps: self.map_tex.as_ref().and_then(|m| m.own.as_ref()),
+            overlay: want.1,
             params: &params,
             place: Placement::whole(w, h),
         };
@@ -464,7 +527,7 @@ impl Editor {
             self.target = Some((tex, id));
         }
         engine.draw(&inputs, &self.target.as_ref().unwrap().0);
-        self.drawn = Some(s);
+        self.drawn = Some(want);
     }
 
     /// Where exports go: a folder beside the library.
@@ -482,6 +545,7 @@ impl Editor {
         self.save();
         let s = self.s.clone();
         let lut = self.s.lut.as_ref().and_then(|id| lut::find(&self.root, id));
+        let maps = render::MaskMaps { found: self.maps.found.clone(), own: self.maps.slots(&s).into_iter().map(|m| m.cloned()).collect() };
         let dir = self.export_dir();
         let status = self.export.clone();
         let cancel = self.cancel.clone();
@@ -495,7 +559,7 @@ impl Editor {
                 status.lock().unwrap().progress = f;
                 c.request_repaint();
             };
-            let result = render::full_size(&engine, &opened, &s, lut.as_ref(), &progress, &cancel).and_then(|(w, h, rgb)| {
+            let result = render::full_size(&engine, &opened, &s, lut.as_ref(), &maps, &progress, &cancel).and_then(|(w, h, rgb)| {
                 let exif = develop::export::exif_for(&file);
                 let jpeg = render::encode_jpeg(w, h, &rgb, exif.as_deref())?;
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -520,6 +584,32 @@ impl Editor {
 
     pub fn cancel_export(&self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// The geometry the preview is drawn through.
+    fn shown_geometry(&self) -> Option<shootback_core::develop::geometry::Geometry> {
+        let o = self.opened.as_ref()?;
+        Some(o.source.geometry(self.shown(), self.cropping))
+    }
+
+    /// Where a point of the preview (fractions of its width and height) is on the upright photo
+    /// (fractions too), the frame masks are placed in.
+    pub fn to_photo(&self, fx: f32, fy: f32) -> Option<(f32, f32)> {
+        let g = self.shown_geometry()?;
+        let m = g.map(fx as f64 * g.out_w, fy as f64 * g.out_h);
+        Some(((m[2] / g.src_w) as f32, (m[3] / g.src_h) as f32))
+    }
+
+    /// The other way: where a point of the upright photo shows on the preview.
+    pub fn to_preview(&self, u: f32, v: f32) -> Option<(f32, f32)> {
+        let g = self.shown_geometry()?;
+        let (x, y) = g.unmap(u as f64 * g.src_w, v as f64 * g.src_h);
+        Some(((x / g.out_w) as f32, (y / g.out_h) as f32))
+    }
+
+    /// The upright photo's width over its height.
+    pub fn photo_aspect(&self) -> f32 {
+        self.opened.as_ref().map_or(1.5, |o| o.source.full_width as f32 / o.source.full_height.max(1) as f32)
     }
 }
 
