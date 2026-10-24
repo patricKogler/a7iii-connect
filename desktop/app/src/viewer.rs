@@ -101,7 +101,11 @@ fn panel(app: &mut App, ui: &mut Ui) {
         ui.add(egui::ProgressBar::new(status.progress).desired_height(6.0).fill(p.seal));
         ui.horizontal(|ui| {
             ui.label(RichText::new("Exporting at full size ...").color(p.text2));
-            if ui.add(egui::Label::new(RichText::new("Cancel").color(p.text3)).sense(Sense::click())).clicked() {
+            if ui
+                .add(egui::Label::new(RichText::new("Cancel").color(p.text3)).selectable(false).sense(Sense::click()))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
                 ed.cancel_export();
             }
         });
@@ -115,7 +119,11 @@ fn panel(app: &mut App, ui: &mut Ui) {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(&status.message).size(12.0).color(if status.failed { p.accent } else { p.text3 }));
                 if let Some(path) = &status.last {
-                    if ui.add(egui::Label::new(RichText::new("Show").size(12.0).color(p.accent)).sense(Sense::click())).clicked() {
+                    if ui
+                        .add(egui::Label::new(RichText::new("Show").size(12.0).color(p.accent)).selectable(false).sense(Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         crate::state::reveal(path);
                     }
                 }

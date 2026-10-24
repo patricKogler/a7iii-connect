@@ -41,7 +41,12 @@ fn sidebar(app: &mut App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             section_label(ui, "Albums");
             widgets::right_to_left(ui, |ui| {
-                if ui.add(egui::Label::new(RichText::new("+ New").color(p.accent)).sense(Sense::click())).on_hover_text("New album").clicked() {
+                if ui
+                    .add(egui::Label::new(RichText::new("+ New").color(p.accent)).selectable(false).sense(Sense::click()))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("New album")
+                    .clicked()
+                {
                     app.naming = Some((String::new(), String::new()));
                 }
             });

@@ -77,7 +77,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 ui.label(RichText::new(when).size(12.0).color(p.text3));
                             });
                             crate::widgets::right_to_left(ui, |ui| {
-                                if ui.add(egui::Label::new(RichText::new("Unpair").size(12.0).color(p.text3)).sense(Sense::click())).clicked() {
+                                if ui.add(egui::Label::new(RichText::new("Unpair").size(12.0).color(p.text3)).selectable(false).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                     remove = Some(ph.id.clone());
                                 }
                             });
