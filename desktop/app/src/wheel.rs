@@ -33,7 +33,7 @@ impl Wheel {
     /// Rewrites this frame's wheel events and adds the glide. Answers whether to draw again soon.
     pub fn feed(&mut self, raw: &mut RawInput) -> Option<f64> {
         let now = raw.time.unwrap_or(self.frame);
-        let dt = (now - self.frame).clamp(0.0, 0.1) as f32;
+        let dt = (now - self.frame).clamp(0.0, 1.0 / 30.0) as f32;
         self.frame = now;
         let mut touch = Vec2::ZERO;
         let mut events = Vec::with_capacity(raw.events.len());
