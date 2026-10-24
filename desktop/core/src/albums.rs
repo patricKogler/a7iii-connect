@@ -206,6 +206,27 @@ pub fn resolver(local: &[String]) -> impl Fn(&str) -> Option<String> {
     }
 }
 
+/// Albums with their shots under this library's keys where `resolve` finds them (the rest stay as
+/// they are).
+pub fn rekey(albums: &[Album], resolve: impl Fn(&str) -> Option<String>) -> Vec<Album> {
+    albums
+        .iter()
+        .map(|a| {
+            let mut out: HashMap<String, AlbumEntry> = HashMap::new();
+            for e in a.entries.values() {
+                let k = resolve(&e.key).unwrap_or_else(|| e.key.clone());
+                let moved = AlbumEntry { key: k.clone(), ..e.clone() };
+                let keep = match out.get(&k) {
+                    Some(x) => newer(x, &moved).clone(),
+                    None => moved,
+                };
+                out.insert(k, keep);
+            }
+            Album { entries: out, ..a.clone() }
+        })
+        .collect()
+}
+
 /// Tab-separated lines, like the flags file: `A id created renamed deleted(0 = no) name
 /// shared(1 = yes) owner` for each album, then `M id device name` per member and `S id at +/- key`
 /// per shot in it.

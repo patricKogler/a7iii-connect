@@ -29,11 +29,13 @@ pub struct Settings {
     pub theme: ThemeChoice,
     /// This computer, as album members know it: made up once, kept.
     pub device_id: String,
+    /// Phones paired for sync.
+    pub phones: Vec<shootback_core::sync::Phone>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { library: None, ftp_port: 2121, ftp_on: false, full_size: true, theme: ThemeChoice::System, device_id: new_id() }
+        Settings { library: None, ftp_port: 2121, ftp_on: false, full_size: true, theme: ThemeChoice::System, device_id: new_id(), phones: Vec::new() }
     }
 }
 
@@ -143,6 +145,16 @@ impl Library {
                 self.scan = None;
                 false
             }
+        }
+    }
+
+    /// Reads marks and albums again and rescans: a phone changed them.
+    pub fn reload_files(&mut self) {
+        let state = self.root.join(STATE_DIR);
+        self.marks = Marks::load(&state.join("flags.txt"));
+        self.albums = self.album_store.load();
+        if !self.scanning() {
+            self.rescan();
         }
     }
 
@@ -427,4 +439,45 @@ pub fn reveal(path: &Path) {
     #[cfg(not(windows))]
     let r = std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn();
     let _ = r;
+}
+
+/// Phone sync: the server phones talk to, and what it shares with the app.
+pub struct PhoneSync {
+    pub shared: Arc<shootback_core::sync::Shared>,
+    server: Option<shootback_core::sync::Server>,
+    pub error: Option<String>,
+}
+
+impl PhoneSync {
+    pub fn new(phones: Vec<shootback_core::sync::Phone>) -> PhoneSync {
+        let shared = Arc::new(shootback_core::sync::Shared::default());
+        *shared.phones.lock().unwrap() = phones;
+        PhoneSync { shared, server: None, error: None }
+    }
+
+    /// (Re)starts serving `root`.
+    pub fn start(&mut self, root: &Path, device_id: &str) {
+        self.server = None;
+        match shootback_core::sync::Server::start(root, device_id, &shootback_core::sync::computer_name(), self.shared.clone()) {
+            Ok(s) => {
+                self.server = Some(s);
+                self.error = None;
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    pub fn stop(&mut self) {
+        self.server = None;
+    }
+
+    pub fn port(&self) -> Option<u16> {
+        self.server.as_ref().map(|s| s.port)
+    }
+
+    /// What a phone is doing, if it did something in the last few seconds.
+    pub fn activity(&self) -> Option<String> {
+        let a = self.shared.activity.lock().unwrap();
+        a.as_ref().filter(|(_, at)| at.elapsed() < Duration::from_secs(8)).map(|(t, _)| t.clone())
+    }
 }

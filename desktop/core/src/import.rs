@@ -46,6 +46,12 @@ impl PartFile {
         Ok(PartFile { out: BufWriter::new(File::create(&part)?), part, dest })
     }
 
+    /// Throws the partial file away.
+    pub fn abort(self) {
+        drop(self.out);
+        let _ = fs::remove_file(&self.part);
+    }
+
     pub fn finish(mut self) -> io::Result<PathBuf> {
         self.out.flush()?;
         drop(self.out);

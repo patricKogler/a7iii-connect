@@ -2,7 +2,7 @@
 
 use crate::editor::Editor;
 use crate::images::Images;
-use crate::state::{self, Filter, FtpInbox, Importer, Library, Settings, ThemeChoice};
+use crate::state::{self, Filter, FtpInbox, Importer, Library, PhoneSync, Settings, ThemeChoice};
 use crate::theme::{self, palette};
 use crate::widgets::{self, status_pill, tab};
 use eframe::egui::{self, Frame, Key, Margin, RichText, Stroke, ThemePreference};
@@ -32,6 +32,7 @@ pub struct App {
     pub naming: Option<(String, String)>,
     pub show_log: bool,
     pub editor: Editor,
+    pub phone_sync: PhoneSync,
 }
 
 const SETTINGS_KEY: &str = "settings";
@@ -43,8 +44,11 @@ impl App {
         let root = settings.library.clone().unwrap_or_else(state::default_library);
         let _ = std::fs::create_dir_all(&root);
         let editor = Editor::new(&cc.egui_ctx, cc.wgpu_render_state.clone(), &root);
+        let mut phone_sync = PhoneSync::new(settings.phones.clone());
+        phone_sync.start(&root, &settings.device_id);
         let mut app = App {
             editor,
+            phone_sync,
             library: Library::open(root),
             images: Images::new(&cc.egui_ctx),
             importer: Importer::new(),
@@ -87,6 +91,7 @@ impl App {
     pub fn set_library(&mut self, ctx: &egui::Context, root: std::path::PathBuf) {
         self.library = Library::open(root.clone());
         self.editor.set_root(&root);
+        self.phone_sync.start(&root, &self.settings.device_id);
         self.settings.library = Some(root);
         self.selected = None;
         self.filter = Filter::All;
@@ -179,7 +184,14 @@ impl App {
                         if status_pill(ui, dot, &text, strong).clicked() {
                             self.view = View::Import;
                         }
-                        if status_pill(ui, p.control, "Phone: not paired", self.view == View::Phone).clicked() {
+                        let phones = self.phone_sync.shared.phones.lock().unwrap().clone();
+                        let (dot, text) = match (self.phone_sync.activity(), phones.as_slice()) {
+                            (Some(_), _) => (p.accent, "Phone: syncing".to_string()),
+                            (None, []) => (p.control, "Phone: not paired".to_string()),
+                            (None, [one]) => (p.good, format!("Phone: {}", one.name)),
+                            (None, many) => (p.good, format!("{} phones", many.len())),
+                        };
+                        if status_pill(ui, dot, &text, self.view == View::Phone).clicked() {
                             self.view = View::Phone;
                         }
                     });
@@ -285,6 +297,18 @@ impl eframe::App for App {
         if self.library.poll() && self.selected.is_none() {
             self.selected = self.library.shots.first().map(|s| s.key());
         }
+        if self.phone_sync.shared.changed.swap(false, Ordering::Relaxed) {
+            self.library.reload_files();
+            self.editor.reload();
+        }
+        if self.phone_sync.shared.phones_changed.swap(false, Ordering::Relaxed) {
+            self.settings.phones = self.phone_sync.shared.phones.lock().unwrap().clone();
+        }
+        if self.phone_sync.activity().is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs(2));
+        }
         if self.importer.arrived.swap(false, Ordering::Relaxed) && !self.library.scanning() {
             self.library.rescan();
         }
@@ -309,6 +333,7 @@ impl eframe::App for App {
 
     fn on_exit(&mut self) {
         self.editor.close();
+        self.phone_sync.stop();
         self.importer.cancel();
         self.ftp.stop();
     }

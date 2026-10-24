@@ -139,6 +139,20 @@ impl Editor {
         }
     }
 
+    /// Reads the edits again: a phone changed them. The open photo takes its new edit unless a
+    /// slider is held.
+    pub fn reload(&mut self) {
+        self.edited = self.store.edited();
+        if let (Some(key), false) = (&self.key, self.gesture) {
+            let s = self.store.load(key);
+            if s != self.saved {
+                self.undo.push(self.s.clone());
+                self.s = s.clone();
+                self.saved = s;
+            }
+        }
+    }
+
     pub fn is_edited(&self, shot: &Shot) -> bool {
         self.edited.contains(&develop::file_name(&shot.key()))
     }
