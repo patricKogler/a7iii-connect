@@ -9,14 +9,17 @@ use eframe::egui::{self, Event, MouseWheelUnit, RawInput, Vec2};
 
 /// Points per wheel notch, over egui's 40.
 const LINE_GAIN: f32 = 2.5;
-/// Touchpad deltas, a little faster than 1:1.
-const POINT_GAIN: f32 = 1.4;
+/// Touchpad deltas. KDE's touchpad deltas taken 1:1 scroll about a sixth as far as the browser
+/// does for the same swipe (measured from a screen recording of both), so they're scaled up.
+const POINT_GAIN: f32 = 6.0;
 /// How long a glide takes to lose 63% of its speed, in seconds.
 const DECAY: f32 = 0.33;
 /// The touchpad counts as let go after this long without events.
 const LET_GO: f64 = 0.045;
 /// Slower than this (points per second), a glide stops.
 const MIN_SPEED: f32 = 40.0;
+/// A swipe must be faster than this (points per second) to glide on: slow, careful drags stop.
+const START_SPEED: f32 = 60.0 * POINT_GAIN;
 /// egui eases in any wheel delta this long or longer; shorter ones apply at once.
 const PIECE: f32 = 7.5;
 
@@ -73,7 +76,7 @@ impl Wheel {
             return Some(LET_GO - (now - self.last));
         }
         if !self.gliding {
-            self.gliding = self.velocity.length() > MIN_SPEED * 4.0;
+            self.gliding = self.velocity.length() > START_SPEED;
             if !self.gliding {
                 self.stop();
                 return None;
@@ -135,7 +138,7 @@ mod tests {
         for _ in 0..10 {
             t += 1.0 / 60.0;
             let (moved, again) = frame(&mut w, t, vec![pad(-20.0)]);
-            assert!((moved.y + 28.0).abs() < 0.01);
+            assert!((moved.y + 20.0 * POINT_GAIN).abs() < 0.01);
             assert!(again.is_some());
         }
         // Fingers lift: nothing for a moment, then the glide.
@@ -153,7 +156,8 @@ mod tests {
         assert!(steps.len() > 10, "{steps:?}");
         assert!(steps.windows(2).all(|p| p[1] <= p[0] + 1e-3), "slows down: {steps:?}");
         let glide: f32 = steps.iter().sum();
-        assert!(glide > 300.0 && glide < 1200.0, "{glide}");
+        // One to two and a half times as far as the swipe itself went (10 frames of 20 pt), like the browser.
+        assert!(glide > 100.0 * POINT_GAIN && glide < 500.0 * POINT_GAIN, "{glide}");
     }
 
     #[test]
