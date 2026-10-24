@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 
 const SIZE: usize = 224;
 const MEAN: [f32; 3] = [0.481_454_66, 0.457_827_5, 0.408_210_73];
-const STD: [f32; 3] = [0.268_629_54, 0.261_302_58, 0.275_777_1];
+const STD: [f32; 3] = [0.268_629_5, 0.261_302_6, 0.275_777_1];
 /// Tokens the text model reads, the start and end marks included.
 const CONTEXT: usize = 77;
 

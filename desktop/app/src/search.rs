@@ -17,6 +17,9 @@ struct Queue {
     stop: AtomicBool,
 }
 
+/// Where some words sit, or why that couldn't be worked out.
+type Answer = Result<Vec<f32>, String>;
+
 pub struct Search {
     index: HashMap<String, Vec<f32>>,
     queue: Arc<Queue>,
@@ -25,7 +28,7 @@ pub struct Search {
     skipped: HashSet<String>,
     /// The words searched for and where they sit.
     words: Option<(String, Vec<f32>)>,
-    asking: Option<(String, Receiver<Result<Vec<f32>, String>>)>,
+    asking: Option<(String, Receiver<Answer>)>,
     /// Shots that match `words` by what's in them.
     found: HashSet<String>,
     pub error: Option<String>,
