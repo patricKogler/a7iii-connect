@@ -142,3 +142,18 @@ fn faces_are_found_and_told_apart() {
     assert!(cos > 0.8, "same face {cos}");
     assert!(ai::faces::find(&photo(&dir, "truck.jpg", 1024)).unwrap().is_empty());
 }
+
+#[test]
+fn search_finds_photos_from_words() {
+    let Some(dir) = setup() else { return };
+    let t = ai::clip::Tokenizer::new(&std::fs::read_to_string(ai::model_dir(&ai::catalog::CLIP).join("vocab.txt")).unwrap());
+    assert_eq!(t.encode("A photo of a  dog"), vec![49406, 320, 1125, 539, 320, 1929, 49407]);
+    let names = ["dog.jpg", "truck.jpg", "fruits.jpg", "building.jpg", "messi5.jpg"];
+    let index: std::collections::HashMap<String, Vec<f32>> =
+        names.iter().map(|n| (n.to_string(), ai::clip::embed_image(&photo(&dir, n, 384)).unwrap())).collect();
+    for (words, want) in [("a dog", "dog.jpg"), ("white pickup truck", "truck.jpg"), ("fruit", "fruits.jpg"), ("football", "messi5.jpg")] {
+        let found = ai::clip::ranked(&ai::clip::embed_query(words).unwrap(), &index);
+        eprintln!("{words}: {found:?}");
+        assert_eq!(found.first().map(|f| f.0.as_str()), Some(want), "{words}");
+    }
+}

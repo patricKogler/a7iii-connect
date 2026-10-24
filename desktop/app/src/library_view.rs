@@ -270,6 +270,47 @@ fn day_of(millis: i64) -> chrono::NaiveDate {
     Local.timestamp_millis_opt(millis).single().map_or_else(|| chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(), |t| t.date_naive())
 }
 
+/// Under the search box: how searching by what's in the photos is getting on.
+fn search_status(app: &mut App, ui: &mut Ui) {
+    use shootback_core::ai::{self, catalog::CLIP, Progress};
+    let p = palette(ui.ctx());
+    let small = |t: String| RichText::new(t).size(12.0).color(p.text3);
+    let (done, all) = app.finder.progress(&app.library.shots);
+    if ai::installed(&CLIP) && app.finder.error.is_none() && done >= all {
+        return;
+    }
+    ui.horizontal(|ui| {
+        widgets::right_to_left(ui, |ui| {
+            if !ai::installed(&CLIP) {
+                match ai::status(&CLIP) {
+                    Some(Progress::Downloading(f)) => {
+                        ui.label(small(format!("Getting the search model ... {:.0} %", f * 100.0)));
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+                    }
+                    other => {
+                        if ui.add(egui::Label::new(RichText::new("Get the search model (600 MB)").size(12.0).color(p.accent)).sense(Sense::click())).clicked() {
+                            app.finder.fetch_model();
+                            ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+                        }
+                        let why = match other {
+                            Some(Progress::Failed(e)) => format!("Couldn't get it: {e}."),
+                            _ => "Only file names for now. To find photos by what's in them:".to_string(),
+                        };
+                        ui.label(small(why));
+                    }
+                }
+                return;
+            }
+            if let Some(e) = &app.finder.error {
+                ui.label(RichText::new(e).size(12.0).color(p.accent));
+            }
+            if done < all {
+                ui.label(small(format!("Looked at {done} of {all} photos for search so far")));
+            }
+        });
+    });
+}
+
 enum Row {
     Day(String),
     Tiles(Vec<usize>),
@@ -289,9 +330,14 @@ fn grid(app: &mut App, ui: &mut Ui) {
                     }
                 }
                 ui.add_space(12.0);
-                ui.add(egui::TextEdit::singleline(&mut app.search).hint_text("Search file names").desired_width(220.0).margin(egui::vec2(8.0, 6.0)));
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.search).hint_text("Search names or what's in them").desired_width(240.0).margin(egui::vec2(8.0, 6.0)),
+                );
             });
         });
+        if !app.search.trim().is_empty() {
+            search_status(app, ui);
+        }
     });
     ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), Stroke::new(1.0_f32, p.border));
 

@@ -7,6 +7,7 @@
 //! fetch has come) and [`session`] opens one, loading the runtime first.
 
 pub mod catalog;
+pub mod clip;
 
 pub mod denoise;
 pub mod depth;

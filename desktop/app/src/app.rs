@@ -37,6 +37,7 @@ pub struct App {
     pub phone_sync: PhoneSync,
     pub cull: crate::cull::Cull,
     pub insights: crate::insights::Insights,
+    pub finder: crate::search::Search,
     /// Person being named: their id and the text so far.
     pub naming_person: Option<(String, String)>,
     wheel: crate::wheel::Wheel,
@@ -58,6 +59,7 @@ impl App {
             looks: crate::looks::Looks::new(&cc.egui_ctx, &root),
             cull: crate::cull::Cull::new(),
             insights: crate::insights::Insights::new(&cc.egui_ctx, &root),
+            finder: crate::search::Search::new(&cc.egui_ctx, &root),
             naming_person: None,
             wheel: Default::default(),
             wheel_wake: None,
@@ -107,6 +109,7 @@ impl App {
         self.filter = Filter::All;
         self.cull.reset();
         self.insights.set_root(&self.library.root.clone());
+        self.finder.set_root(&self.library.root.clone());
         if self.ftp.server.is_some() {
             self.start_ftp(ctx);
         }
@@ -120,7 +123,12 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, s)| self.library.matches(s, &self.filter))
-            .filter(|(_, s)| q.is_empty() || [s.raw.as_ref(), s.jpeg.as_ref()].into_iter().flatten().any(|p| p.name.to_lowercase().contains(&q)))
+            .filter(|(_, s)| {
+                q.is_empty()
+                    || [s.raw.as_ref(), s.jpeg.as_ref()].into_iter().flatten().any(|p| p.name.to_lowercase().contains(&q))
+                    || self.finder.found(&q, &s.key())
+                    || self.library.people.iter().any(|(who, shots)| is_name(who) && who.to_lowercase().contains(&q) && shots.contains(&s.key()))
+            })
             .map(|(i, _)| i)
             .collect()
     }
@@ -326,6 +334,11 @@ impl App {
     }
 }
 
+/// Whether a person's key is a name someone gave (not an id like p12).
+fn is_name(key: &str) -> bool {
+    !key.strip_prefix('p').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// How many tiles fit across the library grid (the window less both side panels).
 pub fn library_columns(ctx: &egui::Context, tile: f32) -> usize {
     let w = ctx.screen_rect().width() - 232.0 - 300.0 - 40.0;
@@ -348,6 +361,7 @@ impl eframe::App for App {
             self.insights.reload_people();
         }
         let grouped = self.insights.follow(&self.library.shots, rescanned);
+        self.finder.follow(&self.search.to_lowercase(), &self.library.shots, rescanned);
         if grouped || rescanned {
             self.library.people = self.insights.shots_by_person();
         }
@@ -399,6 +413,7 @@ impl eframe::App for App {
         self.editor.close();
         self.cull.reset();
         self.insights.stop();
+        self.finder.stop();
         self.phone_sync.stop();
         self.importer.cancel();
         self.ftp.stop();

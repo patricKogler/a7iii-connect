@@ -20,6 +20,7 @@ mod masks;
 mod parity;
 mod phone_view;
 mod render;
+mod search;
 mod state;
 mod theme;
 mod viewer;
