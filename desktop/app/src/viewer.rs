@@ -25,8 +25,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let preview = app.editor.poll();
     let before = app.editor.s.clone();
     egui::SidePanel::right("edit-panels")
-        .exact_width(320.0)
-        .resizable(false)
+        .default_width(320.0)
+        .width_range(280.0..=640.0)
+        .resizable(true)
         .frame(Frame::none().fill(p.panel).inner_margin(Margin::symmetric(14.0, 12.0)).stroke(Stroke::new(p.line, p.border)))
         .show(ctx, |ui| panel(app, ui));
     egui::TopBottomPanel::bottom("filmstrip")

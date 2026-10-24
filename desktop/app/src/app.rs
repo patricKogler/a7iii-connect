@@ -355,6 +355,19 @@ impl eframe::App for App {
         }
     }
 
+    /// Wheel scrolling in egui is slow with mice that report pixels (as on Wayland), so speed it up.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        for e in &mut raw.events {
+            if let egui::Event::MouseWheel { unit, delta, .. } = e {
+                match unit {
+                    egui::MouseWheelUnit::Point => *delta *= 2.0,
+                    egui::MouseWheelUnit::Line => *delta *= 2.0,
+                    egui::MouseWheelUnit::Page => {}
+                }
+            }
+        }
+    }
+
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
     }
