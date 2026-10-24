@@ -5,7 +5,7 @@ use crate::app::{App, View};
 use crate::images::{LARGE, THUMB};
 use crate::library_view::{details, mark_menu};
 use crate::theme::palette;
-use crate::widgets::{chip, outline_button, paint_badge, paint_seal, seal_button};
+use crate::widgets::{outline_button, paint_badge, paint_seal, seal_button, stage_chip};
 use eframe::egui::{self, Align2, Color32, Frame, Key, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use shootback_core::marks::Mark;
 
@@ -27,11 +27,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     egui::SidePanel::right("edit-panels")
         .exact_width(320.0)
         .resizable(false)
-        .frame(Frame::none().fill(p.panel).inner_margin(Margin::symmetric(14.0, 12.0)).stroke(Stroke::new(1.0_f32, p.border)))
+        .frame(Frame::none().fill(p.panel).inner_margin(Margin::symmetric(14.0, 12.0)).stroke(Stroke::new(p.line, p.border)))
         .show(ctx, |ui| panel(app, ui));
     egui::TopBottomPanel::bottom("filmstrip")
         .exact_height(STRIP + 20.0)
-        .frame(Frame::none().fill(p.stage).inner_margin(Margin::symmetric(12.0, 10.0)).stroke(Stroke::new(1.0_f32, p.border)))
+        .frame(Frame::none().fill(p.stage).inner_margin(Margin::symmetric(12.0, 10.0)).stroke(Stroke::new(p.line, p.border)))
         .show(ctx, |ui| filmstrip(app, ui, &visible));
     egui::CentralPanel::default().frame(Frame::none().fill(p.stage).inner_margin(Margin::same(24.0))).show(ctx, |ui| stage(app, ui, preview));
     app.editor.end_frame(ctx, &before);
@@ -89,7 +89,7 @@ fn panel(app: &mut App, ui: &mut Ui) {
         ui.add_space(10.0);
         let id = ui.make_persistent_id("edit-info");
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
-            .show_header(ui, |ui| ui.label(RichText::new("Info").family(crate::theme::mincho()).size(14.5).color(p.strong)))
+            .show_header(ui, |ui| ui.label(RichText::new("Info").family(crate::theme::display()).size(14.5).color(p.strong)))
             .body(|ui| details(app, ui));
     });
     let ed = &mut app.editor;
@@ -138,11 +138,11 @@ fn stage(app: &mut App, ui: &mut Ui, preview: Option<(egui::TextureId, Vec2)>) {
     let id = ui.id().with("show-before");
     let mut before: bool = ui.memory(|m| m.data.get_temp(id).unwrap_or(false));
     let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    if chip(&mut bar_ui, before || held, "Before  \\").on_hover_text("The photo as the camera made it; hold \\ to peek").clicked() {
+    if stage_chip(&mut bar_ui, before || held, "Before  \\").on_hover_text("The photo as the camera made it; hold \\ to peek").clicked() {
         before = !before;
     }
     ui.memory_mut(|m| m.data.insert_temp(id, before));
-    if chip(&mut bar_ui, app.editor.cropping, "Crop  R").on_hover_text("Drag the edges, corners or the middle of the box").clicked() {
+    if stage_chip(&mut bar_ui, app.editor.cropping, "Crop  R").on_hover_text("Drag the edges, corners or the middle of the box").clicked() {
         app.editor.cropping = !app.editor.cropping;
     }
     let ed = &app.editor;

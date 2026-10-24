@@ -30,12 +30,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
 fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     let p = palette(ui.ctx());
-    Frame::none().fill(p.panel).stroke(Stroke::new(1.0_f32, p.border)).rounding(2.0).inner_margin(Margin::same(18.0)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.set_min_height(250.0);
-        ui.spacing_mut().item_spacing.y = 8.0;
-        ui.with_layout(egui::Layout::top_down(egui::Align::Min), add);
-    });
+    Frame::none().fill(p.panel).stroke(Stroke::new(p.line, p.border)).rounding(p.radius).shadow(p.hard_shadow()).inner_margin(Margin::same(18.0)).show(
+        ui,
+        |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_min_height(250.0);
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), add);
+        },
+    );
 }
 
 fn camera_card(app: &mut App, ui: &mut Ui) {

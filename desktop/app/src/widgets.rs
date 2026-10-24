@@ -1,42 +1,76 @@
-//! The few controls the design needs beyond egui's own: seal buttons, ink outlines, the tab rule,
-//! chips and the small Mincho section labels.
+//! The few controls the design needs beyond egui's own: seal buttons, outlines, the tab rule,
+//! chips and the small section labels. They take their colours and shapes from the theme.
 
-use crate::theme::{mincho, palette, semibold};
+use crate::theme::{display, palette, semibold};
 use eframe::egui::{self, text::LayoutJob, Align, Color32, FontId, Rect, Response, RichText, Rounding, Sense, Stroke, TextFormat, Ui, Vec2};
 
 /// A filled vermilion button: the one main action in a place.
 pub fn seal_button(ui: &mut Ui, text: &str) -> Response {
     let p = palette(ui.ctx());
-    ui.add(
-        egui::Button::new(RichText::new(text).color(p.on_seal).family(semibold()))
-            .fill(p.seal)
-            .stroke(Stroke::NONE)
-            .rounding(Rounding::same(2.0))
-            .min_size(Vec2::new(0.0, 34.0)),
-    )
+    let stroke = if p.shadow > 0.0 { Stroke::new(p.line, p.shadow_color) } else { Stroke::NONE };
+    shadowed(ui, |ui| {
+        ui.add(
+            egui::Button::new(RichText::new(text).color(p.on_seal).family(semibold()))
+                .fill(p.seal)
+                .stroke(stroke)
+                .rounding(Rounding::same(p.radius))
+                .min_size(Vec2::new(0.0, 34.0)),
+        )
+    })
 }
 
-/// An ink-outlined button.
+/// Adds a widget with the theme's hard shadow under it, when the theme has one. The shadow halves
+/// while the widget is pressed, so it reads as pushed in.
+pub fn shadowed(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> Response) -> Response {
+    let p = palette(ui.ctx());
+    if p.shadow <= 0.0 {
+        return add(ui);
+    }
+    let under = ui.painter().add(egui::Shape::Noop);
+    let resp = add(ui);
+    let offset = if resp.is_pointer_button_down_on() { p.shadow * 0.5 } else { p.shadow };
+    ui.painter().set(under, egui::Shape::rect_filled(resp.rect.translate(Vec2::splat(offset)), p.radius, p.shadow_color));
+    resp
+}
+
+/// An outlined button.
 pub fn outline_button(ui: &mut Ui, text: &str) -> Response {
     let p = palette(ui.ctx());
-    ui.add(
-        egui::Button::new(RichText::new(text).color(p.text))
-            .fill(Color32::TRANSPARENT)
-            .stroke(Stroke::new(1.0_f32, p.control))
-            .rounding(Rounding::same(2.0))
-            .min_size(Vec2::new(0.0, 32.0)),
-    )
+    let fill = if p.shadow > 0.0 { p.panel } else { Color32::TRANSPARENT };
+    shadowed(ui, |ui| {
+        ui.add(
+            egui::Button::new(RichText::new(text).color(p.text))
+                .fill(fill)
+                .stroke(Stroke::new(p.line, p.control))
+                .rounding(Rounding::same(p.radius))
+                .min_size(Vec2::new(0.0, 32.0)),
+        )
+    })
 }
 
 /// A choice among a few: vermilion outline and tint when chosen.
 pub fn chip(ui: &mut Ui, selected: bool, text: &str) -> Response {
+    chip_on(ui, selected, text, Color32::TRANSPARENT)
+}
+
+/// A chip over the dark stage: on a panel-coloured ground, so it reads in light themes too.
+pub fn stage_chip(ui: &mut Ui, selected: bool, text: &str) -> Response {
+    let p = palette(ui.ctx());
+    chip_on(ui, selected, text, p.panel)
+}
+
+fn chip_on(ui: &mut Ui, selected: bool, text: &str, ground: Color32) -> Response {
     let p = palette(ui.ctx());
     let (fill, stroke, color) = if selected {
-        (p.seal.gamma_multiply(0.10), Stroke::new(1.5_f32, p.accent), p.strong)
+        (if ground == Color32::TRANSPARENT { p.seal.gamma_multiply(0.10) } else { mix(ground, p.seal, 0.10) }, Stroke::new(p.line + 0.5, p.accent), p.strong)
     } else {
-        (Color32::TRANSPARENT, Stroke::new(1.0_f32, p.control), p.text)
+        (ground, Stroke::new(p.line, p.control), p.text)
     };
-    ui.add(egui::Button::new(RichText::new(text).color(color)).fill(fill).stroke(stroke).rounding(Rounding::same(2.0)).min_size(Vec2::new(0.0, 28.0)))
+    ui.add(egui::Button::new(RichText::new(text).color(color)).fill(fill).stroke(stroke).rounding(Rounding::same(p.radius)).min_size(Vec2::new(0.0, 28.0)))
+}
+
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    (egui::Rgba::from(a) * (1.0 - t) + egui::Rgba::from(b) * t).into()
 }
 
 /// A top-bar tab: ink type over a vermilion rule when it's the current one.
@@ -66,25 +100,27 @@ pub fn tab(ui: &mut Ui, selected: bool, text: &str) -> Response {
     resp
 }
 
-/// A small heading in Mincho with wide tracking, like the design's section labels.
+/// A small heading in the display face, like the design's section labels.
 pub fn section_label(ui: &mut Ui, text: &str) {
     let p = palette(ui.ctx());
     let mut job = LayoutJob::default();
-    job.append(text, 0.0, TextFormat { font_id: FontId::new(13.0, mincho()), color: p.text3, extra_letter_spacing: 1.6, ..Default::default() });
+    let spacing = (1.6 * p.tracking).max(if p.caps { 0.8 } else { 0.0 });
+    let text = if p.caps { text.to_uppercase() } else { text.to_string() };
+    job.append(&text, 0.0, TextFormat { font_id: FontId::new(13.0, display()), color: p.text3, extra_letter_spacing: spacing, ..Default::default() });
     ui.label(job);
 }
 
 pub fn heading(ui: &mut Ui, text: &str) {
     let p = palette(ui.ctx());
     let mut job = LayoutJob::default();
-    job.append(text, 0.0, TextFormat { font_id: FontId::new(26.0, mincho()), color: p.strong, extra_letter_spacing: 0.8, ..Default::default() });
+    job.append(text, 0.0, TextFormat { font_id: FontId::new(26.0, display()), color: p.strong, extra_letter_spacing: 0.8 * p.tracking, ..Default::default() });
     ui.label(job);
 }
 
 pub fn subheading(ui: &mut Ui, text: &str) {
     let p = palette(ui.ctx());
     let mut job = LayoutJob::default();
-    job.append(text, 0.0, TextFormat { font_id: FontId::new(18.0, mincho()), color: p.strong, extra_letter_spacing: 0.6, ..Default::default() });
+    job.append(text, 0.0, TextFormat { font_id: FontId::new(18.0, display()), color: p.strong, extra_letter_spacing: 0.6 * p.tracking, ..Default::default() });
     ui.label(job);
 }
 
@@ -95,10 +131,10 @@ pub fn nav_row(ui: &mut Ui, selected: bool, text: &str, count: Option<usize>) ->
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     if selected {
-        ui.painter().rect_filled(rect, 2.0, p.selected);
+        ui.painter().rect_filled(rect, p.radius, p.selected);
         ui.painter().rect_filled(Rect::from_min_size(rect.min, Vec2::new(2.0, rect.height())), 0.0, p.seal);
     } else if resp.hovered() {
-        ui.painter().rect_filled(rect, 2.0, p.selected.gamma_multiply(0.6));
+        ui.painter().rect_filled(rect, p.radius, p.selected.gamma_multiply(0.6));
     }
     let font = if selected { FontId::new(13.5, semibold()) } else { FontId::proportional(13.5) };
     ui.painter().text(egui::pos2(rect.left() + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, text, font, if selected { p.strong } else { p.text });
@@ -116,20 +152,21 @@ pub fn status_pill(ui: &mut Ui, dot: Color32, text: &str, emphasised: bool) -> R
     let size = Vec2::new(galley.size().x + 36.0, 30.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-    let stroke = if emphasised { Stroke::new(1.5_f32, dot) } else { Stroke::new(1.0_f32, p.control) };
-    ui.painter().rect(rect, 2.0, if resp.hovered() { p.selected } else { Color32::TRANSPARENT }, stroke);
+    let stroke = if emphasised { Stroke::new(p.line + 0.5, dot) } else { Stroke::new(p.line, p.control) };
+    ui.painter().rect(rect, p.radius, if resp.hovered() { p.selected } else { Color32::TRANSPARENT }, stroke);
     ui.painter().circle_filled(egui::pos2(rect.left() + 14.0, rect.center().y), 4.0, dot);
     ui.painter().galley(egui::pos2(rect.left() + 26.0, rect.center().y - galley.size().y / 2.0), galley, p.text);
     resp
 }
 
-/// A small seal stamped on a tile: vermilion with paper-coloured type.
+/// A small seal stamped on a tile, in the theme's main colour.
 pub fn paint_seal(painter: &egui::Painter, at: egui::Pos2, text: &str, align: egui::Align2) {
-    let galley = painter.layout_no_wrap(text.to_string(), FontId::new(11.5, mincho()), crate::theme::WASHI.on_seal);
+    let p = crate::theme::current().palette;
+    let galley = painter.layout_no_wrap(text.to_string(), FontId::new(11.5, display()), p.on_seal);
     let size = galley.size() + Vec2::new(10.0, 4.0);
     let rect = align.anchor_size(at, size);
-    painter.rect_filled(rect, 1.0, crate::theme::WASHI.seal);
-    painter.galley(rect.min + Vec2::new(5.0, 2.0), galley, crate::theme::WASHI.on_seal);
+    painter.rect_filled(rect, p.tile_radius, p.seal);
+    painter.galley(rect.min + Vec2::new(5.0, 2.0), galley, p.on_seal);
 }
 
 /// A quiet badge on a tile: ink type on translucent paper (or the reverse on sumi).
@@ -138,7 +175,7 @@ pub fn paint_badge(ui: &Ui, painter: &egui::Painter, at: egui::Pos2, text: &str,
     let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(10.5), p.text);
     let size = galley.size() + Vec2::new(10.0, 4.0);
     let rect = align.anchor_size(at, size);
-    painter.rect(rect, 1.0, p.bg.gamma_multiply(0.9), if outlined { Stroke::new(1.0_f32, p.text) } else { Stroke::NONE });
+    painter.rect(rect, p.tile_radius, p.bg.gamma_multiply(0.9), if outlined { Stroke::new(1.0_f32, p.text) } else { Stroke::NONE });
     painter.galley(rect.min + Vec2::new(5.0, 2.0), galley, p.text);
 }
 
@@ -182,7 +219,7 @@ pub fn thousands(n: usize) -> String {
 pub fn fact(ui: &mut Ui, label: &str, value: &str) {
     let p = palette(ui.ctx());
     ui.vertical(|ui| {
-        ui.label(RichText::new(label).size(11.5).color(p.text3));
+        ui.add(egui::Label::new(RichText::new(label).size(11.5).color(p.text3)).extend());
         ui.add(egui::Label::new(RichText::new(value).color(p.text)).extend());
     });
 }
