@@ -1,0 +1,83 @@
+name: Desktop
+
+# Builds the Windows and Linux app in desktop/. On main it replaces the "desktop-latest" release;
+# the phone's "latest" release is left alone.
+on:
+  push:
+    branches: [main]
+    paths: ['desktop/**', '.github/workflows/desktop.yml']
+  pull_request:
+    paths: ['desktop/**', '.github/workflows/desktop.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+          - os: windows-latest
+            name: windows
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+      - name: Format
+        run: cargo fmt --check
+      - name: Software GPU for the render tests
+        if: matrix.name == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+      - name: Test
+        run: cargo test --locked
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --locked --release -p shootback
+      - name: Package
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.name }}" = windows ]; then
+            cp target/release/shootback.exe dist/Shootback.exe
+            (cd dist && 7z a ../shootback-windows.zip Shootback.exe)
+          else
+            cp target/release/shootback dist/shootback
+            tar -czf shootback-linux.tar.gz -C dist shootback
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shootback-${{ matrix.name }}
+          path: desktop/shootback-${{ matrix.name }}.*
+
+  release:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Publish as "desktop-latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete desktop-latest --yes --cleanup-tag || true
+          gh release create desktop-latest shootback-windows.zip shootback-linux.tar.gz \
+            --title "Shootback for Windows and Linux (${GITHUB_SHA::7})" \
+            --notes "Built from ${GITHUB_SHA}. Windows: unzip and run Shootback.exe. Linux: extract and run ./shootback." \
+            --target "$GITHUB_SHA" \
+            --latest=false

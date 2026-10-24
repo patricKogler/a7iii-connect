@@ -42,6 +42,8 @@ data class Checkpoint(val name: String, val time: Long, val settings: Settings, 
  * the file rather than its MediaStore row (and come back with Android's app-data backup).
  * Another [folder] keeps a separate set, as the edit battle does.
  */
+private val markCaches = HashMap<String, MutableMap<String, Mark>>()
+
 class EditStore(context: Context, folder: String = "develop") {
     private val dir = File(context.filesDir, folder).apply { mkdirs() }
     private val editDir = File(dir, "edits").apply { mkdirs() }
@@ -53,7 +55,8 @@ class EditStore(context: Context, folder: String = "develop") {
         LutLibrary.ensure(context)
     }
 
-    private fun editFile(photo: LibraryPhoto) = File(editDir, fileName(photo.key) + ".txt")
+    private fun editFile(photo: LibraryPhoto) = editFile(photo.key)
+    private fun editFile(key: String) = File(editDir, fileName(key) + ".txt")
 
     private val subjectDir = File(dir, "subjects").apply { mkdirs() }
     private fun subjectFile(photo: LibraryPhoto) = File(subjectDir, fileName(photo.key) + ".mask")
@@ -92,6 +95,20 @@ class EditStore(context: Context, folder: String = "develop") {
         if (settings.isDefault) f.delete() else f.writeText(settings.encode())
     }
 
+    /** The edit of the shot with this key as stored, and when it was last changed (0 when it has none). */
+    fun editOf(key: String): Pair<String, Long> {
+        val f = editFile(key)
+        return (runCatching { f.readText() }.getOrNull() ?: "") to f.lastModified()
+    }
+
+    /** Stores an edit that came from elsewhere, dated as it was there. */
+    fun putEdit(key: String, settings: Settings, modified: Long) {
+        val f = editFile(key)
+        if (settings.isDefault) { f.delete(); return }
+        f.writeText(settings.encode())
+        if (modified > 0) f.setLastModified(modified)
+    }
+
     /** Keys of the photos with edits. */
     fun editedKeys(photos: List<LibraryPhoto>): Set<String> {
         val names = editDir.list()?.toSet() ?: emptySet()
@@ -110,36 +127,45 @@ class EditStore(context: Context, folder: String = "develop") {
         }
     }
 
-    private var markCache: MutableMap<String, Mark>? = null
-
     /** Culling marks by shot key, in one small tab-separated file. */
-    fun marks(): Map<String, Mark> = markMap().toMap()
+    fun marks(): Map<String, Mark> = synchronized(markLock) { markMap().toMap() }
 
-    fun setMark(key: String, mark: Mark?) {
+    fun setMark(key: String, mark: Mark?) = synchronized(markLock) {
         val m = markMap()
         if (mark == null) m.remove(key) else m[key] = mark
         writeMarks(m)
     }
 
     /** One mark (or none) for many shots at once, written in one go. */
-    fun setMarks(keys: Collection<String>, mark: Mark?) {
+    fun setMarks(keys: Collection<String>, mark: Mark?) = synchronized(markLock) {
         val m = markMap()
         keys.forEach { if (mark == null) m.remove(it) else m[it] = mark }
+        writeMarks(m)
+    }
+
+    /** Marks for many shots, each its own (null clears it), written in one go. */
+    fun putMarks(marks: Map<String, Mark?>) = synchronized(markLock) {
+        val m = markMap()
+        marks.forEach { (k, v) -> if (v == null) m.remove(k) else m[k] = v }
         writeMarks(m)
     }
 
     private fun writeMarks(m: Map<String, Mark>) =
         markFile.writeText(m.entries.joinToString("") { "${it.key}\t${it.value}\n" })
 
-    private fun markMap(): MutableMap<String, Mark> = markCache ?: runCatching {
-        markFile.readLines().mapNotNull { line ->
-            val parts = line.split('\t')
-            parts[0] to (Mark.parse(parts.getOrNull(1)) ?: return@mapNotNull null)
-        }.toMap(mutableMapOf())
-    }.getOrDefault(mutableMapOf()).also { markCache = it }
+    // One copy per file for every store, so a sync in the background and the screen see each other's marks.
+    private val markLock: Any get() = markCaches
+    private fun markMap(): MutableMap<String, Mark> = markCaches.getOrPut(markFile.path) {
+        runCatching {
+            markFile.readLines().mapNotNull { line ->
+                val parts = line.split('\t')
+                parts[0] to (Mark.parse(parts.getOrNull(1)) ?: return@mapNotNull null)
+            }.toMap(mutableMapOf())
+        }.getOrDefault(mutableMapOf())
+    }
 
     /** Forgets edits and marks of shots whose files were deleted. */
-    fun forget(shots: List<Shot>) {
+    fun forget(shots: List<Shot>) = synchronized(markLock) {
         val m = markMap()
         for (shot in shots) {
             m.remove(shot.key)
