@@ -122,6 +122,7 @@ pub mod p {
         NOISE = "noise", "Noise reduction", Detail, 0.0, 100.0, 0.0, 0;
         NOISE_DETAIL = "noise.detail", "Detail", Detail, 0.0, 100.0, 50.0, 0;
         COLOR_NOISE = "colorNoise", "Color noise reduction", Detail, 0.0, 100.0, 0.0, 0;
+        AI_DENOISE = "ai.denoise", "AI denoise", Detail, 0.0, 100.0, 0.0, 0;
         LENS_PROFILE = "on.lensProfile", "Use lens corrections", Optics, 0.0, 1.0, 1.0, 0;
         REMOVE_CA = "on.removeCA", "Remove chromatic aberration", Optics, 0.0, 1.0, 1.0, 0;
         LENS_DISTORTION = "lens.distortion", "Distortion", Optics, 0.0, 200.0, 100.0, 0;

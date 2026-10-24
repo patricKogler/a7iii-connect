@@ -17,7 +17,7 @@ pub fn panels(ui: &mut Ui, ed: &Editor, s: &mut Settings) {
     section(ui, "Color mixer", s, Some(Group::Mixer), false, mixer);
     section(ui, "Color grading", s, Some(Group::Grading), false, grading);
     section(ui, "Effects", s, Some(Group::Effects), false, effects);
-    section(ui, "Detail", s, Some(Group::Detail), false, detail);
+    section(ui, "Detail", s, Some(Group::Detail), false, |ui, s| detail(ui, ed, s));
     section(ui, "Optics", s, Some(Group::Optics), false, |ui, s| optics(ui, s, source));
     section(ui, "Geometry", s, Some(Group::Geometry), false, geometry);
     section(ui, "Crop", s, Some(Group::Crop), false, |ui, s| crop(ui, s, source));
@@ -315,7 +315,7 @@ fn effects(ui: &mut Ui, s: &mut Settings) {
     }
 }
 
-fn detail(ui: &mut Ui, s: &mut Settings) {
+fn detail(ui: &mut Ui, ed: &Editor, s: &mut Settings) {
     param(ui, s, &p::SHARPEN);
     for q in [p::SHARPEN_RADIUS, p::SHARPEN_DETAIL, p::SHARPEN_MASKING] {
         param(ui, s, &q);
@@ -326,6 +326,37 @@ fn detail(ui: &mut Ui, s: &mut Settings) {
         param(ui, s, &p::NOISE_DETAIL);
     }
     param(ui, s, &p::COLOR_NOISE);
+    if ed.opened.as_ref().is_some_and(|o| o.raw.is_some()) {
+        ui.add_space(4.0);
+        param(ui, s, &p::AI_DENOISE);
+        ai_denoise_state(ui, ed, s);
+    }
+}
+
+/// What AI denoise is doing: downloading its model, denoising, or why it failed.
+fn ai_denoise_state(ui: &mut Ui, ed: &Editor, s: &Settings) {
+    use crate::denoise::State;
+    use shootback_core::ai::{self, catalog::RAW_DENOISE, Progress};
+    if s.get(&p::AI_DENOISE) <= 0.0 {
+        hint(ui, "Removes noise from the raw with a model trained on real camera noise, keeping more detail than Noise reduction. The first time it runs it takes a minute or so; after that it's kept.");
+        return;
+    }
+    match &ed.denoise.state {
+        State::Running => {
+            let text = match ai::status(&RAW_DENOISE) {
+                Some(Progress::Downloading(f)) => format!("Downloading the denoise model ({} MB) ...  {:.0} %", RAW_DENOISE.bytes() / 1_000_000, f * 100.0),
+                _ => format!("Denoising ...  {:.0} %", ed.denoise.progress() * 100.0),
+            };
+            hint(ui, &text);
+        }
+        State::Failed(e) => {
+            hint(ui, &format!("AI denoise didn't work: {e}"));
+            if chip(ui, false, "Try again").clicked() {
+                ed.denoise.retry.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        State::Idle => {}
+    }
 }
 
 fn optics(ui: &mut Ui, s: &mut Settings, source: Option<&Source>) {

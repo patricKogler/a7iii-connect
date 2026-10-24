@@ -2,6 +2,7 @@
 //! exports. Slow work (decoding, sampling through the geometry, noise reduction, guide maps) runs
 //! on worker threads; the sliders only re-run the shader, so they stay live.
 
+use crate::denoise::Denoiser;
 use crate::gpu::{self, Engine, Inputs, Placement, Tex};
 use crate::masks::Maps;
 use crate::render;
@@ -100,6 +101,7 @@ pub struct Editor {
     drawn: Option<Drawn>,
     /// The open photo's masks' maps.
     pub maps: Maps,
+    pub denoise: Denoiser,
     map_tex: Option<MapTextures>,
     /// The mask tinted on the preview, while its panel is being worked in.
     pub overlay: Option<usize>,
@@ -149,6 +151,7 @@ impl Editor {
             target: None,
             drawn: None,
             maps: Maps::new(root),
+            denoise: Denoiser::new(root),
             map_tex: None,
             overlay: None,
             tool: Default::default(),
@@ -170,6 +173,7 @@ impl Editor {
             self.root = root.to_path_buf();
             self.store = EditStore::new(root);
             self.maps.set_root(root);
+            self.denoise.set_root(root);
             self.edited = self.store.edited();
         }
     }
@@ -203,6 +207,7 @@ impl Editor {
         self.scene = None;
         self.drawn = None;
         self.maps.close();
+        self.denoise.close();
         self.map_tex = None;
         self.overlay = None;
         self.tool.selected = None;
@@ -444,6 +449,10 @@ impl Editor {
         let shown = self.shown().clone();
         self.maps.poll(ctx);
         self.maps.follow(&shown, ctx);
+        if let Some(key) = &self.key {
+            self.denoise.follow(key, &opened, &shown, ctx);
+        }
+        self.denoise.poll();
         self.upload_maps(&engine, &shown);
         let key = slow_key(&opened, &shown, self.cropping);
         if key != self.requested {
@@ -614,12 +623,13 @@ impl Editor {
 }
 
 /// What the slow inputs depend on: the geometry, the noise and defringe tools, what the guide
-/// is made from (white balance, not exposure) and whether there are masks.
+/// is made from (white balance, not exposure), whether there are masks and how much AI denoise
+/// is mixed in.
 fn slow_key(o: &Opened, s: &Settings, whole_frame: bool) -> String {
     let geom = o.source.geometry(s, whole_frame);
     let look = Look::new(&o.source, s);
     let flat = Look::new(&o.source, &s.clone().with(&p::EXPOSURE, 0.0));
-    format!("{geom:?}|{:?}|{}|{:?}|{}", look.prepare_key(), look.needs_guide(), flat.matrix, s.masks.is_empty())
+    format!("{geom:?}|{:?}|{}|{:?}|{}|{}", look.prepare_key(), look.needs_guide(), flat.matrix, s.masks.is_empty(), o.denoise_amount(s))
 }
 
 fn worker(jobs: Receiver<Job>, done: Sender<Prepared>, ctx: egui::Context) {
@@ -631,11 +641,12 @@ fn worker(jobs: Receiver<Job>, done: Sender<Prepared>, ctx: egui::Context) {
         }
         let source = &job.opened.source;
         let geom = source.geometry(&job.s, job.whole_frame);
-        let geom_key = format!("{:p}|{geom:?}", Arc::as_ptr(&job.opened));
+        let geom_key = format!("{:p}|{geom:?}|{}", Arc::as_ptr(&job.opened), job.opened.denoise_amount(&job.s));
         if sampled.as_ref().is_none_or(|c| c.0 != geom_key) {
+            let image = job.opened.preview(&job.s);
             // Output pixels per full-size pixel.
-            let scale = natural_scale(&source.image, &geom, Some(PREVIEW_EDGE));
-            let img = sample(&source.image, &geom, Some(PREVIEW_EDGE), None);
+            let scale = natural_scale(&image, &geom, Some(PREVIEW_EDGE));
+            let img = sample(&image, &geom, Some(PREVIEW_EDGE), None);
             sampled = Some((geom_key, img, scale));
         }
         let (_, img, scale) = sampled.as_ref().unwrap();

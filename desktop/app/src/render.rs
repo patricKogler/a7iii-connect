@@ -38,7 +38,7 @@ pub fn full_size(
     let geom = source.geometry(s, false);
     let look = Look::new(source, s);
     let guide = look.guide(source, &geom);
-    let full = opened.full_image()?;
+    let full = opened.full_image(s)?;
     let (w, h) = frame_size(&geom, 1.0);
     let params = look.shader_params(1.0);
     let pad = look.margin(1.0);

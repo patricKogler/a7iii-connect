@@ -20,6 +20,7 @@ use look::{FullImage, Source};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 pub use params::Settings;
 
@@ -33,6 +34,45 @@ pub struct Opened {
     pub orientation: u8,
     /// The decoded sensor data, kept for a full-size export.
     pub raw: Option<raw::RawImage>,
+    /// The raw after AI denoise, once that's been run (see `ai::denoise`).
+    pub denoised: OnceLock<Denoised>,
+}
+
+/// A raw's active area after AI denoise: at full size as `RawImage::demosaic` gives it, and as
+/// the preview (like `Source::image`).
+pub struct Denoised {
+    pub full: Vec<u16>,
+    pub preview: LinearImage,
+}
+
+impl Denoised {
+    /// From the full-size pixels: the preview is made as for the raw.
+    pub fn new(full: Vec<u16>, width: usize, height: usize, orientation: u8) -> Denoised {
+        // Halved by averaging 2x2 first, as the raw preview is a half-size decode.
+        let (hw, hh) = (width / 2, height / 2);
+        let mut half = LinearImage::new(hw, hh);
+        for y in 0..hh {
+            for x in 0..hw {
+                let mut sum = [0u32; 3];
+                for (dy, dx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                    let i = ((2 * y + dy) * width + 2 * x + dx) * 3;
+                    for c in 0..3 {
+                        sum[c] += full[i + c] as u32;
+                    }
+                }
+                let o = y * hw + x;
+                half.r[o] = sum[0] as f32 / (4.0 * 65535.0);
+                half.g[o] = sum[1] as f32 / (4.0 * 65535.0);
+                half.b[o] = sum[2] as f32 / (4.0 * 65535.0);
+            }
+        }
+        Denoised { full, preview: half.downscaled(PREVIEW_EDGE).oriented(orientation) }
+    }
+}
+
+/// `a` and `b` mixed, `t` of the way to `b`.
+fn mix(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
 }
 
 fn decode_jpeg(bytes: &[u8], min_edge: Option<usize>) -> Result<(LinearImage, usize, usize), String> {
@@ -76,7 +116,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
             full_height: if swap { raw.width } else { raw.height },
             lens: raw.info.lens.clone(),
         };
-        return Ok(Opened { path: path.to_path_buf(), source, orientation, raw: Some(raw) });
+        return Ok(Opened { path: path.to_path_buf(), source, orientation, raw: Some(raw), denoised: OnceLock::new() });
     }
     let orientation = crate::meta::read(path).orientation;
     let (img, fw, fh) = decode_jpeg(&bytes, Some(PREVIEW_EDGE))?;
@@ -90,19 +130,113 @@ pub fn open(path: &Path) -> Result<Opened, String> {
         full_height: if swap { fw } else { fh },
         lens: None,
     };
-    Ok(Opened { path: path.to_path_buf(), source, orientation, raw: None })
+    Ok(Opened { path: path.to_path_buf(), source, orientation, raw: None, denoised: OnceLock::new() })
 }
 
 impl Opened {
-    /// The whole photo at full resolution, sensor-oriented, for export.
-    pub fn full_image(&self) -> Result<FullImage, String> {
+    /// How much of the AI-denoised raw `s` mixes in (0..1): 0 when there's none yet.
+    pub fn denoise_amount(&self, s: &Settings) -> f32 {
+        if self.denoised.get().is_some() {
+            s.get(&params::p::AI_DENOISE) / 100.0
+        } else {
+            0.0
+        }
+    }
+
+    /// The preview with AI denoise mixed in as `s` asks.
+    pub fn preview(&self, s: &Settings) -> std::borrow::Cow<'_, LinearImage> {
+        let t = self.denoise_amount(s);
+        match self.denoised.get() {
+            Some(d) if t > 0.0 && d.preview.width == self.source.image.width && d.preview.height == self.source.image.height => {
+                if t >= 1.0 {
+                    return std::borrow::Cow::Borrowed(&d.preview);
+                }
+                let a = &self.source.image;
+                let mut img = a.clone();
+                for i in 0..img.r.len() {
+                    img.r[i] = mix(a.r[i], d.preview.r[i], t);
+                    img.g[i] = mix(a.g[i], d.preview.g[i], t);
+                    img.b[i] = mix(a.b[i], d.preview.b[i], t);
+                }
+                std::borrow::Cow::Owned(img)
+            }
+            _ => std::borrow::Cow::Borrowed(&self.source.image),
+        }
+    }
+
+    /// The whole photo at full resolution, sensor-oriented, for export, with AI denoise mixed in
+    /// as `s` asks.
+    pub fn full_image(&self, s: &Settings) -> Result<FullImage, String> {
         if let Some(raw) = &self.raw {
-            return Ok(FullImage { width: raw.width, height: raw.height, data: raw.demosaic(), orientation: self.orientation });
+            let t = self.denoise_amount(s);
+            let data = match self.denoised.get() {
+                Some(d) if t >= 1.0 => d.full.clone(),
+                Some(d) if t > 0.0 => {
+                    let mut data = raw.demosaic();
+                    for (v, &n) in data.iter_mut().zip(&d.full) {
+                        *v = mix(*v as f32, n as f32, t).round() as u16;
+                    }
+                    data
+                }
+                _ => raw.demosaic(),
+            };
+            return Ok(FullImage { width: raw.width, height: raw.height, data, orientation: self.orientation });
         }
         let bytes = fs::read(&self.path).map_err(|e| e.to_string())?;
         let (img, w, h) = decode_jpeg(&bytes, None)?;
         let data = (0..w * h).flat_map(|i| [img.r[i], img.g[i], img.b[i]].map(|v| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16)).collect();
         Ok(FullImage { width: w, height: h, data, orientation: self.orientation })
+    }
+}
+
+/// AI-denoised raws beside the library (`.shootback/denoised/`), so denoising runs once per
+/// photo: the full-size pixels, deflated, after a width and height.
+#[derive(Clone)]
+pub struct DenoiseStore {
+    dir: PathBuf,
+}
+
+impl DenoiseStore {
+    pub fn new(root: &Path) -> DenoiseStore {
+        DenoiseStore { dir: root.join(STATE_DIR).join("denoised") }
+    }
+
+    fn file(&self, key: &str) -> PathBuf {
+        self.dir.join(file_name(key) + ".rgb16")
+    }
+
+    pub fn load(&self, key: &str, width: usize, height: usize) -> Option<Vec<u16>> {
+        use std::io::Read;
+        let f = fs::File::open(self.file(key)).ok()?;
+        let mut r = std::io::BufReader::new(f);
+        let mut head = [0u8; 8];
+        r.read_exact(&mut head).ok()?;
+        let (w, h) = (u32::from_le_bytes(head[..4].try_into().ok()?) as usize, u32::from_le_bytes(head[4..].try_into().ok()?) as usize);
+        if (w, h) != (width, height) {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(w * h * 6);
+        flate2::read::DeflateDecoder::new(r).read_to_end(&mut bytes).ok()?;
+        if bytes.len() != w * h * 6 {
+            return None;
+        }
+        Some(bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect())
+    }
+
+    pub fn save(&self, key: &str, width: usize, height: usize, full: &[u16]) -> std::io::Result<()> {
+        use std::io::Write;
+        fs::create_dir_all(&self.dir)?;
+        let mut out = Vec::with_capacity(full.len());
+        out.extend((width as u32).to_le_bytes());
+        out.extend((height as u32).to_le_bytes());
+        let mut e = flate2::write::DeflateEncoder::new(out, flate2::Compression::fast());
+        let bytes: Vec<u8> = full.iter().flat_map(|v| v.to_le_bytes()).collect();
+        e.write_all(&bytes)?;
+        write_atomic(&self.file(key), &e.finish()?)
+    }
+
+    pub fn remove(&self, key: &str) {
+        let _ = fs::remove_file(self.file(key));
     }
 }
 

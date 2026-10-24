@@ -64,3 +64,61 @@ fn the_road_is_nearer_than_the_wall() {
     let m = ai::depth::find(&px).unwrap();
     assert!(m.at(0.5, 0.97) > m.at(0.5, 0.45) && m.at(0.5, 0.45) > m.at(0.5, 0.05), "{} {} {}", m.at(0.5, 0.97), m.at(0.5, 0.45), m.at(0.5, 0.05));
 }
+
+#[test]
+fn denoise_cleans_a_noisy_raw() {
+    use shootback_core::develop::raw::{RawImage, RawInfo};
+    use std::sync::atomic::AtomicBool;
+    let Some(dir) = setup() else { return };
+    // A made-up raw: the truck as photosites in a red-green-green-blue pattern, with shot and
+    // read noise like a high ISO.
+    let px = photo(&dir, "truck.jpg", 1200);
+    let (w, h) = (px.width & !1, px.height & !1);
+    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let (black, white) = (512, 16383);
+    let mut seed = 12345u64;
+    let mut noise = || {
+        // Two uniform draws to a rough normal one.
+        let mut u = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f32 / (1u64 << 53) as f32
+        };
+        (u() + u() + u() + u() - 2.0) * 1.73
+    };
+    let cfa = [0, 1, 1, 2];
+    let mut data = vec![0u16; w * h];
+    let mut clean = vec![0f32; w * h * 3];
+    for y in 0..h {
+        for x in 0..w {
+            let rgb = px.at(x, y).map(|v| lin(v) * 0.5);
+            clean[(y * w + x) * 3..][..3].copy_from_slice(&rgb);
+            let c = cfa[((y & 1) << 1) | (x & 1)];
+            let e = rgb[c] * (white - black) as f32;
+            let v = e + noise() * (e * 40.0 + 2500.0).sqrt();
+            data[y * w + x] = (v + black as f32).clamp(0.0, white as f32) as u16;
+        }
+    }
+    let raw = RawImage { info: RawInfo::plain(black, white, [1.0; 3]), raw_width: w, data, cfa, left: 0, top: 0, width: w, height: h };
+    // How far off the picture is where it's flat (the truck's panels, the wall), so there's no
+    // detail to lose: where the clean picture barely changes over 5x5 pixels.
+    let lum = |i: usize| clean[i * 3] + clean[i * 3 + 1] + clean[i * 3 + 2];
+    let flat: Vec<usize> = (2..h - 2)
+        .flat_map(|y| (2..w - 2).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let c = lum(y * w + x);
+            (0..25).all(|k| (lum((y + k / 5 - 2) * w + x + k % 5 - 2) - c).abs() < 0.01)
+        })
+        .map(|(x, y)| y * w + x)
+        .collect();
+    assert!(flat.len() > w * h / 20, "flat {}", flat.len());
+    let err = |img: &[u16]| {
+        let sum: f64 = flat.iter().flat_map(|&i| (0..3).map(move |c| i * 3 + c)).map(|i| (img[i] as f64 / 65535.0 - clean[i] as f64).powi(2)).sum();
+        (sum / (flat.len() * 3) as f64).sqrt()
+    };
+    let noisy = err(&raw.demosaic());
+    let den = ai::denoise::raw(&raw, &|_| {}, &AtomicBool::new(false)).unwrap();
+    let cleaned = err(&den);
+    assert!(cleaned < noisy / 3.0, "error {noisy} before, {cleaned} after");
+}

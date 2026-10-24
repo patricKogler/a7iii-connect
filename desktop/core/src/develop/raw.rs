@@ -433,10 +433,28 @@ fn decode_arw2(src: &[u8], w: usize, curve: &[u16], out: &mut [u16]) {
     });
 }
 
+impl RawInfo {
+    /// Only levels and white balance, for raws made up in tests.
+    pub fn plain(black: i32, white: i32, as_shot: [f32; 3]) -> RawInfo {
+        RawInfo { make: String::new(), model: String::new(), orientation: 1, as_shot, black: [black; 3], white, preview: None, lens: None, raw: None }
+    }
+}
+
 impl RawImage {
+    /// Which colour (0 red, 1 green, 2 blue) the photosite at `row`, `col` of the whole sensor
+    /// sees.
     #[inline]
-    fn color(&self, row: usize, col: usize) -> usize {
+    pub fn color(&self, row: usize, col: usize) -> usize {
         self.cfa[((row & 1) << 1) | (col & 1)]
+    }
+
+    /// A photosite of the active area from black (0) to white (1), without white balance.
+    #[inline]
+    pub fn level(&self, row: usize, col: usize) -> f32 {
+        let (rr, cc) = (self.top + row, self.left + col);
+        let c = self.color(rr, cc);
+        let black = self.info.black[c];
+        ((self.data[rr * self.raw_width + cc] as i32 - black) as f32 / (self.info.white - black).max(1) as f32).clamp(0.0, 1.0)
     }
 
     /// Black subtraction and as-shot white balance in one multiply per photosite.

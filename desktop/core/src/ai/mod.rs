@@ -8,6 +8,7 @@
 
 pub mod catalog;
 
+pub mod denoise;
 pub mod depth;
 
 pub mod objects;

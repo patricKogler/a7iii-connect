@@ -189,6 +189,8 @@ data class Settings(
      * as written, so editing here keeps them. They come after [masks].
      */
     val otherMasks: List<String> = emptyList(),
+    /** Values from the computer this editor doesn't know (AI denoise), kept as written. */
+    val otherValues: Map<String, String> = emptyMap(),
 ) {
     operator fun get(p: Param): Float = values[p.key] ?: p.default
     fun on(p: Param) = get(p) >= 0.5f
@@ -254,6 +256,7 @@ data class Settings(
         curves.forEachIndexed { i, c -> if (!c.isIdentity) append("curve.$i=${c.encode()}\n") }
         masks.forEachIndexed { i, m -> append("mask.$i=${m.encode()}\n") }
         otherMasks.forEachIndexed { i, m -> append("mask.${masks.size + i}=$m\n") }
+        for ((k, v) in otherValues.toSortedMap()) append("$k=$v\n")
     }
 
     companion object {
@@ -264,6 +267,7 @@ data class Settings(
             val curves = MutableList(4) { Curve() }
             val masks = sortedMapOf<Int, Mask>()
             val others = sortedMapOf<Int, String>()
+            val otherValues = HashMap<String, String>()
             for (line in text.lineSequence()) {
                 val i = line.indexOf('=')
                 if (i <= 0) continue
@@ -278,13 +282,17 @@ data class Settings(
                         if (m != null) masks[i] = m else if (v.isNotEmpty()) others[i] = v
                     }
                     else -> {
-                        val p = P.byKey[k] ?: continue
+                        val p = P.byKey[k]
+                        if (p == null) {
+                            if (k != "v") otherValues[k] = v
+                            continue
+                        }
                         val f = v.toFloatOrNull() ?: continue
                         if (f != p.default) values[k] = f
                     }
                 }
             }
-            return Settings(values, profile, curves, masks.values.toList(), lut, others.values.toList())
+            return Settings(values, profile, curves, masks.values.toList(), lut, others.values.toList(), otherValues)
         }
     }
 }
