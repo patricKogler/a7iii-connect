@@ -17,6 +17,7 @@ mod render;
 mod state;
 mod theme;
 mod viewer;
+mod wheel;
 mod widgets;
 
 fn main() -> eframe::Result {
