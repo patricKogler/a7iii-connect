@@ -185,6 +185,17 @@ object People {
         return Remembered(people, known.next)
     }
 
+    /** What's remembered, as people.txt holds it: sent to the computer to put together with its own. */
+    fun text(context: Context): String = synchronized(this) { encode(load(context)) }
+
+    /** Takes the people the computer put together ([text] merged with its own); true when that changed anything. */
+    fun takeFromComputer(context: Context, text: String): Boolean = synchronized(this) {
+        val now = decode(text)
+        if (encode(now) == encode(load(context))) return false
+        write(context, now)
+        true
+    }
+
     /** Names [seen] [name] in what's remembered (call off the main thread). */
     fun name(context: Context, seen: List<Person>, name: String) {
         synchronized(this) { write(context, rename(load(context), seen, name)) }

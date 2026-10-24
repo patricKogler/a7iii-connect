@@ -36,6 +36,9 @@ pub struct App {
     pub looks: crate::looks::Looks,
     pub phone_sync: PhoneSync,
     pub cull: crate::cull::Cull,
+    pub insights: crate::insights::Insights,
+    /// Person being named: their id and the text so far.
+    pub naming_person: Option<(String, String)>,
     wheel: crate::wheel::Wheel,
     wheel_wake: Option<f64>,
 }
@@ -54,6 +57,8 @@ impl App {
         let mut app = App {
             looks: crate::looks::Looks::new(&cc.egui_ctx, &root),
             cull: crate::cull::Cull::new(),
+            insights: crate::insights::Insights::new(&cc.egui_ctx, &root),
+            naming_person: None,
             wheel: Default::default(),
             wheel_wake: None,
             editor,
@@ -101,6 +106,7 @@ impl App {
         self.selected = None;
         self.filter = Filter::All;
         self.cull.reset();
+        self.insights.set_root(&self.library.root.clone());
         if self.ftp.server.is_some() {
             self.start_ftp(ctx);
         }
@@ -275,7 +281,7 @@ impl App {
     }
 
     fn keys(&mut self, ctx: &egui::Context) {
-        if ctx.wants_keyboard_input() || self.naming.is_some() || self.view == View::Cull {
+        if ctx.wants_keyboard_input() || self.naming.is_some() || self.naming_person.is_some() || self.view == View::Cull {
             return;
         }
         let visible = self.visible();
@@ -332,12 +338,18 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(after));
         }
         self.images.poll(ctx);
-        if self.library.poll() && self.selected.is_none() {
+        let rescanned = self.library.poll();
+        if rescanned && self.selected.is_none() {
             self.selected = self.library.shots.first().map(|s| s.key());
         }
         if self.phone_sync.shared.changed.swap(false, Ordering::Relaxed) {
             self.library.reload_files();
             self.editor.reload();
+            self.insights.reload_people();
+        }
+        let grouped = self.insights.follow(&self.library.shots, rescanned);
+        if grouped || rescanned {
+            self.library.people = self.insights.shots_by_person();
         }
         if self.phone_sync.shared.phones_changed.swap(false, Ordering::Relaxed) {
             self.settings.phones = self.phone_sync.shared.phones.lock().unwrap().clone();
@@ -386,6 +398,7 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.editor.close();
         self.cull.reset();
+        self.insights.stop();
         self.phone_sync.stop();
         self.importer.cancel();
         self.ftp.stop();

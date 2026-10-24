@@ -11,6 +11,7 @@ import dev.kogler.a7iiiconnect.develop.Library
 import dev.kogler.a7iiiconnect.develop.LibraryPhoto
 import dev.kogler.a7iiiconnect.develop.LutLibrary
 import dev.kogler.a7iiiconnect.develop.Mark
+import dev.kogler.a7iiiconnect.develop.People
 import dev.kogler.a7iiiconnect.develop.engine.Settings
 import dev.kogler.a7iiiconnect.duo.saveToLibrary
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -188,6 +189,13 @@ object ComputerSync {
         if (together != mine) {
             albumStore.save(together)
             changed = true
+        }
+
+        // Who's who: names given on either side show on both, when the computer's app has people.
+        if (state.optBoolean("people")) {
+            say("Putting people together")
+            val merged = client.text("POST", "/v1/people", People.text(app))
+            if (People.takeFromComputer(app, merged)) changed = true
         }
 
         // Presets and LUTs, when the computer's app is new enough to have them.

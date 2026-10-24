@@ -11,6 +11,7 @@ mod editor;
 mod gpu;
 mod images;
 mod import_view;
+mod insights;
 mod library_view;
 mod looks;
 mod mask_view;

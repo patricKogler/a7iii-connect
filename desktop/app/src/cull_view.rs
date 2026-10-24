@@ -21,7 +21,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         start(app, ctx);
     }
     app.cull.poll();
-    app.cull.follow(&mut app.library);
+    app.cull.follow(&mut app.library, &app.insights);
     app.cull.hover = None;
     egui::CentralPanel::default().frame(Frame::none().fill(p.stage).inner_margin(Margin::symmetric(24.0, 14.0))).show(ctx, |ui| {
         header(app, ui);
@@ -101,12 +101,11 @@ fn header(app: &mut App, ui: &mut Ui) {
                 if app.cull.pos < deck.len() {
                     ui.label(RichText::new(format!("{} of {}", app.cull.pos + 1, deck.len())).color(Color32::from_gray(170)));
                 }
-                let shots: Vec<String> = deck.iter().flatten().map(|s| s.key()).collect();
-                let known = shots.iter().filter(|k| app.cull.insights.contains_key(*k)).count();
-                if let Some(e) = &app.cull.faces_error {
+                let (known, all) = app.insights.count(deck.iter().flatten().map(|s| s.key()));
+                if let Some(e) = app.insights.faces_error() {
                     ui.label(RichText::new("Faces not looked at").size(12.0).color(p.accent)).on_hover_text(e);
-                } else if known < shots.len() {
-                    ui.label(RichText::new(format!("Looking at faces and focus: {known} of {}", shots.len())).size(12.0).color(Color32::from_gray(140)));
+                } else if known < all {
+                    ui.label(RichText::new(format!("Looking at faces and focus: {known} of {all}")).size(12.0).color(Color32::from_gray(140)));
                 }
             }
         });
@@ -270,7 +269,7 @@ fn card(app: &mut App, ui: &mut Ui, stage: Rect, shot: &Shot) {
             widgets::paint_badge(ui, ui.painter(), r.left_top() + Vec2::new(10.0, 10.0), t, Align2::LEFT_TOP, false);
         }
         zoom_badge(app, ui, r);
-        let notes = app.cull.notes(shot, &[]);
+        let notes = notes(app, shot, &[]);
         info(ui, Rect::from_min_size(Pos2::new(r.left(), r.bottom() + 8.0), Vec2::new(r.width(), INFO_H - 8.0)), shot, &notes);
     }
 }
@@ -305,10 +304,17 @@ fn contest(app: &mut App, ui: &mut Ui, stage: Rect, stack: &[Shot]) {
             }
             widgets::paint_badge(ui, ui.painter(), r.left_top() + Vec2::new(10.0, 10.0), if i == 0 { "←  Best so far" } else { "→" }, Align2::LEFT_TOP, false);
             zoom_badge(app, ui, r);
-            let notes = app.cull.notes(shot, stack);
+            let notes = notes(app, shot, stack);
             info(ui, Rect::from_min_size(Pos2::new(r.left(), r.bottom() + 8.0), Vec2::new(r.width(), INFO_H - 8.0)), shot, &notes);
         }
     }
+}
+
+/// Short notes on a shot: "Eyes closed", and in a stack "Sharpest" or "Softer".
+fn notes(app: &App, shot: &Shot, stack: &[Shot]) -> Vec<String> {
+    let known = &app.insights.known;
+    let others: Vec<_> = stack.iter().filter(|s| s.key() != shot.key()).map(|s| known.get(&s.key())).collect();
+    shootback_core::cull::best::notes(known.get(&shot.key()), &others)
 }
 
 fn choose(app: &mut App, best_wins: bool) {

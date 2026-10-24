@@ -12,5 +12,6 @@ pub mod import;
 pub mod library;
 pub mod marks;
 pub mod meta;
+pub mod people;
 pub mod sync;
 pub mod tiff;
