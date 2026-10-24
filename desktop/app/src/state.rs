@@ -41,9 +41,25 @@ impl Default for Settings {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeChoice {
+    /// Washi or sumi, following the system.
     System,
     Washi,
     Sumi,
+    Graphite,
+    Hairline,
+    Daylight,
+    SealDark,
+    Mono,
+    Amber,
+    Swiss,
+    Bauhaus,
+    Industrial,
+    Nordic,
+    Material,
+    Deco,
+    Neo,
+    Raw,
+    Pixel,
 }
 
 pub fn new_id() -> String {

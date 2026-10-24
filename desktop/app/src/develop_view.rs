@@ -2,7 +2,7 @@
 //! Optics, Geometry and Crop, plus the masks made on the phone.
 
 use crate::editor::Editor;
-use crate::theme::{mincho, palette};
+use crate::theme::{display, palette};
 use crate::widgets::{chip, hint, outline_button, DevelopSlider};
 use eframe::egui::{self, collapsing_header::CollapsingState, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use shootback_core::develop::look::{hsv_to_rgb, Source};
@@ -34,7 +34,11 @@ fn section(ui: &mut Ui, title: &str, s: &mut Settings, group: Option<Group>, ope
     let changed = group.is_some_and(|g| !s.is_default_group(g));
     let header = state.show_header(ui, |ui| {
         let mut job = egui::text::LayoutJob::default();
-        job.append(title, 0.0, egui::TextFormat { font_id: FontId::new(14.5, mincho()), color: pal.strong, extra_letter_spacing: 0.8, ..Default::default() });
+        job.append(
+            title,
+            0.0,
+            egui::TextFormat { font_id: FontId::new(14.5, display()), color: pal.strong, extra_letter_spacing: 0.8 * pal.tracking, ..Default::default() },
+        );
         if changed {
             job.append(
                 "  ●",

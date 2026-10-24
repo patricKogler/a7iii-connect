@@ -5,7 +5,7 @@ use crate::images::Images;
 use crate::state::{self, Filter, FtpInbox, Importer, Library, PhoneSync, Settings, ThemeChoice};
 use crate::theme::{self, palette};
 use crate::widgets::{self, status_pill, tab};
-use eframe::egui::{self, Frame, Key, Margin, RichText, Stroke, ThemePreference};
+use eframe::egui::{self, Frame, Key, Margin, RichText, Stroke};
 use std::sync::atomic::Ordering;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,11 +70,7 @@ impl App {
     }
 
     pub fn apply_theme(&self, ctx: &egui::Context) {
-        ctx.set_theme(match self.settings.theme {
-            ThemeChoice::System => ThemePreference::System,
-            ThemeChoice::Washi => ThemePreference::Light,
-            ThemeChoice::Sumi => ThemePreference::Dark,
-        });
+        theme::apply(ctx, self.settings.theme);
     }
 
     pub fn start_ftp(&mut self, ctx: &egui::Context) {
@@ -127,11 +123,48 @@ impl App {
         self.selected = Some(self.library.shots[visible[at]].key());
     }
 
+    /// The themes, in their groups, each with a swatch of its paper, ink and main colour.
+    fn theme_menu(&mut self, ui: &mut egui::Ui) {
+        ui.set_min_width(220.0);
+        let mut pick = |ui: &mut egui::Ui, choice: ThemeChoice, label: &str, swatch: Option<theme::Palette>| {
+            let chosen = self.settings.theme == choice;
+            let resp = ui
+                .horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(36.0, 16.0), egui::Sense::hover());
+                    if let Some(s) = swatch {
+                        let third = rect.width() / 3.0;
+                        for (i, c) in [s.bg, s.text, s.seal].into_iter().enumerate() {
+                            let r = egui::Rect::from_min_size(rect.min + egui::vec2(third * i as f32, 0.0), egui::vec2(third, rect.height()));
+                            ui.painter().rect_filled(r, 0.0, c);
+                        }
+                        ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0_f32, palette(ui.ctx()).border));
+                    }
+                    ui.radio(chosen, label)
+                })
+                .inner;
+            if resp.clicked() {
+                self.settings.theme = choice;
+                theme::apply(ui.ctx(), choice);
+                ui.close_menu();
+            }
+        };
+        pick(ui, ThemeChoice::System, "Follow the system (washi or sumi)", None);
+        let mut group = "";
+        for t in &theme::THEMES {
+            if t.group != group {
+                group = t.group;
+                ui.separator();
+                ui.label(RichText::new(group).size(11.5).color(palette(ui.ctx()).text3));
+            }
+            pick(ui, t.choice, t.name, Some(t.palette));
+        }
+    }
+
     fn top_bar(&mut self, ctx: &egui::Context) {
         let p = palette(ctx);
         egui::TopBottomPanel::top("top")
             .exact_height(52.0)
-            .frame(Frame::none().fill(p.bg).inner_margin(Margin::symmetric(16.0, 0.0)).stroke(Stroke::new(1.0_f32, p.border)))
+            .frame(Frame::none().fill(p.bg).inner_margin(Margin::symmetric(16.0, 0.0)).stroke(Stroke::new(p.line, p.border)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
@@ -142,9 +175,9 @@ impl App {
                         "Shootback",
                         0.0,
                         egui::TextFormat {
-                            font_id: egui::FontId::new(18.0, theme::mincho()),
+                            font_id: egui::FontId::new(18.0, theme::display()),
                             color: p.strong,
-                            extra_letter_spacing: 1.4,
+                            extra_letter_spacing: 1.4 * p.tracking,
                             ..Default::default()
                         },
                     );
@@ -157,21 +190,10 @@ impl App {
                     }
                     widgets::right_to_left(ui, |ui| {
                         let theme_label = match self.settings.theme {
-                            ThemeChoice::System => "Theme: system",
-                            ThemeChoice::Washi => "Theme: washi",
-                            ThemeChoice::Sumi => "Theme: sumi",
+                            ThemeChoice::System => "Theme: system".to_string(),
+                            c => format!("Theme: {}", theme::find(c).map_or("", |t| t.name).to_lowercase()),
                         };
-                        ui.menu_button(RichText::new(theme_label).color(p.text2), |ui| {
-                            for (c, label) in
-                                [(ThemeChoice::System, "Follow the system"), (ThemeChoice::Washi, "Washi (light)"), (ThemeChoice::Sumi, "Sumi (dark)")]
-                            {
-                                if ui.radio(self.settings.theme == c, label).clicked() {
-                                    self.settings.theme = c;
-                                    self.apply_theme(ui.ctx());
-                                    ui.close_menu();
-                                }
-                            }
-                        });
+                        ui.menu_button(RichText::new(theme_label).color(p.text2), |ui| self.theme_menu(ui));
                         ui.add_space(8.0);
                         let status = self.importer.status.lock().unwrap().clone();
                         let (dot, text, strong) = if status.running == Some(state::Source::Camera) {
@@ -203,7 +225,7 @@ impl App {
         let p = palette(ctx);
         egui::TopBottomPanel::bottom("footer")
             .exact_height(28.0)
-            .frame(Frame::none().fill(p.bg).inner_margin(Margin::symmetric(16.0, 0.0)).stroke(Stroke::new(1.0_f32, p.border)))
+            .frame(Frame::none().fill(p.bg).inner_margin(Margin::symmetric(16.0, 0.0)).stroke(Stroke::new(p.line, p.border)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     let small = |t: String| RichText::new(t).size(11.5).color(p.text3);
@@ -231,7 +253,7 @@ impl App {
             egui::TopBottomPanel::bottom("log")
                 .resizable(true)
                 .default_height(180.0)
-                .frame(Frame::none().fill(p.panel).inner_margin(Margin::same(12.0)).stroke(Stroke::new(1.0_f32, p.border)))
+                .frame(Frame::none().fill(p.panel).inner_margin(Margin::same(12.0)).stroke(Stroke::new(p.line, p.border)))
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink(false).show(ui, |ui| {
                         for line in self.importer.log.lock().unwrap().iter() {
@@ -314,6 +336,12 @@ impl eframe::App for App {
         }
         if self.library.scanning() || self.importer.running().is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        if self.settings.theme == ThemeChoice::System {
+            let want = if ctx.system_theme() == Some(egui::Theme::Dark) { ThemeChoice::Sumi } else { ThemeChoice::Washi };
+            if theme::current().choice != want {
+                theme::apply(ctx, want);
+            }
         }
         self.keys(ctx);
         crate::viewer::keys(self, ctx);

@@ -18,7 +18,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             hint(ui, "Pair Shootback on your phone with this computer. On the same Wi-Fi, the phone then syncs photos, picks and rejects, albums and edits both ways.");
             ui.add_space(22.0);
             let card = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
-                Frame::none().fill(p.panel).stroke(Stroke::new(1.0_f32, p.border)).rounding(2.0).inner_margin(Margin::same(18.0)).show(ui, |ui| {
+                Frame::none().fill(p.panel).stroke(Stroke::new(p.line, p.border)).rounding(p.radius).shadow(p.hard_shadow()).inner_margin(Margin::same(18.0)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     add(ui);
                 });

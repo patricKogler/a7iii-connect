@@ -4,7 +4,7 @@
 use crate::app::{App, View};
 use crate::images::THUMB;
 use crate::state::Filter;
-use crate::theme::{mincho, palette};
+use crate::theme::{display, palette};
 use crate::widgets::{self, chip, fact, nav_row, outline_button, paint_badge, paint_seal, seal_button, section_label};
 use chrono::{Local, TimeZone};
 use eframe::egui::{self, Align2, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
@@ -15,12 +15,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     egui::SidePanel::left("sources")
         .exact_width(232.0)
         .resizable(false)
-        .frame(Frame::none().fill(p.panel).inner_margin(Margin::symmetric(10.0, 16.0)).stroke(Stroke::new(1.0_f32, p.border)))
+        .frame(Frame::none().fill(p.panel).inner_margin(Margin::symmetric(10.0, 16.0)).stroke(Stroke::new(p.line, p.border)))
         .show(ctx, |ui| sidebar(app, ui));
     egui::SidePanel::right("details")
         .exact_width(300.0)
         .resizable(false)
-        .frame(Frame::none().fill(p.panel).inner_margin(Margin::same(16.0)).stroke(Stroke::new(1.0_f32, p.border)))
+        .frame(Frame::none().fill(p.panel).inner_margin(Margin::same(16.0)).stroke(Stroke::new(p.line, p.border)))
         .show(ctx, |ui| details(app, ui));
     egui::CentralPanel::default().frame(Frame::none().fill(p.bg)).show(ctx, |ui| grid(app, ui));
 }
@@ -238,7 +238,7 @@ fn grid(app: &mut App, ui: &mut Ui) {
                 let top = origin.y + y;
                 match row {
                     Row::Day(text) => {
-                        ui.painter().text(Pos2::new(origin.x, top + 22.0), Align2::LEFT_BOTTOM, text, FontId::new(14.0, mincho()), p.text2);
+                        ui.painter().text(Pos2::new(origin.x, top + 22.0), Align2::LEFT_BOTTOM, text, FontId::new(14.0, display()), p.text2);
                     }
                     Row::Tiles(items) => {
                         for (c, &idx) in items.iter().enumerate() {
@@ -262,7 +262,7 @@ fn tile_ui(app: &mut App, ui: &mut Ui, idx: usize, rect: Rect, label_h: f32) {
     let resp = ui.interact(full, ui.id().with(("tile", &key)), Sense::click());
     let painter = ui.painter_at(full.expand(4.0));
     let show = shot.display();
-    painter.rect_filled(rect, 1.0, p.selected);
+    painter.rect_filled(rect, p.tile_radius, p.selected);
     if let Some(tex) = app.images.get(&show.path, THUMB, show.orientation) {
         // Fill the 3:2 cell, cropping what doesn't fit.
         let [w, h] = tex.size().map(|v| v as f32);
@@ -270,13 +270,16 @@ fn tile_ui(app: &mut App, ui: &mut Ui, idx: usize, rect: Rect, label_h: f32) {
         let scale = (cw / w).max(ch / h);
         let (uw, uh) = (cw / (w * scale), ch / (h * scale));
         let uv = Rect::from_min_size(egui::pos2((1.0 - uw) / 2.0, (1.0 - uh) / 2.0), Vec2::new(uw, uh));
-        painter.image(tex.id(), rect, uv, egui::Color32::WHITE);
+        let mut img = egui::epaint::RectShape::filled(rect, p.tile_radius, egui::Color32::WHITE);
+        img.fill_texture_id = tex.id();
+        img.uv = uv;
+        painter.add(img);
     } else if app.images.failed(&show.path, THUMB) {
         painter.text(rect.center(), Align2::CENTER_CENTER, "No preview", FontId::proportional(11.5), p.text3);
     }
     let mark = app.library.mark(&shot);
     if mark == Some(Mark::Reject) {
-        painter.rect_filled(rect, 1.0, p.bg.gamma_multiply(0.45));
+        painter.rect_filled(rect, p.tile_radius, p.bg.gamma_multiply(0.45));
     }
     let kind = match (&shot.raw, &shot.jpeg) {
         (Some(_), Some(_)) => "RAW + JPEG",
@@ -294,9 +297,9 @@ fn tile_ui(app: &mut App, ui: &mut Ui, idx: usize, rect: Rect, label_h: f32) {
     }
     let selected = app.selected.as_deref() == Some(key.as_str());
     if selected {
-        painter.rect_stroke(rect.expand(2.0), 1.0, Stroke::new(2.0_f32, p.accent));
+        painter.rect_stroke(rect.expand(2.0), p.tile_radius + 2.0, Stroke::new(2.0_f32, p.accent));
     } else if resp.hovered() {
-        painter.rect_stroke(rect.expand(1.0), 1.0, Stroke::new(1.0_f32, p.control));
+        painter.rect_stroke(rect.expand(1.0), p.tile_radius + 1.0, Stroke::new(p.line, p.control));
     }
     let name = shot.primary().stem().to_string();
     let time = Local.timestamp_millis_opt(shot.taken_millis()).single().map_or(String::new(), |t| t.format("%H:%M").to_string());
@@ -392,7 +395,7 @@ pub fn details(app: &mut App, ui: &mut Ui) {
         });
         ui.add_space(14.0);
         let meta = app.library.meta(shot.primary()).clone();
-        Frame::none().stroke(Stroke::new(1.0_f32, p.border)).inner_margin(Margin::same(12.0)).show(ui, |ui| {
+        Frame::none().stroke(Stroke::new(p.line, p.border)).rounding(p.radius).inner_margin(Margin::same(12.0)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             egui::Grid::new("facts").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
                 fact(ui, "Shutter", meta.shutter.as_deref().unwrap_or("–"));
