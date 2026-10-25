@@ -102,6 +102,25 @@ class Tiff(val src: ByteSource, val little: Boolean, private val base: Long = 0)
         }
     }
 
+    /** Numeric values of any entry: integers, (signed) rationals and floats alike. */
+    fun doubles(e: Entry): DoubleArray {
+        if (e.type !in setOf(5, 10, 11, 12)) return ints(e).let { v -> DoubleArray(v.size) { v[it].toDouble() } }
+        val b = bytes(e)
+        fun ratio(n: Double, d: Double) = if (d == 0.0) 0.0 else n / d
+        return DoubleArray(e.count) { i ->
+            when (e.type) {
+                5 -> ratio(u32(b, i * 8).toDouble(), u32(b, i * 8 + 4).toDouble())
+                10 -> ratio(u32(b, i * 8).toInt().toDouble(), u32(b, i * 8 + 4).toInt().toDouble())
+                11 -> java.lang.Float.intBitsToFloat(u32(b, i * 4).toInt()).toDouble()
+                else -> {
+                    val lo = if (little) u32(b, i * 8) else u32(b, i * 8 + 4)
+                    val hi = if (little) u32(b, i * 8 + 4) else u32(b, i * 8)
+                    java.lang.Double.longBitsToDouble((hi shl 32) or lo)
+                }
+            }
+        }
+    }
+
     fun int(ifd: Ifd, tag: Int): Long? = ifd[tag]?.let { ints(it).firstOrNull() }
 
     fun string(ifd: Ifd, tag: Int): String? =

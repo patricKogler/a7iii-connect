@@ -20,11 +20,16 @@ data class LibraryPhoto(
     val takenMillis: Long,
     val source: Source = Source.CAMERA,
 ) {
-    val isRaw: Boolean
-        get() = mime.contains("arw", ignoreCase = true) || name.endsWith(".arw", ignoreCase = true)
+    val isRaw: Boolean get() = ShotNames.isRaw(name, mime)
+
+    /** A DNG, as phones save their raws. */
+    val isDng: Boolean get() = name.endsWith(".dng", ignoreCase = true) || mime.contains("dng", ignoreCase = true)
 
     /** File name without extension: DSC01234 for both DSC01234.ARW and DSC01234.JPG. */
     val stem: String get() = name.substringBeforeLast('.')
+
+    /** What the RAW and the JPEG of one shot share, lower case: see [ShotNames.stem]. */
+    val pairStem: String get() = ShotNames.stem(name)
 
     /**
      * Stable identity for edits and flags: file name plus capture time. Unlike the MediaStore id it
@@ -81,9 +86,7 @@ object Library {
                 while (c.moveToNext()) {
                     val n = c.getString(name) ?: ""
                     val m = c.getString(mime) ?: ""
-                    if (!(m.startsWith("image/jpeg") || m.contains("arw") || n.endsWith(".arw", true) ||
-                            n.endsWith(".jpg", true) || n.endsWith(".jpeg", true))
-                    ) continue
+                    if (!ShotNames.isPhoto(n, m)) continue
                     val t = if (c.isNull(taken) || c.getLong(taken) == 0L) c.getLong(added) * 1000 else c.getLong(taken)
                     val dir = c.getString(folder) ?: ""
                     val source = when {
@@ -113,7 +116,7 @@ object Library {
      */
     fun shots(photos: List<LibraryPhoto>): List<Shot> {
         val out = mutableListOf<Shot>()
-        for ((_, same) in photos.groupBy { it.stem.lowercase() }) {
+        for ((_, same) in photos.groupBy { it.pairStem }) {
             val jpegs = same.filter { !it.isRaw }.toMutableList()
             for (raw in same.filter { it.isRaw }) {
                 val twin = jpegs.filter { abs(it.takenMillis - raw.takenMillis) <= Albums.MATCH_WINDOW_MS }

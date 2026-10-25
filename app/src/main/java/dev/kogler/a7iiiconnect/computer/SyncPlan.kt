@@ -1,14 +1,15 @@
 package dev.kogler.a7iiiconnect.computer
 
 import dev.kogler.a7iiiconnect.develop.Albums
+import dev.kogler.a7iiiconnect.develop.ShotNames
 import java.security.MessageDigest
 import kotlin.math.abs
 
 /** A photo file on one side, as the sync sees it: [key] is the side's own name for it. */
 data class SyncFile(val name: String, val taken: Long) {
     val key: String get() = "$name@$taken"
-    val isRaw: Boolean get() = name.endsWith(".arw", ignoreCase = true)
-    val stem: String get() = name.substringBeforeLast('.').replace(COPY_SUFFIX, "").lowercase()
+    val isRaw: Boolean get() = ShotNames.isRaw(name)
+    val stem: String get() = ShotNames.stem(name)
 }
 
 /** An edit as stored on one side: the text in the phone's format (empty when there is none) and when it changed. */
@@ -224,6 +225,3 @@ object SyncPlan {
     fun hash(text: String): String =
         MessageDigest.getInstance("SHA-1").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
 }
-
-/** What MediaStore adds to a name already taken: "DSC01234 (1).JPG". */
-private val COPY_SUFFIX = Regex(" \\(\\d+\\)$")
