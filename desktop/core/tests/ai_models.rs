@@ -138,8 +138,12 @@ fn faces_are_found_and_told_apart() {
     let g = ai::faces::find(&small).unwrap().remove(0);
     let b = ai::faces::embed(&small, &g).unwrap();
     let cos: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
-    assert_eq!(a.len(), 128);
+    assert_eq!(a.len(), 512);
     assert!(cos > 0.8, "same face {cos}");
+    // And the look the phone knows people by.
+    let (pa, pb) = (ai::faces::embed_phone(&px, f).unwrap(), ai::faces::embed_phone(&small, &g).unwrap());
+    assert_eq!(pa.len(), 128);
+    assert!(pa.iter().zip(&pb).map(|(x, y)| x * y).sum::<f32>() > 0.8);
     assert!(ai::faces::find(&photo(&dir, "truck.jpg", 1024)).unwrap().is_empty());
 }
 

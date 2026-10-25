@@ -217,6 +217,9 @@ pub struct FaceInfo {
     pub sharp: f32,
     /// Who it is, as a unit vector; None for faces too small or too turned.
     pub embedding: Option<Vec<f32>>,
+    /// Who it is as the phone sees faces (its own model's vector), so the computer's people can
+    /// be told to the phone; only the computer has both.
+    pub phone: Option<Vec<f32>>,
 }
 
 impl FaceInfo {
@@ -234,14 +237,22 @@ pub struct Insight {
     pub labels: Vec<String>,
     pub text: String,
     pub version: i64,
+    /// Which face models looked (`FACE_MODEL` on the computer, 0 for the phone's); looked at again
+    /// when they change.
+    pub model: i64,
 }
 
 impl Insight {
     /// The phone's ShotInsight.VERSION.
     pub const VERSION: i64 = 1;
+    /// The computer's face models: SCRFD and ArcFace (before, the phone's YuNet and SFace).
+    pub const FACE_MODEL: i64 = 2;
 
     pub fn encode(&self) -> String {
         let mut o = json!({ "v": self.version, "s": self.sharp as f64 });
+        if self.model != 0 {
+            o["fm"] = json!(self.model);
+        }
         if !self.labels.is_empty() {
             o["l"] = json!(self.labels);
         }
@@ -262,6 +273,9 @@ impl Insight {
                         }
                         if let Some(e) = &f.embedding {
                             v["id"] = json!(pack_embedding(e));
+                        }
+                        if let Some(e) = &f.phone {
+                            v["sf"] = json!(pack_embedding(e));
                         }
                         v
                     })
@@ -287,6 +301,7 @@ impl Insight {
                             smile: f.get("m").and_then(num),
                             sharp: f.get("s").and_then(num).unwrap_or(0.0),
                             embedding: f.get("id").and_then(|v| v.as_str()).and_then(unpack_embedding),
+                            phone: f.get("sf").and_then(|v| v.as_str()).and_then(unpack_embedding),
                         })
                     })
                     .collect()
@@ -299,6 +314,7 @@ impl Insight {
             labels,
             text: o.get("t").and_then(|t| t.as_str()).unwrap_or_default().to_string(),
             version: o.get("v").and_then(|v| v.as_i64()).unwrap_or(0),
+            model: o.get("fm").and_then(|v| v.as_i64()).unwrap_or(0),
         })
     }
 }
@@ -597,7 +613,13 @@ mod tests {
         let e = i.faces[0].embedding.as_ref().unwrap();
         assert_eq!(e.len(), 3);
         assert!((e.iter().map(|v| v * v).sum::<f32>() - 1.0).abs() < 1e-4);
+        assert_eq!(i.model, 0);
         assert_eq!(Insight::decode(&i.encode()).unwrap().faces[0].b, i.faces[0].b);
+        let mut mine = i.clone();
+        mine.model = Insight::FACE_MODEL;
+        mine.faces[0].phone = mine.faces[0].embedding.clone();
+        let back = Insight::decode(&mine.encode()).unwrap();
+        assert_eq!((back.model, back.faces[0].phone.is_some()), (Insight::FACE_MODEL, true));
         assert_eq!(best::blinks(Some(&i)), 1);
     }
 
