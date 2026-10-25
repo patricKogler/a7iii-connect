@@ -1,9 +1,11 @@
 package dev.kogler.a7iiiconnect.computer
 
 import android.content.Context
+import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.PowerManager
 import android.provider.OpenableColumns
+import android.util.Log
 import dev.kogler.a7iiiconnect.develop.AlbumStore
 import dev.kogler.a7iiiconnect.develop.Albums
 import dev.kogler.a7iiiconnect.develop.EditStore
@@ -41,6 +43,9 @@ object ComputerSync {
     @Volatile private var thread: Thread? = null
     @Volatile private var lastStart = 0L
 
+    /** Whether a sync is running now. */
+    val running: Boolean get() = thread?.isAlive == true
+
     /** Syncs now unless a sync is running. */
     fun start(context: Context) {
         val app = context.applicationContext
@@ -50,6 +55,10 @@ object ComputerSync {
             lastStart = System.currentTimeMillis()
             thread = Thread({ run(app) }, "computer-sync").apply { start() }
         }
+        // Keeps it going with the screen off; if Android won't allow that right now, it still
+        // runs while the app is in front.
+        runCatching { app.startForegroundService(Intent(app, ComputerSyncService::class.java)) }
+            .onFailure { Log.w(TAG, "Couldn't start the sync service", it) }
     }
 
     /** Syncs when Photos opens, unless it did a moment ago or that's turned off. */
@@ -66,6 +75,7 @@ object ComputerSync {
     }
 
     private fun say(text: String) {
+        Log.i(TAG, text)
         _status.value = _status.value.copy(running = true, text = text, error = null)
     }
 
@@ -90,6 +100,7 @@ object ComputerSync {
                 e is IOException -> "Couldn't reach ${prefs.computer?.name ?: "the computer"}. Is Shootback open on it, on the same Wi-Fi?"
                 else -> e.message ?: e.toString()
             }
+            Log.w(TAG, "Sync failed", e)
             _status.value = ComputerStatus(error = message, landed = _status.value.landed + if (changed) 1 else 0)
         } finally {
             runCatching { wifi.release() }
@@ -256,6 +267,8 @@ object ComputerSync {
         val changed = (plan.download - failed).isNotEmpty() || plan.deleteHere.isNotEmpty()
         return changed to (plan.agreed - failed)
     }
+
+    private const val TAG = "ComputerSync"
 
     private val LibraryPhoto.file get() = SyncFile(name, takenMillis)
 
