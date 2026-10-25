@@ -307,7 +307,15 @@ pub mod gmic {
     }
 
     pub fn parse(json: &str) -> Vec<Item> {
-        let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(json) else { return Vec::new() };
+        // The index is {"filmLUTs": [...]}; a bare list is taken too.
+        let items = match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(serde_json::Value::Array(items)) => items,
+            Ok(serde_json::Value::Object(o)) => match o.get("filmLUTs").or_else(|| o.values().find(|v| v.is_array())) {
+                Some(serde_json::Value::Array(items)) => items.clone(),
+                _ => return Vec::new(),
+            },
+            _ => return Vec::new(),
+        };
         let mut seen = HashSet::new();
         items
             .iter()
@@ -468,6 +476,12 @@ mod tests {
         );
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "Kodak Portra 400 VC");
+        // The real index wraps the list in an object.
+        let wrapped = gmic::parse(
+            r#"{"filmLUTs":[{"name":"Kodak 2393 Cuspclip","lut_file":"luts/print/kodak_2393_cuspclip.cube","category":"Print","thumbnail":"thumbnails/print/kodak_2393_cuspclip.jpg"}]}"#,
+        );
+        assert_eq!(wrapped.len(), 1);
+        assert_eq!((wrapped[0].id.as_str(), wrapped[0].category.as_str()), ("gmic-print-kodak-2393-cuspclip", "Cinema print"));
         assert_eq!(items[0].category, "Negative");
         assert_eq!(items[0].thumbnail.as_deref(), Some("t/a.jpg"));
     }

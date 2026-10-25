@@ -41,7 +41,12 @@ fn sidebar(app: &mut App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             section_label(ui, "Albums");
             widgets::right_to_left(ui, |ui| {
-                if ui.add(egui::Label::new(RichText::new("+ New").color(p.accent)).sense(Sense::click())).on_hover_text("New album").clicked() {
+                if ui
+                    .add(egui::Label::new(RichText::new("+ New").color(p.accent)).selectable(false).sense(Sense::click()))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("New album")
+                    .clicked()
+                {
                     app.naming = Some((String::new(), String::new()));
                 }
             });
@@ -288,7 +293,15 @@ fn search_status(app: &mut App, ui: &mut Ui) {
                         ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
                     }
                     other => {
-                        if ui.add(egui::Label::new(RichText::new("Get the search model (600 MB)").size(12.0).color(p.accent)).sense(Sense::click())).clicked() {
+                        if ui
+                            .add(
+                                egui::Label::new(RichText::new("Get the search model (600 MB)").size(12.0).color(p.accent))
+                                    .selectable(false)
+                                    .sense(Sense::click()),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             app.finder.fetch_model();
                             ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
                         }
