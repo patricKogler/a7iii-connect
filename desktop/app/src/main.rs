@@ -43,6 +43,10 @@ fn main() -> eframe::Result {
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([960.0, 600.0])
             .with_icon(app::icon()),
+        // Not waiting for the screen to show each frame: NVIDIA's Vulkan on Wayland stops showing
+        // them while the screen is off or the window hidden, and a waiting app then hangs for
+        // good. Frames are only drawn when something changes, so this costs nothing.
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration { present_mode: eframe::wgpu::PresentMode::AutoNoVsync, ..Default::default() },
         ..Default::default()
     };
     eframe::run_native("Shootback", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
