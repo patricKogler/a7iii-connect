@@ -180,6 +180,10 @@ fn people(app: &mut App, ui: &mut Ui) {
         }
     }
     ui.add_space(4.0);
+    let (known, all) = app.insights.count(app.library.shots.iter().map(|s| s.key()));
+    if known < all {
+        ui.label(RichText::new(format!("Still looking for faces: {known} of {all} photos")).size(11.5).color(p.text3));
+    }
     ui.label(RichText::new("Right-click someone to name them. Names travel to and from the phone.").size(11.5).color(p.text3));
 }
 
