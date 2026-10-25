@@ -309,7 +309,7 @@ impl DenoiseStore {
         if bytes.len() != w * h * 6 {
             return None;
         }
-        Some(bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect())
+        Some(bytes.as_chunks::<2>().0.iter().map(|&b| u16::from_le_bytes(b)).collect())
     }
 
     pub fn save(&self, key: &str, width: usize, height: usize, full: &[u16]) -> std::io::Result<()> {

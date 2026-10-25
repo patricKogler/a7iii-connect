@@ -23,7 +23,7 @@ impl Rgb {
     }
 
     pub fn luminance(&self) -> Vec<f32> {
-        self.data.chunks_exact(3).map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).collect()
+        self.data.as_chunks::<3>().0.iter().map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).collect()
     }
 
     /// Bilinear resize; shrinking first averages boxes so detail doesn't alias.

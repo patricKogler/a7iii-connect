@@ -27,7 +27,7 @@ impl Look {
     pub fn of(rgb: &[u8]) -> Look {
         let s = Self::SIDE;
         assert_eq!(rgb.len(), s * s * 3);
-        let grey: Vec<u32> = rgb.chunks_exact(3).map(|c| c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114).collect();
+        let grey: Vec<u32> = rgb.as_chunks::<3>().0.iter().map(|c| c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114).collect();
         let mut edges = [0u64; 8];
         let mut bit = 0;
         let mut put = |on: bool| {
@@ -47,7 +47,7 @@ impl Look {
             }
         }
         let mut counts = [0u32; 64];
-        for c in rgb.chunks_exact(3) {
+        for c in rgb.as_chunks::<3>().0 {
             counts[(c[0] >> 6) as usize * 16 + (c[1] >> 6) as usize * 4 + (c[2] >> 6) as usize] += 1;
         }
         let n = (s * s) as u32;
