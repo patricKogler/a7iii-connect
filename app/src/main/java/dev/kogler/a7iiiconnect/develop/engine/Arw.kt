@@ -24,6 +24,8 @@ class RawInfo internal constructor(
     val linearization: IntArray? = null,
     /** How many stops a DNG asks the render to brighten by (phones underexpose to keep highlights). */
     val baselineExposure: Double = 0.0,
+    /** A DNG's base tone curve (ProfileToneCurve), as x, y pairs from 0 to 1. */
+    val toneCurve: FloatArray? = null,
 ) {
     /** How this camera's colours relate to XYZ. */
     val color: CameraColor get() = colorMatrix?.let { runCatching { CameraColor(it) }.getOrNull() } ?: CameraColor.forCamera(model)

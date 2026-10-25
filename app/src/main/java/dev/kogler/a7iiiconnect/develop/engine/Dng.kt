@@ -67,6 +67,8 @@ object Dng {
         // Phones underexpose to keep highlights and say by how much the render should lift.
         val baseline = find(TAG_BASELINE_EXPOSURE)?.let { tiff.doubles(it).firstOrNull() }?.takeIf { it.isFinite() } ?: 0.0
 
+        val toneCurve = find(TAG_PROFILE_TONE_CURVE)?.let { tiff.doubles(it) }
+            ?.takeIf { it.size >= 4 && it.size % 2 == 0 }?.let { v -> FloatArray(v.size) { v[it].toFloat() } }
         val gainMaps = find(TAG_OPCODE_LIST2)?.let { runCatching { opcodes(tiff.bytes(it)) }.getOrNull() }.orEmpty()
         val linearization = find(TAG_LINEARIZATION)?.let { e -> tiff.ints(e).map { it.toInt() }.toIntArray() }?.takeIf { it.size >= 2 }
 
@@ -81,6 +83,7 @@ object Dng {
             raw = raw,
             colorMatrix = colorMatrix,
             baselineExposure = baseline,
+            toneCurve = toneCurve,
             gainMaps = gainMaps,
             linearization = linearization,
         )
@@ -301,6 +304,7 @@ object Dng {
     private const val TAG_AS_SHOT_NEUTRAL = 0xc628
     private const val TAG_AS_SHOT_WHITE_XY = 0xc629
     private const val TAG_BASELINE_EXPOSURE = 0xc62a
+    private const val TAG_PROFILE_TONE_CURVE = 0xc6fc
     private const val TAG_ILLUMINANT1 = 0xc65a
     private const val TAG_ILLUMINANT2 = 0xc65b
     private const val TAG_ACTIVE_AREA = 0xc68d
