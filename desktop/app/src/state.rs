@@ -157,6 +157,16 @@ impl Library {
         match rx.try_recv() {
             Ok(photos) => {
                 self.shots = library::shots(&photos);
+                // A JPEG marked before its renamed RAW was found to be its twin: the shot keeps it.
+                for shot in &self.shots {
+                    if let (Some(raw), Some(jpeg)) = (&shot.raw, &shot.jpeg) {
+                        if raw.stem() != jpeg.stem() && self.marks.get(&raw.key()).is_none() {
+                            if let Some(m) = self.marks.get(&jpeg.key()) {
+                                let _ = self.marks.set(&raw.key(), Some(m));
+                            }
+                        }
+                    }
+                }
                 self.scan = None;
                 self.scanned_once = true;
                 true

@@ -77,6 +77,9 @@ impl Shot {
 }
 
 /// Pairs each RAW with the JPEG of the same name taken at (nearly) the same time; newest first.
+/// A RAW and a JPEG left alone that were taken in the same second, with no other RAW or JPEG
+/// left alone in it, are one shot too: one of them was renamed (2026050109_0380.ARW beside the
+/// camera's DSC03683.JPG, say).
 pub fn shots(photos: &[Photo]) -> Vec<Shot> {
     let mut by_stem: HashMap<String, Vec<&Photo>> = HashMap::new();
     for p in photos {
@@ -96,6 +99,25 @@ pub fn shots(photos: &[Photo]) -> Vec<Shot> {
             out.push(Shot { raw: Some((*raw).clone()), jpeg });
         }
         out.extend(jpegs.into_iter().map(|j| Shot { raw: None, jpeg: Some(j.clone()) }));
+    }
+    let mut alone: HashMap<i64, Vec<usize>> = HashMap::new();
+    for (i, s) in out.iter().enumerate() {
+        if s.raw.is_none() || s.jpeg.is_none() {
+            alone.entry(s.taken_millis()).or_default().push(i);
+        }
+    }
+    let mut gone = Vec::new();
+    for same in alone.values().filter(|v| v.len() == 2) {
+        let (a, b) = (same[0], same[1]);
+        let (raw, jpeg) = if out[a].raw.is_some() { (a, b) } else { (b, a) };
+        if out[raw].raw.is_some() && out[jpeg].jpeg.is_some() {
+            out[raw].jpeg = out[jpeg].jpeg.take();
+            gone.push(jpeg);
+        }
+    }
+    gone.sort_unstable();
+    for i in gone.into_iter().rev() {
+        out.remove(i);
     }
     out.sort_by(|a, b| b.taken_millis().cmp(&a.taken_millis()).then_with(|| b.primary().name.cmp(&a.primary().name)));
     out
@@ -232,6 +254,24 @@ mod tests {
         assert_eq!(s[2].key(), "DSC00001.ARW@1000");
         assert_eq!(s[2].jpeg.as_ref().unwrap().name, "DSC00001.JPG");
         assert_eq!(s[2].display().name, "DSC00001.JPG");
+    }
+
+    #[test]
+    fn a_renamed_raw_finds_its_jpeg_by_time() {
+        let photos = vec![
+            photo("2026050109_0380.ARW", 7000),
+            photo("DSC03683.JPG", 7000),
+            // A burst in one second: which JPEG is whose can't be told, so they stay apart.
+            photo("2026050109_0381.ARW", 9000),
+            photo("2026050109_0382.ARW", 9000),
+            photo("DSC03684.JPG", 9000),
+            photo("DSC03685.JPG", 9000),
+        ];
+        let s = shots(&photos);
+        assert_eq!(s.len(), 5);
+        let one = s.iter().find(|s| s.taken_millis() == 7000).unwrap();
+        assert_eq!((one.key().as_str(), one.display().name.as_str()), ("2026050109_0380.ARW@7000", "DSC03683.JPG"));
+        assert!(s.iter().filter(|s| s.taken_millis() == 9000).all(|s| s.raw.is_none() || s.jpeg.is_none()));
     }
 
     #[test]
