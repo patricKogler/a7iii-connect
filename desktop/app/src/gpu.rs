@@ -461,6 +461,7 @@ mod tests {
             lens: None,
             baseline: 0.0,
             tone_curve: None,
+            black_floor: 0.0,
         };
         let look = Look::new(&source, &Settings::default());
         let params = look.shader_params(1.0);

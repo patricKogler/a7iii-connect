@@ -110,6 +110,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
         let orientation = info.orientation;
         let raw = raw::decode(&bytes, info)?;
         let preview = raw.half_size().downscaled(PREVIEW_EDGE).oriented(orientation);
+        let black_floor = if raw.info.tone_curve.is_some() { look::black_floor(&preview) } else { 0.0 };
         let swap = orientation >= 5;
         let source = Source {
             image: preview,
@@ -121,6 +122,8 @@ pub fn open(path: &Path) -> Result<Opened, String> {
             lens: raw.info.lens.clone(),
             baseline: raw.info.baseline_exposure,
             tone_curve: raw.info.tone_curve.clone(),
+            // Phones' DNGs (the ones with their own tone curve) carry flare their JPEGs take off.
+            black_floor,
         };
         return Ok(Opened { path: path.to_path_buf(), source, orientation, raw: Some(raw), denoised: OnceLock::new(), removed: Default::default() });
     }
@@ -137,6 +140,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
         lens: None,
         baseline: 0.0,
         tone_curve: None,
+        black_floor: 0.0,
     };
     Ok(Opened { path: path.to_path_buf(), source, orientation, raw: None, denoised: OnceLock::new(), removed: Default::default() })
 }

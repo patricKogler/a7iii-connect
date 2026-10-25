@@ -179,6 +179,7 @@ fn renders_match_the_phones_goldens() {
         lens: None,
         baseline: 0.0,
         tone_curve: None,
+        black_floor: 0.0,
     };
     let raw = source(raw_img, true);
     let noisy = source(noisy_img, true);

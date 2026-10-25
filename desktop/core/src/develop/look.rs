@@ -26,6 +26,9 @@ pub struct Source {
     pub baseline: f64,
     /// A DNG's own base tone curve (ProfileToneCurve: linear in, linear out), used by the Color profile.
     pub tone_curve: Option<Vec<[f32; 2]>>,
+    /// The scene's darkest level (flare and the sensor's floor, in white-balanced camera units),
+    /// taken off before the tone curve so blacks go black. 0 for photos that render their own.
+    pub black_floor: f32,
 }
 
 impl Source {
@@ -85,6 +88,19 @@ fn encode_f(v: f32) -> f32 {
     } else {
         1.055 * c.powf(1.0 / 2.4) - 0.055
     }
+}
+
+/// The darkest level a photo really has: the 0.1st percentile of its darkest channel, capped so a
+/// low-key shot keeps its shadows.
+pub fn black_floor(img: &LinearImage) -> f32 {
+    let step = (img.r.len() / 50_000).max(1);
+    let mut v: Vec<f32> = (0..img.r.len()).step_by(step).map(|i| img.r[i].min(img.g[i]).min(img.b[i])).collect();
+    if v.is_empty() {
+        return 0.0;
+    }
+    let k = v.len() / 1000;
+    let (_, floor, _) = v.select_nth_unstable_by(k, f32::total_cmp);
+    floor.clamp(0.0, 0.02)
 }
 
 /// Rolls scene values above a knee smoothly into 0..1, so a camera's 0..1 tone curve keeps
@@ -217,6 +233,8 @@ pub struct Look {
     s: Settings,
     raw: bool,
     tone_curve: Option<Vec<[f32; 2]>>,
+    /// [`Source::black_floor`] at this look's exposure.
+    floor: f64,
     full: (f64, f64),
     pub matrix: [f32; 9],
     scene_matrix: [f32; 9],
@@ -261,6 +279,7 @@ impl Look {
             s: s.clone(),
             raw: source.is_raw,
             tone_curve: source.tone_curve.clone().filter(|_| source.is_raw && s.profile == Profile::Color),
+            floor: source.black_floor as f64 * gain,
             full: (source.full_width as f64, source.full_height as f64),
             matrix: std::array::from_fn(|i| (m[i] * gain) as f32),
             scene_matrix: std::array::from_fn(|i| c.rgb_from_cam[i] as f32),
@@ -302,7 +321,7 @@ impl Look {
         let mut prev: f64 = 0.0;
         for i in 0..=TONE_SIZE {
             let t = i as f64 / TONE_SIZE as f64;
-            let x = t * t * TONE_MAX;
+            let x = (t * t * TONE_MAX - self.floor).max(0.0);
             let mut y = if let Some(curve) = &self.tone_curve {
                 profile_curve(curve, soft_clip(x / white))
             } else if self.raw {
@@ -915,6 +934,7 @@ mod tests {
             lens: None,
             baseline: 0.0,
             tone_curve: None,
+            black_floor: 0.0,
         }
     }
 
