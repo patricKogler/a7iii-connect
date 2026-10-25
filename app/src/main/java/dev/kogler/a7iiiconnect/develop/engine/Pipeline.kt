@@ -179,6 +179,11 @@ class Look(private val source: DevelopSource, private val s: Settings) {
     private val tone = FloatArray(LUT_SIZE + 1)
     private val rgbCurves: Array<FloatArray>? = if (s.curves.drop(1).all { it.isIdentity }) null else Array(3) { s.curves[it + 1].table(1024) }
     private val raw = source.isRaw
+    /** A phone DNG's own tone curve, used by the Color profile. */
+    private val toneCurve = source.toneCurve?.takeIf { raw && s.profile == Profile.COLOR }
+    /** [DevelopSource.blackFloor] and the brightest raw value, at this look's exposure. */
+    private var sceneFloor = 0.0
+    private var headroom = 1.0
     private val profile = s.profile
     private val mono = profile == Profile.MONOCHROME
     private val sat = (if (raw || mono) profile.saturation else 1f) * (1f + s[P.SATURATION] / 100f)
@@ -233,7 +238,9 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         val rel = DoubleArray(3) { target[it] / ref[it] }
         // Keep brightness steady while the balance moves.
         val norm = 0.30 * rel[0] + 0.59 * rel[1] + 0.11 * rel[2]
-        val gain = 2.0.pow(s[P.EXPOSURE].toDouble())
+        val gain = 2.0.pow(s[P.EXPOSURE] + source.baseline)
+        sceneFloor = source.blackFloor * gain
+        headroom = gain
         val m = Mat3.mul(color.rgbFromCam, Mat3.diag(rel[0] / norm, rel[1] / norm, rel[2] / norm))
         for (i in 0..8) matrix[i] = (m[i] * gain).toFloat()
         val inv = Mat3.invert(color.rgbFromCam)
@@ -265,11 +272,14 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         val contrast = s[P.CONTRAST] / 100.0 * 0.6
         val regions = doubleArrayOf(s[P.CURVE_SHADOWS] / 100.0, s[P.CURVE_DARKS] / 100.0, s[P.CURVE_LIGHTS] / 100.0, s[P.CURVE_HIGHLIGHTS] / 100.0)
         val master = if (s.curves[0].isIdentity) null else s.curves[0].table(1024)
+        val shoulder = DngLook.Shoulder(headroom / white)
         var prev = 0.0
         for (i in 0..LUT_SIZE) {
             val t = i.toDouble() / LUT_SIZE
-            val x = t * t * LUT_MAX
-            var y = if (raw) {
+            val x = maxOf(0.0, t * t * LUT_MAX - sceneFloor)
+            var y = if (toneCurve != null) {
+                DngLook.curve(toneCurve, shoulder.apply(x / white))
+            } else if (raw) {
                 val xn = x.pow(n)
                 a * xn / (xn + k)
             } else x / white

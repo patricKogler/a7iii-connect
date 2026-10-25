@@ -15,6 +15,7 @@ import androidx.exifinterface.media.ExifInterface
 import dev.kogler.a7iiiconnect.develop.engine.Arw
 import dev.kogler.a7iiiconnect.develop.engine.CameraColor
 import dev.kogler.a7iiiconnect.develop.engine.ChannelSource
+import dev.kogler.a7iiiconnect.develop.engine.DngLook
 import dev.kogler.a7iiiconnect.develop.engine.Demosaic
 import dev.kogler.a7iiiconnect.develop.engine.DevelopSource
 import dev.kogler.a7iiiconnect.develop.engine.FullImage
@@ -204,6 +205,9 @@ object Photos {
                     val source = DevelopSource(
                         preview, color, info.asShot, true,
                         if (swap) raw.height else raw.width, if (swap) raw.width else raw.height, info.lens,
+                        baseline = info.baselineExposure + if (info.toneCurve != null) DngLook.LIFT else 0.0,
+                        toneCurve = info.toneCurve,
+                        blackFloor = if (info.toneCurve != null) DngLook.blackFloor(preview) else 0f,
                     )
                     return OpenedPhoto(photo, source, source.withImage(preview.downscaled(DRAFT_EDGE)), info.orientation, raw)
                 }
