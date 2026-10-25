@@ -124,6 +124,14 @@ impl Insights {
             self.dirty |= !i.faces.is_empty();
             self.known.insert(k, i);
         }
+        // Shots no longer in the library (deleted, or a JPEG now paired with its renamed RAW)
+        // don't count towards anyone.
+        if (!self.all || rescanned) && !shots.is_empty() {
+            let present: HashSet<String> = shots.iter().map(Shot::key).collect();
+            let before = self.known.len();
+            self.known.retain(|k, _| present.contains(k));
+            self.dirty |= self.known.len() != before;
+        }
         if (!self.all || rescanned) && ai::installed(&FACES) && self.faces_error().is_none() {
             self.all = true;
             let mut q = self.queue.todo.lock().unwrap();
