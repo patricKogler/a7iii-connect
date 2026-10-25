@@ -22,6 +22,8 @@ pub struct Source {
     pub full_width: usize,
     pub full_height: usize,
     pub lens: Option<LensData>,
+    /// Stops the render adds on top of Exposure (a DNG's BaselineExposure).
+    pub baseline: f64,
 }
 
 impl Source {
@@ -210,7 +212,7 @@ impl Look {
         let rel: [f64; 3] = std::array::from_fn(|i| target[i] / reference[i]);
         // Keep brightness steady while the balance moves.
         let norm = 0.30 * rel[0] + 0.59 * rel[1] + 0.11 * rel[2];
-        let gain = 2f64.powf(s.get(&p::EXPOSURE) as f64);
+        let gain = 2f64.powf(s.get(&p::EXPOSURE) as f64 + source.baseline);
         let m = color::mul(&c.rgb_from_cam, &color::diag(rel[0] / norm, rel[1] / norm, rel[2] / norm));
         let inv = color::invert(&c.rgb_from_cam);
 
@@ -880,6 +882,7 @@ mod tests {
             full_width: 640,
             full_height: 480,
             lens: None,
+            baseline: 0.0,
         }
     }
 

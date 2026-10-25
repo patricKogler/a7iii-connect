@@ -37,6 +37,8 @@ class DevelopSource(
     val lens: LensData? = null,
     /** The subject and other maps masks use; shared with [withImage] copies. */
     val maps: MaskMaps = MaskMaps(),
+    /** Stops the render adds on top of Exposure (a DNG's BaselineExposure). */
+    val baseline: Double = 0.0,
 ) {
     /** The as-shot Kelvin and tint, shown when the photo uses "As Shot". */
     val asShot: Pair<Double, Double> by lazy {
@@ -44,7 +46,7 @@ class DevelopSource(
     }
 
     /** Same photo at a different preview size. */
-    fun withImage(img: LinearImage) = DevelopSource(img, color, baked, isRaw, fullWidth, fullHeight, lens, maps)
+    fun withImage(img: LinearImage) = DevelopSource(img, color, baked, isRaw, fullWidth, fullHeight, lens, maps, baseline)
 }
 
 /** Histogram of rendered ARGB pixels: 256 bins each for R, G, B. */

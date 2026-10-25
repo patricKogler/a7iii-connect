@@ -4,6 +4,7 @@
 
 use super::color::CameraColor;
 use super::dng::{self, GainMap};
+use super::dng_color;
 use super::image::LinearImage;
 use rayon::prelude::*;
 
@@ -54,9 +55,11 @@ pub struct RawInfo {
     /// The biggest embedded JPEG preview (offset, length).
     pub preview: Option<(usize, usize)>,
     pub lens: Option<LensData>,
-    /// A DNG's own XYZ-to-camera matrix (for D65 when it has one); None means the built-in one
+    /// A DNG's own XYZ-to-camera matrix (mixed for the shot's light); None means the built-in one
     /// for the model.
     pub color_matrix: Option<[f64; 9]>,
+    /// How many stops a DNG asks the render to brighten by (phones underexpose to keep highlights).
+    pub baseline_exposure: f64,
     /// A DNG's lens shading, applied to the raw data before anything else.
     gain_maps: Vec<GainMap>,
     /// A DNG's table from stored values to linear ones.
@@ -219,6 +222,11 @@ const TAG_CFA_PATTERN: u16 = 0x828e;
 const TAG_BLACK_LEVEL: u16 = 0xc61a;
 const TAG_WHITE_LEVEL: u16 = 0xc61d;
 const TAG_AS_SHOT_NEUTRAL: u16 = 0xc628;
+const TAG_CAMERA_CALIBRATION1: u16 = 0xc623;
+const TAG_CAMERA_CALIBRATION2: u16 = 0xc624;
+const TAG_ANALOG_BALANCE: u16 = 0xc627;
+const TAG_AS_SHOT_WHITE_XY: u16 = 0xc629;
+const TAG_BASELINE_EXPOSURE: u16 = 0xc62a;
 const TAG_CROP_ORIGIN: u16 = 0xc61f;
 const TAG_CROP_SIZE: u16 = 0xc620;
 const TAG_SR2_PRIVATE: u16 = 0xc634;
@@ -236,7 +244,6 @@ const TAG_ILLUMINANT2: u16 = 0xc65b;
 const TAG_ACTIVE_AREA: u16 = 0xc68d;
 const TAG_OPCODE_LIST2: u16 = 0xc741;
 const PHOTOMETRIC_CFA: i64 = 32803;
-const D65: i64 = 21;
 
 pub fn read_info(src: &[u8]) -> Result<RawInfo, String> {
     let little = match src.get(..2) {
@@ -350,6 +357,7 @@ pub fn read_info(src: &[u8]) -> Result<RawInfo, String> {
         preview,
         lens,
         color_matrix: None,
+        baseline_exposure: 0.0,
         gain_maps: Vec::new(),
         linearization: None,
         raw,
@@ -406,23 +414,19 @@ fn read_dng(tiff: &Tiff, ifd0: &[Entry], all: &[&Vec<Entry>]) -> Result<RawInfo,
     }
     let white = look(TAG_WHITE_LEVEL).and_then(|e| tiff.doubles(e).first().copied()).map_or((1 << raw.bits) - 1, |w| w as i32);
 
-    // Colour: the D65 matrix when there is one (the editor's model is one daylight matrix).
+    // Colour: the two calibrated matrices, mixed for the shot's light, and its white balance.
     let matrix = |tag| look(tag).map(|e| tiff.doubles(e)).filter(|m| m.len() == 9).map(|m| std::array::from_fn(|i| m[i]));
     let illuminant = |tag| look(tag).and_then(|e| tiff.ints(e).first().copied());
-    let (cm1, cm2): (Option<[f64; 9]>, Option<[f64; 9]>) = (matrix(TAG_COLOR_MATRIX1), matrix(TAG_COLOR_MATRIX2));
-    let color_matrix = match (cm1, cm2) {
-        (_, Some(m)) if illuminant(TAG_ILLUMINANT2) == Some(D65) => Some(m),
-        (Some(m), _) if illuminant(TAG_ILLUMINANT1) == Some(D65) => Some(m),
-        _ => cm2.or(cm1),
-    };
-
-    // As-shot white balance: the neutral in camera space; multipliers are its inverse, G = 1.
-    let neutral = look(TAG_AS_SHOT_NEUTRAL).map(|e| tiff.doubles(e)).filter(|n| n.len() >= 3 && n.iter().all(|&v| v > 0.0));
-    let as_shot = match (&neutral, color_matrix) {
-        (Some(n), _) => [(n[1] / n[0]) as f32, 1.0, (n[1] / n[2]) as f32],
-        (None, Some(m)) => CameraColor::new(m).multipliers(6500.0, 0.0).map(|v| v as f32),
-        _ => [2.0, 1.0, 1.6],
-    };
+    let three = |tag| look(tag).map(|e| tiff.doubles(e)).filter(|n| n.len() >= 3).map(|n| [n[0], n[1], n[2]]);
+    let (color_matrix, as_shot) = dng_color::resolve(
+        &dng_color::Calibration { matrix: matrix(TAG_COLOR_MATRIX1), calibration: matrix(TAG_CAMERA_CALIBRATION1), illuminant: illuminant(TAG_ILLUMINANT1) },
+        &dng_color::Calibration { matrix: matrix(TAG_COLOR_MATRIX2), calibration: matrix(TAG_CAMERA_CALIBRATION2), illuminant: illuminant(TAG_ILLUMINANT2) },
+        three(TAG_ANALOG_BALANCE),
+        three(TAG_AS_SHOT_NEUTRAL).filter(|n| n.iter().all(|&v| v > 0.0)),
+        look(TAG_AS_SHOT_WHITE_XY).map(|e| tiff.doubles(e)).filter(|v| v.len() == 2 && v[1] > 0.0).map(|v| [v[0], v[1]]),
+    );
+    // Phones underexpose to keep highlights and say by how much the render should lift.
+    let baseline_exposure = look(TAG_BASELINE_EXPOSURE).and_then(|e| tiff.doubles(e).first().copied()).filter(|v| v.is_finite()).unwrap_or(0.0);
 
     let gain_maps = look(TAG_OPCODE_LIST2).and_then(|e| tiff.entry_bytes(e).ok()).map(dng::opcodes).unwrap_or_default();
     let linearization = look(TAG_LINEARIZATION).map(|e| tiff.ints(e).iter().map(|&v| v as u16).collect::<Vec<_>>()).filter(|t| t.len() >= 2);
@@ -437,6 +441,7 @@ fn read_dng(tiff: &Tiff, ifd0: &[Entry], all: &[&Vec<Entry>]) -> Result<RawInfo,
         preview,
         lens: None,
         color_matrix,
+        baseline_exposure,
         gain_maps,
         linearization,
         raw: Some(raw),
@@ -728,6 +733,7 @@ impl RawInfo {
             preview: None,
             lens: None,
             color_matrix: None,
+            baseline_exposure: 0.0,
             gain_maps: Vec::new(),
             linearization: None,
             raw: None,
@@ -907,9 +913,13 @@ mod tests {
         assert_eq!((info.make.as_str(), info.model.as_str(), info.orientation), ("Google", "Pixel 8a", 6));
         assert_eq!((info.black, info.white), ([64; 3], 1023));
         assert!((info.as_shot[0] - 2.0).abs() < 1e-4 && (info.as_shot[2] - 1.5).abs() < 1e-4, "{:?}", info.as_shot);
-        // The D65 matrix (illuminant 2), not standard A's.
-        let m = info.color_matrix.unwrap();
-        assert!((m[0] - 0.7).abs() < 1e-9 && (m[4] - 1.25).abs() < 1e-9);
+        // Between standard A's matrix (identity here) and the D65 one, mixed for the as-shot light.
+        let (m, d65) = (info.color_matrix.unwrap(), [0.7, -0.2, -0.05, -0.45, 1.25, 0.2, -0.1, 0.18, 0.6]);
+        let a = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        for i in 0..9 {
+            assert!(m[i] >= f64::min(a[i], d65[i]) - 1e-9 && m[i] <= f64::max(a[i], d65[i]) + 1e-9, "{i}: {m:?}");
+        }
+        assert_eq!(info.baseline_exposure, 0.0);
         for name in ["plain16", "packed12", "lossless"] {
             let file = dng(name);
             let img = decode(&file, read_info(&file).unwrap()).unwrap();

@@ -4,6 +4,7 @@
 
 pub mod color;
 pub mod dng;
+pub mod dng_color;
 pub mod export;
 pub mod geometry;
 pub mod image;
@@ -118,6 +119,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
             full_width: if swap { raw.height } else { raw.width },
             full_height: if swap { raw.width } else { raw.height },
             lens: raw.info.lens.clone(),
+            baseline: raw.info.baseline_exposure,
         };
         return Ok(Opened { path: path.to_path_buf(), source, orientation, raw: Some(raw), denoised: OnceLock::new(), removed: Default::default() });
     }
@@ -132,6 +134,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
         full_width: if swap { fh } else { fw },
         full_height: if swap { fw } else { fh },
         lens: None,
+        baseline: 0.0,
     };
     Ok(Opened { path: path.to_path_buf(), source, orientation, raw: None, denoised: OnceLock::new(), removed: Default::default() })
 }

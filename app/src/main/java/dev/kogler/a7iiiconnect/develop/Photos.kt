@@ -204,6 +204,7 @@ object Photos {
                     val source = DevelopSource(
                         preview, color, info.asShot, true,
                         if (swap) raw.height else raw.width, if (swap) raw.width else raw.height, info.lens,
+                        baseline = info.baselineExposure,
                     )
                     return OpenedPhoto(photo, source, source.withImage(preview.downscaled(DRAFT_EDGE)), info.orientation, raw)
                 }

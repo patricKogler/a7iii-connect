@@ -233,7 +233,7 @@ class Look(private val source: DevelopSource, private val s: Settings) {
         val rel = DoubleArray(3) { target[it] / ref[it] }
         // Keep brightness steady while the balance moves.
         val norm = 0.30 * rel[0] + 0.59 * rel[1] + 0.11 * rel[2]
-        val gain = 2.0.pow(s[P.EXPOSURE].toDouble())
+        val gain = 2.0.pow(s[P.EXPOSURE] + source.baseline)
         val m = Mat3.mul(color.rgbFromCam, Mat3.diag(rel[0] / norm, rel[1] / norm, rel[2] / norm))
         for (i in 0..8) matrix[i] = (m[i] * gain).toFloat()
         val inv = Mat3.invert(color.rgbFromCam)
