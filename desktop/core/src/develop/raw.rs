@@ -429,7 +429,6 @@ fn read_dng(tiff: &Tiff, ifd0: &[Entry], all: &[&Vec<Entry>]) -> Result<RawInfo,
         three(TAG_AS_SHOT_NEUTRAL).filter(|n| n.iter().all(|&v| v > 0.0)),
         look(TAG_AS_SHOT_WHITE_XY).map(|e| tiff.doubles(e)).filter(|v| v.len() == 2 && v[1] > 0.0).map(|v| [v[0], v[1]]),
     );
-    let as_shot = color_matrix.map_or(as_shot, |m| dng_color::keep_warmth(&m, as_shot));
     // Phones underexpose to keep highlights and say by how much the render should lift.
     let baseline_exposure = look(TAG_BASELINE_EXPOSURE).and_then(|e| tiff.doubles(e).first().copied()).filter(|v| v.is_finite()).unwrap_or(0.0);
 
