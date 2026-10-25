@@ -127,6 +127,9 @@ fn render(engine: &Engine, src: &Source, s: &Settings) -> (usize, usize, Vec<u8>
         guide: guide_tex.as_ref().map(|(t, a)| (t, *a)),
         coords: coords.as_ref(),
         lut: None,
+        found: None,
+        maps: None,
+        overlay: None,
         params: &params,
         place: Placement::whole(w, h),
     };

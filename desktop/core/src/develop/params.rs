@@ -122,6 +122,7 @@ pub mod p {
         NOISE = "noise", "Noise reduction", Detail, 0.0, 100.0, 0.0, 0;
         NOISE_DETAIL = "noise.detail", "Detail", Detail, 0.0, 100.0, 50.0, 0;
         COLOR_NOISE = "colorNoise", "Color noise reduction", Detail, 0.0, 100.0, 0.0, 0;
+        AI_DENOISE = "ai.denoise", "AI denoise", Detail, 0.0, 100.0, 0.0, 0;
         LENS_PROFILE = "on.lensProfile", "Use lens corrections", Optics, 0.0, 1.0, 1.0, 0;
         REMOVE_CA = "on.removeCA", "Remove chromatic aberration", Optics, 0.0, 1.0, 1.0, 0;
         LENS_DISTORTION = "lens.distortion", "Distortion", Optics, 0.0, 200.0, 100.0, 0;
@@ -321,17 +322,24 @@ impl Curve {
     }
 }
 
-/// The shapes a mask can take, like Lightroom's mask tools.
+/// The shapes a mask can take, like Lightroom's mask tools. The phone knows the first four; the
+/// others are the computer's, and the phone keeps them as they are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaskKind {
     Linear,
     Radial,
     Subject,
     Sky,
+    /// Painted with the brush.
+    Brush,
+    /// Something clicked on, selected by the object model.
+    Object,
+    /// A range of distances, from the depth model.
+    Depth,
 }
 
 impl MaskKind {
-    pub const ALL: [MaskKind; 4] = [MaskKind::Linear, MaskKind::Radial, MaskKind::Subject, MaskKind::Sky];
+    pub const ALL: [MaskKind; 7] = [MaskKind::Linear, MaskKind::Radial, MaskKind::Brush, MaskKind::Subject, MaskKind::Sky, MaskKind::Object, MaskKind::Depth];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -339,6 +347,9 @@ impl MaskKind {
             MaskKind::Radial => "radial",
             MaskKind::Subject => "subject",
             MaskKind::Sky => "sky",
+            MaskKind::Brush => "brush",
+            MaskKind::Object => "object",
+            MaskKind::Depth => "depth",
         }
     }
 
@@ -348,8 +359,30 @@ impl MaskKind {
             MaskKind::Radial => "Radial gradient",
             MaskKind::Subject => "Subject",
             MaskKind::Sky => "Sky",
+            MaskKind::Brush => "Brush",
+            MaskKind::Object => "Object",
+            MaskKind::Depth => "Depth range",
         }
     }
+
+    /// Placed by hand, with handles on the photo.
+    pub fn shaped(self) -> bool {
+        matches!(self, MaskKind::Linear | MaskKind::Radial)
+    }
+
+    /// Carries a map of its own (painted, or picked by clicks), kept beside the edit by its id.
+    pub fn has_own_map(self) -> bool {
+        matches!(self, MaskKind::Brush | MaskKind::Object)
+    }
+}
+
+/// A click that picks an Object mask: where, as fractions of the upright photo, and whether it
+/// adds to the selection or takes away.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pick {
+    pub x: f32,
+    pub y: f32,
+    pub add: bool,
 }
 
 /// The sliders a mask carries.
@@ -382,7 +415,10 @@ pub mod local {
 
 /// One local adjustment. Positions are fractions of the upright photo's width and height, before
 /// crop and lens corrections. Linear: full at (x0, y0), gone at (x1, y1). Radial: centre
-/// (x0, y0), radii x1 (of the width) and y1 (of the height), turned by `angle` degrees.
+/// (x0, y0), radii x1 (of the width) and y1 (of the height), turned by `angle` degrees. Depth:
+/// nearness from x0 to x1 (0 farthest, 1 nearest), softened by `feather`. Brush and Object masks
+/// keep their map in a file named by `id`; an Object mask also keeps the clicks that made it,
+/// and `grain`: how much smaller (below 0) or larger than the first guess its selection is.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mask {
     pub kind: MaskKind,
@@ -395,11 +431,41 @@ pub struct Mask {
     pub invert: bool,
     pub exclude_subject: bool,
     pub values: BTreeMap<String, f32>,
+    /// Names this mask's own map (Brush and Object masks).
+    pub id: String,
+    pub picks: Vec<Pick>,
+    pub grain: i8,
 }
 
 impl Mask {
     pub fn new(kind: MaskKind) -> Mask {
-        Mask { kind, x0: 0.5, y0: 0.5, x1: 0.5, y1: 0.5, angle: 0.0, feather: 50.0, invert: false, exclude_subject: false, values: BTreeMap::new() }
+        Mask {
+            kind,
+            x0: 0.5,
+            y0: 0.5,
+            x1: 0.5,
+            y1: 0.5,
+            angle: 0.0,
+            feather: 50.0,
+            invert: false,
+            exclude_subject: false,
+            values: BTreeMap::new(),
+            id: String::new(),
+            picks: Vec::new(),
+            grain: 0,
+        }
+    }
+
+    /// A Brush or Object mask with a new id for its map.
+    pub fn with_map(kind: MaskKind) -> Mask {
+        let mut b = [0u8; 6];
+        let _ = getrandom::fill(&mut b);
+        Mask { id: b.iter().map(|v| format!("{v:02x}")).collect(), ..Mask::new(kind) }
+    }
+
+    /// The nearest part of the photo, softly: a starting Depth mask.
+    pub fn depth() -> Mask {
+        Mask { x0: 0.6, x1: 1.0, feather: 30.0, ..Mask::new(MaskKind::Depth) }
     }
 
     /// A gradient from the top down to just above the middle: the usual sky darkening.
@@ -442,6 +508,19 @@ impl Mask {
         if self.kind == MaskKind::Radial {
             s += &format!(";angle={};feather={}", f(self.angle), f(self.feather));
         }
+        if self.kind == MaskKind::Depth {
+            s += &format!(";x0={};x1={};feather={}", f(self.x0), f(self.x1), f(self.feather));
+        }
+        if !self.id.is_empty() {
+            s += &format!(";id={}", self.id);
+        }
+        if !self.picks.is_empty() {
+            let picks: Vec<String> = self.picks.iter().map(|p| format!("{}_{}_{}", f(p.x), f(p.y), if p.add { 1 } else { 0 })).collect();
+            s += &format!(";picks={}", picks.join(","));
+        }
+        if self.grain != 0 {
+            s += &format!(";grain={}", self.grain);
+        }
         if self.invert {
             s += ";invert=1";
         }
@@ -461,6 +540,26 @@ impl Mask {
         let mut m = Mask::new(kind);
         for part in parts {
             let Some((k, v)) = part.split_once('=') else { continue };
+            match k.trim() {
+                "id" => {
+                    m.id = v.trim().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+                    continue;
+                }
+                "picks" => {
+                    m.picks = v
+                        .split(',')
+                        .filter_map(|p| {
+                            let mut it = p.split('_').map(|n| n.trim().parse::<f32>());
+                            match (it.next(), it.next(), it.next()) {
+                                (Some(Ok(x)), Some(Ok(y)), Some(Ok(a))) => Some(Pick { x, y, add: a >= 0.5 }),
+                                _ => None,
+                            }
+                        })
+                        .collect();
+                    continue;
+                }
+                _ => {}
+            }
             let (k, Ok(v)) = (k.trim(), v.trim().parse::<f32>()) else { continue };
             if k.is_empty() {
                 continue;
@@ -474,6 +573,7 @@ impl Mask {
                 "feather" => m.feather = v.clamp(0.0, 100.0),
                 "invert" => m.invert = v >= 0.5,
                 "excludeSubject" => m.exclude_subject = v >= 0.5,
+                "grain" => m.grain = (v.round() as i8).clamp(-2, 2),
                 _ => {
                     if let Some(p) = local::by_key(k) {
                         if v != p.default {
@@ -484,6 +584,43 @@ impl Mask {
             }
         }
         Some(m)
+    }
+}
+
+/// Something painted out with the Remove tool (a dust spot is a stroke of one point): where it
+/// was painted, in the upright uncropped photo (0..1 each way), and how wide, as a share of the
+/// photo's longer side. Filled in by AI from its surroundings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Removal {
+    pub radius: f32,
+    pub points: Vec<[f32; 2]>,
+}
+
+impl Removal {
+    pub fn encode(&self) -> String {
+        let f = kotlin_float;
+        let pts: Vec<String> = self.points.iter().map(|p| format!("{}_{}", f(p[0]), f(p[1]))).collect();
+        format!("r={};p={}", f(self.radius), pts.join(","))
+    }
+
+    pub fn decode(text: &str) -> Option<Removal> {
+        let mut r = Removal { radius: 0.0, points: Vec::new() };
+        for part in text.split(';') {
+            match part.split_once('=') {
+                Some(("r", v)) => r.radius = v.trim().parse::<f32>().ok()?.clamp(0.0005, 0.5),
+                Some(("p", v)) => {
+                    r.points = v
+                        .split(',')
+                        .filter_map(|p| {
+                            let (x, y) = p.split_once('_')?;
+                            Some([x.trim().parse::<f32>().ok()?.clamp(0.0, 1.0), y.trim().parse::<f32>().ok()?.clamp(0.0, 1.0)])
+                        })
+                        .collect()
+                }
+                _ => {}
+            }
+        }
+        (r.radius > 0.0 && !r.points.is_empty()).then_some(r)
     }
 }
 
@@ -498,11 +635,13 @@ pub struct Settings {
     pub masks: Vec<Mask>,
     /// A film look from a LUT, by its id; None for none.
     pub lut: Option<String>,
+    /// Painted out with the Remove tool, in order.
+    pub removals: Vec<Removal>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { values: BTreeMap::new(), profile: Profile::Color, curves: Default::default(), masks: Vec::new(), lut: None }
+        Settings { values: BTreeMap::new(), profile: Profile::Color, curves: Default::default(), masks: Vec::new(), lut: None, removals: Vec::new() }
     }
 }
 
@@ -583,6 +722,7 @@ impl Settings {
             profile: if light { from.profile } else { self.profile },
             curves: if groups.contains(&Group::Curve) { from.curves.clone() } else { self.curves.clone() },
             masks: self.masks.clone(),
+            removals: self.removals.clone(),
             lut: if light { from.lut.clone() } else { self.lut.clone() },
         }
     }
@@ -604,12 +744,16 @@ impl Settings {
         for (i, m) in self.masks.iter().enumerate() {
             s += &format!("mask.{i}={}\n", m.encode());
         }
+        for (i, r) in self.removals.iter().enumerate() {
+            s += &format!("remove.{i}={}\n", r.encode());
+        }
         s
     }
 
     pub fn decode(text: &str) -> Settings {
         let mut out = Settings::default();
         let mut masks = BTreeMap::new();
+        let mut removals = BTreeMap::new();
         for line in text.lines() {
             let Some(i) = line.find('=') else { continue };
             if i == 0 {
@@ -628,6 +772,10 @@ impl Settings {
                 if let (Ok(n), Some(m)) = (n.parse::<usize>(), Mask::decode(v)) {
                     masks.insert(n, m);
                 }
+            } else if let Some(n) = k.strip_prefix("remove.") {
+                if let (Ok(n), Some(r)) = (n.parse::<usize>(), Removal::decode(v)) {
+                    removals.insert(n, r);
+                }
             } else if let (Some(p), Ok(f)) = (p::by_key(k), v.parse::<f32>()) {
                 if f != p.default {
                     out.values.insert(k.to_string(), f);
@@ -635,6 +783,7 @@ impl Settings {
             }
         }
         out.masks = masks.into_values().collect();
+        out.removals = removals.into_values().collect();
         out
     }
 }
@@ -686,6 +835,21 @@ mod tests {
         assert_eq!(s.masks[1].get(&local::SHADOWS), 20.0);
         assert_eq!(s.encode(), text);
         assert_eq!(Settings::decode(&s.encode()), s);
+    }
+
+    #[test]
+    fn the_computers_masks_round_trip() {
+        let mut brush = Mask::with_map(MaskKind::Brush);
+        brush.set(&local::EXPOSURE, 0.5);
+        let mut object = Mask::with_map(MaskKind::Object);
+        object.picks = vec![Pick { x: 0.25, y: 0.5, add: true }, Pick { x: 0.3, y: 0.6, add: false }];
+        object.grain = 1;
+        let s = Settings { masks: vec![brush, object, Mask::depth()], ..Settings::default() };
+        let text = s.encode();
+        assert!(text.contains("mask.2=depth;x0=0.6;x1=1.0;feather=30.0\n"), "{text}");
+        assert_eq!(Settings::decode(&text), s);
+        assert_eq!(s.masks[0].id.len(), 12);
+        assert_ne!(s.masks[0].id, s.masks[1].id);
     }
 
     #[test]

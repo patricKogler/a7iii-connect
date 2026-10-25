@@ -171,11 +171,15 @@ pub struct ShaderParams {
     pub grain_cell: f32,
     pub grain_rough: f32,
     pub scale: f32,
+    /// Masks the shader evaluates: none when no mask moves a slider.
     pub mask_count: usize,
+    /// All the masks, for showing one as an overlay even before it does anything.
+    pub mask_total: usize,
     pub masks: [f32; MASK_MAX * MASK_STRIDE],
     pub source_size: [f32; 2],
     pub uses_subject: bool,
     pub uses_sky: bool,
+    pub uses_depth: bool,
     pub lut_amount: f32,
 }
 
@@ -191,6 +195,7 @@ pub struct Look {
     rgb_curves: Option<[Vec<f32>; 3]>,
     masks: [f32; MASK_MAX * MASK_STRIDE],
     mask_count: usize,
+    mask_total: usize,
     needs_guide: bool,
 }
 
@@ -209,9 +214,9 @@ impl Look {
         let m = color::mul(&c.rgb_from_cam, &color::diag(rel[0] / norm, rel[1] / norm, rel[2] / norm));
         let inv = color::invert(&c.rgb_from_cam);
 
-        let (masks, mask_count, mask_used) = mask_params(s, source.full_width as f64, source.full_height as f64);
+        let (masks, mask_total, mask_used) = mask_params(s, source.full_width as f64, source.full_height as f64);
         let any_mask = mask_used.iter().any(|u| *u);
-        let mask_count = if any_mask { mask_count } else { 0 };
+        let mask_count = if any_mask { mask_total } else { 0 };
         let uses = |i: usize| any_mask && mask_used[i];
         let needs_guide = s.get(&p::SHADOWS) != 0.0
             || s.get(&p::HIGHLIGHTS) != 0.0
@@ -237,6 +242,7 @@ impl Look {
             },
             masks,
             mask_count,
+            mask_total,
             needs_guide,
         };
         look.build_tone();
@@ -512,10 +518,12 @@ impl Look {
             grain_rough: g(&p::GRAIN_ROUGHNESS) / 100.0,
             scale: scale as f32,
             mask_count: self.mask_count,
+            mask_total: self.mask_total,
             masks: self.masks,
             source_size: [self.full.0 as f32, self.full.1 as f32],
-            uses_subject: self.mask_count > 0 && s.masks.iter().any(|m| m.uses_subject()),
-            uses_sky: self.mask_count > 0 && s.masks.iter().any(|m| m.uses_sky()),
+            uses_subject: s.masks.iter().take(MASK_MAX).any(|m| m.uses_subject()),
+            uses_sky: s.masks.iter().take(MASK_MAX).any(|m| m.uses_sky()),
+            uses_depth: s.masks.iter().take(MASK_MAX).any(|m| m.kind == MaskKind::Depth),
             lut_amount: if s.lut.is_some() { g(&p::LUT_AMOUNT) / 100.0 } else { 0.0 },
         }
     }
@@ -532,11 +540,14 @@ fn tint_offset(hue: f32, amount: f32) -> [f32; 3] {
 }
 
 /// The masks flattened as the shader reads them: [`MASK_STRIDE`] floats each, shapes in
-/// full-size pixels, then the sliders in [`local::SHADER_ORDER`].
+/// full-size pixels, then the sliders in [`local::SHADER_ORDER`]. Masks with a map of their own
+/// (kind 5) carry its slot in the maps texture instead of a position, see [`map_slots`]; Depth
+/// masks (kind 6) their range of nearness.
 fn mask_params(s: &Settings, w: f64, h: f64) -> ([f32; MASK_MAX * MASK_STRIDE], usize, [bool; 9]) {
     let mut out = [0f32; MASK_MAX * MASK_STRIDE];
     let mut used = [false; 9];
     let count = s.masks.len().min(MASK_MAX);
+    let slots = map_slots(s);
     for (k, m) in s.masks.iter().take(count).enumerate() {
         let o = k * MASK_STRIDE;
         out[o] = match m.kind {
@@ -544,11 +555,20 @@ fn mask_params(s: &Settings, w: f64, h: f64) -> ([f32; MASK_MAX * MASK_STRIDE], 
             MaskKind::Radial => 2.0,
             MaskKind::Subject => 3.0,
             MaskKind::Sky => 4.0,
+            MaskKind::Brush | MaskKind::Object => 5.0,
+            MaskKind::Depth => 6.0,
         };
         out[o + 1] = (m.x0 as f64 * w) as f32;
         out[o + 2] = (m.y0 as f64 * h) as f32;
         out[o + 3] = (m.x1 as f64 * w) as f32;
         out[o + 4] = (m.y1 as f64 * h) as f32;
+        if let Some(slot) = slots[k] {
+            out[o + 1] = slot as f32;
+        }
+        if m.kind == MaskKind::Depth {
+            out[o + 1] = m.x0.min(m.x1);
+            out[o + 2] = m.x0.max(m.x1);
+        }
         if m.kind == MaskKind::Radial {
             out[o + 3] = out[o + 3].max(1.0);
             out[o + 4] = out[o + 4].max(1.0);
@@ -568,6 +588,19 @@ fn mask_params(s: &Settings, w: f64, h: f64) -> ([f32; MASK_MAX * MASK_STRIDE], 
         }
     }
     (out, count, used)
+}
+
+/// Which slot of the maps texture each mask's own map takes (Brush and Object masks, in order).
+pub fn map_slots(s: &Settings) -> [Option<usize>; MASK_MAX] {
+    let mut slots = [None; MASK_MAX];
+    let mut next = 0;
+    for (k, m) in s.masks.iter().take(MASK_MAX).enumerate() {
+        if m.kind.has_own_map() {
+            slots[k] = Some(next);
+            next += 1;
+        }
+    }
+    slots
 }
 
 fn convert(img: &mut LinearImage, m: &[f32; 9], clamp: bool) {

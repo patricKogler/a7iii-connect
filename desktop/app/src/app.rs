@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Library,
+    Cull,
     Edit,
     Import,
     Phone,
@@ -34,6 +35,13 @@ pub struct App {
     pub editor: Editor,
     pub looks: crate::looks::Looks,
     pub phone_sync: PhoneSync,
+    pub cull: crate::cull::Cull,
+    pub insights: crate::insights::Insights,
+    pub finder: crate::search::Search,
+    /// Person being named: their id and the text so far.
+    pub naming_person: Option<(String, String)>,
+    /// The Merge photos dialog, while it's open.
+    pub merging: Option<crate::merge_view::Merging>,
     wheel: crate::wheel::Wheel,
     wheel_wake: Option<f64>,
 }
@@ -51,6 +59,11 @@ impl App {
         phone_sync.start(&root, &settings.device_id);
         let mut app = App {
             looks: crate::looks::Looks::new(&cc.egui_ctx, &root),
+            cull: crate::cull::Cull::new(),
+            insights: crate::insights::Insights::new(&cc.egui_ctx, &root),
+            finder: crate::search::Search::new(&cc.egui_ctx, &root),
+            naming_person: None,
+            merging: None,
             wheel: Default::default(),
             wheel_wake: None,
             editor,
@@ -97,6 +110,9 @@ impl App {
         self.settings.library = Some(root);
         self.selected = None;
         self.filter = Filter::All;
+        self.cull.reset();
+        self.insights.set_root(&self.library.root.clone());
+        self.finder.set_root(&self.library.root.clone());
         if self.ftp.server.is_some() {
             self.start_ftp(ctx);
         }
@@ -110,7 +126,12 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, s)| self.library.matches(s, &self.filter))
-            .filter(|(_, s)| q.is_empty() || [s.raw.as_ref(), s.jpeg.as_ref()].into_iter().flatten().any(|p| p.name.to_lowercase().contains(&q)))
+            .filter(|(_, s)| {
+                q.is_empty()
+                    || [s.raw.as_ref(), s.jpeg.as_ref()].into_iter().flatten().any(|p| p.name.to_lowercase().contains(&q))
+                    || self.finder.found(&q, &s.key())
+                    || self.library.people.iter().any(|(who, shots)| is_name(who) && who.to_lowercase().contains(&q) && shots.contains(&s.key()))
+            })
             .map(|(i, _)| i)
             .collect()
     }
@@ -189,7 +210,7 @@ impl App {
                     );
                     ui.label(job);
                     ui.add_space(20.0);
-                    for (v, name) in [(View::Library, "Library"), (View::Edit, "Edit"), (View::Import, "Import")] {
+                    for (v, name) in [(View::Library, "Library"), (View::Cull, "Cull"), (View::Edit, "Edit"), (View::Import, "Import")] {
                         if tab(ui, self.view == v, name).clicked() {
                             self.view = v;
                         }
@@ -271,7 +292,7 @@ impl App {
     }
 
     fn keys(&mut self, ctx: &egui::Context) {
-        if ctx.wants_keyboard_input() || self.naming.is_some() {
+        if ctx.wants_keyboard_input() || self.naming.is_some() || self.naming_person.is_some() || self.merging.is_some() || self.view == View::Cull {
             return;
         }
         let visible = self.visible();
@@ -306,11 +327,19 @@ impl App {
                 if (i.key_pressed(Key::Enter) || i.key_pressed(Key::E)) && self.selected.is_some() {
                     self.view = View::Edit;
                 }
-            } else if self.view == View::Edit && !self.editor.cropping && (i.key_pressed(Key::Escape) || i.key_pressed(Key::G)) {
+                if i.key_pressed(Key::C) && !i.modifiers.command {
+                    self.view = View::Cull;
+                }
+            } else if self.view == View::Edit && !self.editor.cropping && !self.editor.removing && (i.key_pressed(Key::Escape) || i.key_pressed(Key::G)) {
                 self.view = View::Library;
             }
         });
     }
+}
+
+/// Whether a person's key is a name someone gave (not an id like p12).
+fn is_name(key: &str) -> bool {
+    !key.strip_prefix('p').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// How many tiles fit across the library grid (the window less both side panels).
@@ -325,12 +354,19 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(after));
         }
         self.images.poll(ctx);
-        if self.library.poll() && self.selected.is_none() {
+        let rescanned = self.library.poll();
+        if rescanned && self.selected.is_none() {
             self.selected = self.library.shots.first().map(|s| s.key());
         }
         if self.phone_sync.shared.changed.swap(false, Ordering::Relaxed) {
             self.library.reload_files();
             self.editor.reload();
+            self.insights.reload_people();
+        }
+        let grouped = self.insights.follow(&self.library.shots, rescanned);
+        self.finder.follow(&self.search.to_lowercase(), &self.library.shots, rescanned);
+        if grouped || rescanned {
+            self.library.people = self.insights.shots_by_person();
         }
         if self.phone_sync.shared.phones_changed.swap(false, Ordering::Relaxed) {
             self.settings.phones = self.phone_sync.shared.phones.lock().unwrap().clone();
@@ -354,10 +390,12 @@ impl eframe::App for App {
         }
         self.keys(ctx);
         crate::viewer::keys(self, ctx);
+        crate::cull_view::keys(self, ctx);
         self.top_bar(ctx);
         self.footer(ctx);
         match self.view {
             View::Library => crate::library_view::show(self, ctx),
+            View::Cull => crate::cull_view::show(self, ctx),
             View::Edit => crate::viewer::show(self, ctx),
             View::Import => crate::import_view::show(self, ctx),
             View::Phone => crate::phone_view::show(self, ctx),
@@ -376,6 +414,9 @@ impl eframe::App for App {
 
     fn on_exit(&mut self) {
         self.editor.close();
+        self.cull.reset();
+        self.insights.stop();
+        self.finder.stop();
         self.phone_sync.stop();
         self.importer.cancel();
         self.ftp.stop();

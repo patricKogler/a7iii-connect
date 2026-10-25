@@ -77,6 +77,8 @@ fn sidebar(app: &mut App, ui: &mut Ui) {
             });
         }
         ui.add_space(20.0);
+        people(app, ui);
+        ui.add_space(20.0);
         section_label(ui, "Folder");
         ui.add_space(6.0);
         ui.add(egui::Label::new(RichText::new(app.library.root.display().to_string()).monospace().size(12.0).color(p.text)).wrap());
@@ -90,6 +92,132 @@ fn sidebar(app: &mut App, ui: &mut Ui) {
         }
     });
     name_album_dialog(app, ui.ctx());
+    name_person_dialog(app, ui.ctx());
+    crate::merge_view::dialog(app, ui.ctx());
+}
+
+/// A person as the sidebar lists them: id, filter key, name, shots, and a face (shot and box).
+type PersonRow = (String, String, Option<String>, usize, Option<(String, [f32; 4])>);
+
+/// The people found in the photos: a face, a name and how many shots they're in.
+fn people(app: &mut App, ui: &mut Ui) {
+    use shootback_core::ai::{self, catalog::FACES, Progress};
+    let p = palette(ui.ctx());
+    section_label(ui, "People");
+    ui.add_space(6.0);
+    if !ai::installed(&FACES) {
+        match ai::status(&FACES) {
+            Some(Progress::Downloading(f)) => {
+                ui.label(RichText::new(format!("Getting the face model ... {:.0} %", f * 100.0)).size(12.0).color(p.text3));
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+            }
+            other => {
+                if let Some(Progress::Failed(e)) = other {
+                    ui.label(RichText::new(e).size(12.0).color(p.accent));
+                }
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("Groups the faces in your photos by who they are, as the phone does. Needs a 10 MB face model, run on this computer.")
+                            .size(12.0)
+                            .color(p.text3),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(4.0);
+                if outline_button(ui, "Find people").clicked() {
+                    app.insights.fetch_models();
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+                }
+            }
+        }
+        return;
+    }
+    let shown: Vec<PersonRow> = shootback_core::people::shown(&app.insights.people)
+        .into_iter()
+        .map(|person| {
+            let face = person.faces.first().and_then(|f| app.insights.known.get(&f.shot).and_then(|i| i.faces.get(f.index)).map(|i| (f.shot.clone(), i.b)));
+            (person.id.clone(), person.key(), person.name.clone(), person.shots(), face)
+        })
+        .collect();
+    if shown.is_empty() {
+        let (known, all) = app.insights.count(app.library.shots.iter().map(|s| s.key()));
+        let t = if known < all { format!("Looking at the photos ... {known} of {all}") } else { "No one found in two photos or more yet".to_string() };
+        ui.label(RichText::new(t).size(12.0).color(p.text3));
+        return;
+    }
+    for (id, key, name, n, face) in shown {
+        let f = Filter::Person(key);
+        let r = nav_row(ui, app.filter == f, &format!("       {}", name.as_deref().unwrap_or("Someone")), Some(n));
+        // A small square of the face at the row's start.
+        let at = Rect::from_min_size(Pos2::new(r.rect.left() + 8.0, r.rect.center().y - 10.0), Vec2::splat(20.0));
+        let shot = face.as_ref().and_then(|(k, _)| app.library.shots.iter().find(|s| &s.key() == k)).map(|s| s.display().clone());
+        match (shot, face) {
+            (Some(show), Some((_, b))) => {
+                if let Some(tex) = app.images.get(&show.path, THUMB, show.orientation) {
+                    let (cx, cy, half) = ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0, (b[2] - b[0]).max(b[3] - b[1]) * 0.6);
+                    let [tw, th] = tex.size().map(|v| v as f32);
+                    let (hx, hy) = (half, half * tw / th);
+                    let uv = Rect::from_min_max(Pos2::new(cx - hx, cy - hy), Pos2::new(cx + hx, cy + hy));
+                    ui.painter().image(tex.id(), at, uv, egui::Color32::WHITE);
+                }
+            }
+            _ => {
+                ui.painter().rect_filled(at, 2.0, p.control);
+            }
+        }
+        if r.clicked() {
+            app.filter = f;
+        }
+        r.context_menu(|ui| {
+            if ui.button(if name.is_some() { "Rename…" } else { "Name…" }).clicked() {
+                app.naming_person = Some((id.clone(), name.clone().unwrap_or_default()));
+                ui.close_menu();
+            }
+        });
+        if r.double_clicked() {
+            app.naming_person = Some((id.clone(), name.clone().unwrap_or_default()));
+        }
+    }
+    ui.add_space(4.0);
+    ui.label(RichText::new("Right-click someone to name them. Names travel to and from the phone.").size(11.5).color(p.text3));
+}
+
+fn name_person_dialog(app: &mut App, ctx: &egui::Context) {
+    let Some((id, mut text)) = app.naming_person.clone() else { return };
+    let mut open = true;
+    let mut done = false;
+    egui::Window::new("Who is this?").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).open(&mut open).show(ctx, |ui| {
+        let r = ui.add(egui::TextEdit::singleline(&mut text).hint_text("Name").desired_width(280.0));
+        r.request_focus();
+        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            done = true;
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if seal_button(ui, "Save").clicked() {
+                done = true;
+            }
+            if outline_button(ui, "Cancel").clicked() {
+                app.naming_person = None;
+            }
+        });
+    });
+    if !open {
+        app.naming_person = None;
+    } else if done {
+        let was = app.insights.people.iter().find(|p| p.id == id).map(|p| p.key());
+        app.insights.rename(std::slice::from_ref(&id), &text);
+        app.library.people = app.insights.shots_by_person();
+        // Showing that person: keep showing them under the new name.
+        if was.is_some_and(|k| app.filter == Filter::Person(k)) {
+            if let Some(p) = app.insights.people.iter().find(|p| p.id == id) {
+                app.filter = Filter::Person(p.key());
+            }
+        }
+        app.naming_person = None;
+    } else if app.naming_person.is_some() {
+        app.naming_person = Some((id, text));
+    }
 }
 
 fn name_album_dialog(app: &mut App, ctx: &egui::Context) {
@@ -140,11 +268,61 @@ fn title(filter: &Filter, app: &App) -> String {
         Filter::Picks => "Picks".into(),
         Filter::Rejected => "Rejected".into(),
         Filter::Album(id) => app.library.albums.iter().find(|a| &a.id == id).map_or("Album".into(), |a| a.name.clone()),
+        Filter::Person(key) => app.insights.people.iter().find(|p| &p.key() == key).and_then(|p| p.name.clone()).unwrap_or_else(|| "Someone".into()),
     }
 }
 
 fn day_of(millis: i64) -> chrono::NaiveDate {
     Local.timestamp_millis_opt(millis).single().map_or_else(|| chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(), |t| t.date_naive())
+}
+
+/// Under the search box: how searching by what's in the photos is getting on.
+fn search_status(app: &mut App, ui: &mut Ui) {
+    use shootback_core::ai::{self, catalog::CLIP, Progress};
+    let p = palette(ui.ctx());
+    let small = |t: String| RichText::new(t).size(12.0).color(p.text3);
+    let (done, all) = app.finder.progress(&app.library.shots);
+    if ai::installed(&CLIP) && app.finder.error.is_none() && done >= all {
+        return;
+    }
+    ui.horizontal(|ui| {
+        widgets::right_to_left(ui, |ui| {
+            if !ai::installed(&CLIP) {
+                match ai::status(&CLIP) {
+                    Some(Progress::Downloading(f)) => {
+                        ui.label(small(format!("Getting the search model ... {:.0} %", f * 100.0)));
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+                    }
+                    other => {
+                        if ui
+                            .add(
+                                egui::Label::new(RichText::new("Get the search model (600 MB)").size(12.0).color(p.accent))
+                                    .selectable(false)
+                                    .sense(Sense::click()),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            app.finder.fetch_model();
+                            ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+                        }
+                        let why = match other {
+                            Some(Progress::Failed(e)) => format!("Couldn't get it: {e}."),
+                            _ => "Only file names for now. To find photos by what's in them:".to_string(),
+                        };
+                        ui.label(small(why));
+                    }
+                }
+                return;
+            }
+            if let Some(e) = &app.finder.error {
+                ui.label(RichText::new(e).size(12.0).color(p.accent));
+            }
+            if done < all {
+                ui.label(small(format!("Looked at {done} of {all} photos for search so far")));
+            }
+        });
+    });
 }
 
 enum Row {
@@ -166,9 +344,14 @@ fn grid(app: &mut App, ui: &mut Ui) {
                     }
                 }
                 ui.add_space(12.0);
-                ui.add(egui::TextEdit::singleline(&mut app.search).hint_text("Search file names").desired_width(220.0).margin(egui::vec2(8.0, 6.0)));
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.search).hint_text("Search names or what's in them").desired_width(240.0).margin(egui::vec2(8.0, 6.0)),
+                );
             });
         });
+        if !app.search.trim().is_empty() {
+            search_status(app, ui);
+        }
     });
     ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), Stroke::new(1.0_f32, p.border));
 
@@ -334,6 +517,10 @@ pub fn mark_menu(app: &mut App, ui: &mut Ui, key: &str) {
     }
     if ui.button("Clear mark   U").clicked() {
         app.library.set_mark(key, None);
+        ui.close_menu();
+    }
+    if app.library.shots.iter().any(|s| s.key() == key && s.raw.is_some()) && ui.button("Merge HDR or focus stack …").clicked() {
+        app.merging = crate::merge_view::Merging::new(&app.library.shots, key);
         ui.close_menu();
     }
     ui.separator();

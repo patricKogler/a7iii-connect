@@ -5,6 +5,7 @@
 use crate::gpu::{self, Engine, Inputs, Placement};
 use shootback_core::develop::look::{frame_size, Look};
 use shootback_core::develop::lut::Lut;
+use shootback_core::develop::maps::MaskImage;
 use shootback_core::develop::{Opened, Settings};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -13,13 +14,23 @@ const BAND: usize = 256;
 /// Widest tile drawn at once (with its margin it stays under every GPU's texture limit).
 const TILE: usize = 4096;
 
+/// The maps an export's masks select with: the found ones (subject, sky, depth) and the masks'
+/// own, by slot.
+#[derive(Default, Clone)]
+pub struct MaskMaps {
+    pub found: [Option<MaskImage>; 3],
+    pub own: Vec<Option<MaskImage>>,
+}
+
 /// The photo developed at full size: width, height and RGB bytes. `progress` gets the fraction
 /// done; `cancel` stops it early.
+#[allow(clippy::too_many_arguments)]
 pub fn full_size(
     engine: &Engine,
     opened: &Opened,
     s: &Settings,
     lut: Option<&Lut>,
+    maps: &MaskMaps,
     progress: &dyn Fn(f32),
     cancel: &AtomicBool,
 ) -> Result<(usize, usize, Vec<u8>), String> {
@@ -27,7 +38,7 @@ pub fn full_size(
     let geom = source.geometry(s, false);
     let look = Look::new(source, s);
     let guide = look.guide(source, &geom);
-    let full = opened.full_image()?;
+    let full = opened.full_image(s)?;
     let (w, h) = frame_size(&geom, 1.0);
     let params = look.shader_params(1.0);
     let pad = look.margin(1.0);
@@ -41,6 +52,9 @@ pub fn full_size(
         let (lw, lh, data) = gpu::lut_data(l);
         engine.texture(lw, lh, &data)
     });
+    let found =
+        gpu::found_data([maps.found[0].as_ref(), maps.found[1].as_ref(), maps.found[2].as_ref()]).map(|(fw, fh, data, f)| (engine.texture(fw, fh, &data), f));
+    let own = gpu::maps_data(&maps.own.iter().map(|m| m.as_ref()).collect::<Vec<_>>()).map(|(mw, mh, data)| engine.texture(mw, mh, &data));
     let target = engine.target(tile_w, band);
     let mut out = vec![0u8; w * h * 3];
     let mut y = 0;
@@ -70,6 +84,9 @@ pub fn full_size(
                 guide: guide_tex.as_ref().map(|(t, a)| (t, *a)),
                 coords: coords.as_ref(),
                 lut: lut_tex.as_ref(),
+                found: found.as_ref().map(|(t, f)| (t, *f)),
+                maps: own.as_ref(),
+                overlay: None,
                 params: &params,
                 place,
             };

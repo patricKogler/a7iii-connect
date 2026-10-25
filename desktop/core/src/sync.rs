@@ -16,6 +16,8 @@
 //! - `GET lut?id=`: a LUT in its stored form. `PUT lut?id=&name=&folder=`: one for the library
 //!   (empty deletes it).
 //! - `GET lut-thumb?id=` / `PUT lut-thumb?id=`: a LUT's preview picture, when it has one.
+//! - `POST people`: the phone's remembered people (its people.txt); answers them put together with
+//!   this library's. `state` says `people: true` when this endpoint is there.
 //! - `POST done`: the sync finished.
 
 use crate::albums::{self, AlbumStore};
@@ -23,6 +25,7 @@ use crate::develop::{file_name, luts, presets};
 use crate::import::{day_folder, PartFile};
 use crate::library::{self, write_atomic, Index, Photo, MATCH_WINDOW_MS, STATE_DIR};
 use crate::marks::{self, Mark};
+use crate::people;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -89,6 +92,8 @@ pub struct State {
     pub presets: BTreeMap<String, EditInfo>,
     #[serde(default)]
     pub luts: Vec<LutInfo>,
+    #[serde(default)]
+    pub people: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -264,6 +269,7 @@ impl Library {
                 .into_iter()
                 .map(|e| LutInfo { thumbnail: luts::thumbnail(&self.root, &e.id).is_some(), id: e.id, name: e.name, folder: e.folder })
                 .collect(),
+            people: true,
         }
     }
 
@@ -359,6 +365,19 @@ impl Library {
             self.shared.changed.store(true, Ordering::Relaxed);
         }
         Ok(albums::encode(&merged))
+    }
+
+    /// Puts the phone's remembered people together with these and answers the result.
+    pub fn merge_people(&mut self, theirs: &str) -> io::Result<String> {
+        let f = self.state_dir().join("people.txt");
+        let mine = people::decode(&fs::read_to_string(&f).unwrap_or_default());
+        let merged = people::merge(&mine, &people::decode(theirs));
+        if merged != mine {
+            fs::create_dir_all(self.state_dir())?;
+            crate::library::write_atomic(&f, people::encode(&merged).as_bytes())?;
+            self.shared.changed.store(true, Ordering::Relaxed);
+        }
+        Ok(people::encode(&merged))
     }
 
     fn done(&mut self, phone: &Phone) {
@@ -473,6 +492,10 @@ impl Library {
                 }
             }
             ("POST", "/v1/albums") => match text().and_then(|t| self.merge_albums(&t)) {
+                Ok(merged) => Reply::text(200, merged),
+                Err(e) => fail(e),
+            },
+            ("POST", "/v1/people") => match text().and_then(|t| self.merge_people(&t)) {
                 Ok(merged) => Reply::text(200, merged),
                 Err(e) => fail(e),
             },
@@ -641,6 +664,21 @@ mod tests {
 
         call(&mut lib, "POST", "/v1/done", "s3cret", b"");
         assert!(shared.phones.lock().unwrap()[0].last_sync > 0);
+    }
+
+    #[test]
+    fn people_come_together_with_the_phones() {
+        let (d, mut lib, _) = call_ready();
+        let look = people::encode(&people::Remembered {
+            people: vec![people::Anchor { id: "p1".into(), name: Some("Ann".into()), centroid: vec![1.0, 0.0, 0.0] }],
+            next: 2,
+        });
+        let (_, body) = call(&mut lib, "GET", "/v1/state", "s3cret", b"");
+        assert!(serde_json::from_slice::<State>(&body).unwrap().people);
+        let (s, merged) = call(&mut lib, "POST", "/v1/people", "s3cret", look.as_bytes());
+        assert_eq!(s, 200);
+        assert_eq!(people::decode(std::str::from_utf8(&merged).unwrap()).people[0].name.as_deref(), Some("Ann"));
+        assert!(d.path().join(STATE_DIR).join("people.txt").exists());
     }
 
     #[test]

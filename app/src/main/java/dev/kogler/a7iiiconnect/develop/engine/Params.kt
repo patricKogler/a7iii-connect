@@ -184,6 +184,13 @@ data class Settings(
     val masks: List<Mask> = emptyList(),
     /** A film look from a LUT (see [Luts]), on top of the profile; null for none. */
     val lut: String? = null,
+    /**
+     * Masks made on the computer that this editor doesn't know (brush, click-to-select, depth),
+     * as written, so editing here keeps them. They come after [masks].
+     */
+    val otherMasks: List<String> = emptyList(),
+    /** Values from the computer this editor doesn't know (AI denoise), kept as written. */
+    val otherValues: Map<String, String> = emptyMap(),
 ) {
     operator fun get(p: Param): Float = values[p.key] ?: p.default
     fun on(p: Param) = get(p) >= 0.5f
@@ -248,6 +255,8 @@ data class Settings(
         for ((k, v) in values.toSortedMap()) append("$k=$v\n")
         curves.forEachIndexed { i, c -> if (!c.isIdentity) append("curve.$i=${c.encode()}\n") }
         masks.forEachIndexed { i, m -> append("mask.$i=${m.encode()}\n") }
+        otherMasks.forEachIndexed { i, m -> append("mask.${masks.size + i}=$m\n") }
+        for ((k, v) in otherValues.toSortedMap()) append("$k=$v\n")
     }
 
     companion object {
@@ -257,6 +266,8 @@ data class Settings(
             val values = HashMap<String, Float>()
             val curves = MutableList(4) { Curve() }
             val masks = sortedMapOf<Int, Mask>()
+            val others = sortedMapOf<Int, String>()
+            val otherValues = HashMap<String, String>()
             for (line in text.lineSequence()) {
                 val i = line.indexOf('=')
                 if (i <= 0) continue
@@ -266,15 +277,22 @@ data class Settings(
                     k == "profile" -> profile = Profile.entries.firstOrNull { it.name == v } ?: Profile.COLOR
                     k == "lut" -> lut = v.takeIf { it.isNotEmpty() }
                     k.startsWith("curve.") && k.length == 7 -> k[6].digitToIntOrNull()?.takeIf { it in 0..3 }?.let { curves[it] = Curve.decode(v) }
-                    k.startsWith("mask.") -> k.removePrefix("mask.").toIntOrNull()?.let { i -> Mask.decode(v)?.let { masks[i] = it } }
+                    k.startsWith("mask.") -> k.removePrefix("mask.").toIntOrNull()?.let { i ->
+                        val m = Mask.decode(v)
+                        if (m != null) masks[i] = m else if (v.isNotEmpty()) others[i] = v
+                    }
                     else -> {
-                        val p = P.byKey[k] ?: continue
+                        val p = P.byKey[k]
+                        if (p == null) {
+                            if (k != "v") otherValues[k] = v
+                            continue
+                        }
                         val f = v.toFloatOrNull() ?: continue
                         if (f != p.default) values[k] = f
                     }
                 }
             }
-            return Settings(values, profile, curves, masks.values.toList(), lut)
+            return Settings(values, profile, curves, masks.values.toList(), lut, others.values.toList(), otherValues)
         }
     }
 }

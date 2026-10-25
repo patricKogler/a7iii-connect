@@ -22,7 +22,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Some(shot) => app.editor.open(ctx, shot),
         None => app.editor.close(),
     }
-    let preview = app.editor.poll();
+    let preview = app.editor.poll(ctx);
     let before = app.editor.s.clone();
     egui::SidePanel::right("edit-panels")
         .default_width(320.0)
@@ -85,8 +85,16 @@ fn panel(app: &mut App, ui: &mut Ui) {
             ui.label(RichText::new(e).color(p.accent));
         }
         let mut s = ed.s.clone();
-        crate::looks::panels(ui, looks, ed, &app.library.root, &mut s);
-        crate::develop_view::panels(ui, ed, &mut s);
+        if ed.removing {
+            ed.overlay = None;
+            crate::remove_view::panel(ui, ed, &mut s);
+        } else if ed.masking {
+            crate::mask_view::panel(ui, ed, &mut s);
+        } else {
+            ed.overlay = None;
+            crate::looks::panels(ui, looks, ed, &app.library.root, &mut s);
+            crate::develop_view::panels(ui, ed, &mut s);
+        }
         ed.change(s);
         ui.add_space(10.0);
         let id = ui.make_persistent_id("edit-info");
@@ -100,7 +108,7 @@ fn panel(app: &mut App, ui: &mut Ui) {
     if status.running {
         ui.add(egui::ProgressBar::new(status.progress).desired_height(6.0).fill(p.seal));
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Exporting at full size ...").color(p.text2));
+            ui.label(RichText::new(&status.message).color(p.text2));
             if ui
                 .add(egui::Label::new(RichText::new("Cancel").color(p.text3)).selectable(false).sense(Sense::click()))
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -110,8 +118,11 @@ fn panel(app: &mut App, ui: &mut Ui) {
             }
         });
     } else {
+        export_size(ui, ed);
+        ui.add_space(4.0);
         ui.add_enabled_ui(ed.opened.is_some(), |ui| {
-            if seal_button(ui, "Export JPEG").on_hover_text(format!("Full size, into {}  (Ctrl+Shift+E)", ed.export_dir().display())).clicked() {
+            let size = if ed.export_scale > 1 { format!("{}x larger by AI upscaling", ed.export_scale) } else { "Full size".to_string() };
+            if seal_button(ui, "Export JPEG").on_hover_text(format!("{size}, into {}  (Ctrl+Shift+E)", ed.export_dir().display())).clicked() {
                 ed.export(ui.ctx());
             }
         });
@@ -129,6 +140,31 @@ fn panel(app: &mut App, ui: &mut Ui) {
                 }
             });
         }
+    }
+}
+
+/// The export's size: the photo's own, or made 2 or 4 times larger by AI upscaling (when the
+/// result stays a sensible size).
+fn export_size(ui: &mut Ui, ed: &mut crate::editor::Editor) {
+    let p = palette(ui.ctx());
+    let (w, h) = ed.opened.as_ref().map_or((0, 0), |o| (o.source.full_width, o.source.full_height));
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Size").color(p.text2));
+        for (scale, label) in [(1, "Full"), (2, "2x"), (4, "4x")] {
+            let fits = scale == 1 || shootback_core::ai::upscale::fits(w, h, scale);
+            let tip = match scale {
+                1 => format!("{w} x {h}, as the photo is"),
+                _ if fits => format!("{} x {}, upscaled by AI (the model downloads the first time)", w * scale, h * scale),
+                _ => "Too large for this photo".to_string(),
+            };
+            let resp = ui.add_enabled_ui(fits, |ui| crate::widgets::chip(ui, ed.export_scale == scale, label)).inner.on_hover_text(tip);
+            if resp.clicked() {
+                ed.export_scale = scale;
+            }
+        }
+    });
+    if !shootback_core::ai::upscale::fits(w, h, ed.export_scale) {
+        ed.export_scale = 1;
     }
 }
 
@@ -154,6 +190,20 @@ fn stage(app: &mut App, ui: &mut Ui, preview: Option<(egui::TextureId, Vec2)>) {
     ui.memory_mut(|m| m.data.insert_temp(id, before));
     if stage_chip(&mut bar_ui, app.editor.cropping, "Crop  R").on_hover_text("Drag the edges, corners or the middle of the box").clicked() {
         app.editor.cropping = !app.editor.cropping;
+        app.editor.masking = false;
+        app.editor.removing = false;
+    }
+    let masks = if app.editor.s.masks.is_empty() { "Masks  M".to_string() } else { format!("Masks {}  M", app.editor.s.masks.len()) };
+    if stage_chip(&mut bar_ui, app.editor.masking, &masks).on_hover_text("Gradients, brush, subject, sky, objects and depth").clicked() {
+        app.editor.masking = !app.editor.masking;
+        app.editor.cropping = false;
+        app.editor.removing = false;
+    }
+    let remove = if app.editor.s.removals.is_empty() { "Remove  Q".to_string() } else { format!("Remove {}  Q", app.editor.s.removals.len()) };
+    if stage_chip(&mut bar_ui, app.editor.removing, &remove).on_hover_text("Paint things out, take out dust spots").clicked() {
+        app.editor.removing = !app.editor.removing;
+        app.editor.cropping = false;
+        app.editor.masking = false;
     }
     let ed = &app.editor;
     let state = if ed.error.is_some() {
@@ -189,6 +239,13 @@ fn stage(app: &mut App, ui: &mut Ui, preview: Option<(egui::TextureId, Vec2)>) {
                 paint_badge(ui, ui.painter(), r.left_top() + Vec2::new(10.0, 10.0), "Before", Align2::LEFT_TOP, false);
             } else if app.editor.cropping && preview.is_some() {
                 crop_overlay(app, ui, r);
+            } else if app.editor.masking && preview.is_some() {
+                crate::mask_view::overlay(&mut app.editor, ui, r);
+            } else if app.editor.removing && preview.is_some() {
+                if app.editor.show_spots {
+                    crate::remove_view::spots(&mut app.editor, ui, r);
+                }
+                crate::remove_view::overlay(&mut app.editor, ui, r);
             }
         }
         None if app.images.failed(&show.path, LARGE) => {
@@ -337,6 +394,8 @@ pub fn keys(app: &mut App, ctx: &egui::Context) {
         return;
     }
     let ed = &mut app.editor;
+    crate::mask_view::keys(ed, ctx);
+    crate::remove_view::keys(ed, ctx);
     let (undo, redo, export, copy, paste) = ctx.input(|i| {
         let cmd = i.modifiers.command;
         let shift = i.modifiers.shift;
@@ -369,10 +428,32 @@ pub fn keys(app: &mut App, ctx: &egui::Context) {
     if export {
         ed.export(ctx);
     }
-    let (crop, done) = ctx.input(|i| (!i.modifiers.any() && i.key_pressed(Key::R), i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape)));
+    let (crop, masks, remove, done) = ctx.input(|i| {
+        let plain = !i.modifiers.any();
+        (
+            plain && i.key_pressed(Key::R),
+            plain && i.key_pressed(Key::M),
+            plain && i.key_pressed(Key::Q),
+            i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape),
+        )
+    });
     if crop && !ctx.wants_keyboard_input() {
         ed.cropping = !ed.cropping;
+        ed.masking = false;
+        ed.removing = false;
+    } else if masks && !ctx.wants_keyboard_input() {
+        ed.masking = !ed.masking;
+        ed.cropping = false;
+        ed.removing = false;
+    } else if remove && !ctx.wants_keyboard_input() {
+        ed.removing = !ed.removing;
+        ed.cropping = false;
+        ed.masking = false;
+    } else if done && ed.removing {
+        ed.removing = false;
     } else if done && ed.cropping {
         ed.cropping = false;
+    } else if done && ed.masking && ed.tool.selected.is_none() {
+        ed.masking = false;
     }
 }

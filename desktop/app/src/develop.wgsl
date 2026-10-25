@@ -28,6 +28,7 @@ struct U {
     src: vec4f,        // srcSize.xy, coordScale.xy
     subj: vec4f,       // subjSize.xy, lutSize
     masks: array<vec4f, 38>,
+    extra: vec4f,      // hasDepth, overlay (mask number + 1, 0 for none)
 }
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -39,6 +40,9 @@ struct U {
 @group(0) @binding(6) var coords: texture_2d<f32>;
 @group(0) @binding(7) var subject: texture_2d<f32>;
 @group(0) @binding(8) var lut: texture_2d<f32>;
+// Masks' own maps (painted or picked), two rows of four: slot k in the channel k % 4 of the
+// top (k < 4) or bottom half.
+@group(0) @binding(9) var maps: texture_2d<f32>;
 
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -183,6 +187,25 @@ fn skyAt(uv: vec2f) -> f32 {
     return ev(subject, uv * u.subj.xy).g;
 }
 
+// Nearness (1 nearest) rides in the blue channel.
+fn depthAt(uv: vec2f) -> f32 {
+    if (u.extra.x == 0.0) { return 0.0; }
+    return ev(subject, uv * u.subj.xy).b;
+}
+
+fn ownMap(slot: f32, uv: vec2f) -> f32 {
+    let size = vec2f(textureDimensions(maps));
+    let hh = size.y * 0.5;
+    let half = floor(slot / 4.0);
+    let y = clamp(uv.y * hh, 0.5, hh - 0.5) + half * hh;
+    let v = ev(maps, vec2f(uv.x * size.x, y));
+    let ch = i32(slot - half * 4.0);
+    if (ch == 0) { return v.r; }
+    if (ch == 1) { return v.g; }
+    if (ch == 2) { return v.b; }
+    return v.a;
+}
+
 fn displayLum(p: vec2f) -> f32 { return tone(luma(lin(p))); }
 
 // Binomial weights 1 4 6 4 1.
@@ -259,6 +282,8 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     var lDehaze = 0.0;
     var lSat = 0.0;
     let maskCount = u.grade.w;
+    // How much the mask shown as an overlay covers this pixel.
+    var shown = 0.0;
     if (maskCount > 0.0) {
         let uv = ev(coords, p * u.src.zw + 0.5).rg;
         let q = uv * u.src.xy;
@@ -281,11 +306,18 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                     w = 1.0 - smoothstep(1.0 - maskData(o + 7), 1.0, sqrt(rx * rx + ry * ry));
                 } else if (kind < 3.5) {
                     w = subj;
-                } else {
+                } else if (kind < 4.5) {
                     w = skyAt(uv);
+                } else if (kind < 5.5) {
+                    w = ownMap(maskData(o + 1), uv);
+                } else {
+                    let d = depthAt(uv);
+                    let soft = maskData(o + 7) * 0.25;
+                    w = smoothstep(maskData(o + 1) - soft, maskData(o + 1) + 0.0001, d) * (1.0 - smoothstep(maskData(o + 2), maskData(o + 2) + soft + 0.0001, d));
                 }
                 if (maskData(o + 8) > 0.5) { w = 1.0 - w; }
                 if (maskData(o + 9) > 0.5) { w *= 1.0 - subj; }
+                if (f32(k) + 1.0 == u.extra.y) { shown = w; }
                 lEv += w * maskData(o + 10);
                 lTemp += w * maskData(o + 11);
                 lTint += w * maskData(o + 12);
@@ -413,6 +445,11 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         let nz = valueNoise(q) * (1.0 - rough) + hash(floor(q * 3.0)) * rough;
         let lg = luma(c);
         c += nz * grain * 0.16 * (0.35 + 2.6 * lg * (1.0 - lg));
+    }
+
+    // The mask being edited, tinted on top.
+    if (u.extra.y > 0.0) {
+        c = mix(c, vec3f(1.0, 0.18, 0.12), shown * 0.55);
     }
 
     // The phone writes these display values as they are; here the sRGB target encodes on write,

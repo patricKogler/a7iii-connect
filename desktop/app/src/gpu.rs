@@ -9,6 +9,7 @@ use shootback_core::develop::geometry::Geometry;
 use shootback_core::develop::image::LinearImage;
 use shootback_core::develop::look::{Guide, ShaderParams, MASK_MAX, MASK_STRIDE};
 use shootback_core::develop::lut::Lut;
+use shootback_core::develop::maps::MaskImage;
 use std::sync::Arc;
 
 pub const SHADER: &str = include_str!("develop.wgsl");
@@ -20,8 +21,8 @@ pub const COORD_STEP: usize = 8;
 /// linear values) and egui decodes on sampling; read back, the bytes are display sRGB.
 const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// Floats in the uniform block (70 vec4s, the order of `struct U`).
-const UNIFORM_FLOATS: usize = 70 * 4;
+/// Floats in the uniform block (71 vec4s, the order of `struct U`).
+const UNIFORM_FLOATS: usize = 71 * 4;
 
 /// The drawn area and where it sits in the whole frame: a tile of a bigger render is `width` x
 /// `height` at (`origin_x`, `origin_y`) of a `frame_w` x `frame_h` frame, and its scene has
@@ -60,6 +61,12 @@ pub struct Inputs<'a> {
     pub guide: Option<(&'a Tex, [f32; 3])>,
     pub coords: Option<&'a Tex>,
     pub lut: Option<&'a Tex>,
+    /// The subject (red), sky (green) and nearness (blue) maps, and which of them are found.
+    pub found: Option<(&'a Tex, [bool; 3])>,
+    /// Masks' own maps, see [`maps_data`].
+    pub maps: Option<&'a Tex>,
+    /// The mask to tint on top (its index).
+    pub overlay: Option<usize>,
     pub params: &'a ShaderParams,
     pub place: Placement,
 }
@@ -100,7 +107,7 @@ impl Engine {
                 count: None,
             },
         ];
-        entries.extend((2..=8).map(tex_entry));
+        entries.extend((2..=9).map(tex_entry));
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("develop"), entries: &entries });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("develop"),
@@ -170,8 +177,9 @@ impl Engine {
             view(inputs.curves),
             view(inputs.guide.map(|g| g.0)),
             view(inputs.coords),
-            &self.dummy.view,
+            view(inputs.found.map(|f| f.0)),
             view(inputs.lut),
+            view(inputs.maps),
         ];
         let mut entries = vec![
             wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
@@ -278,19 +286,26 @@ fn uniforms(i: &Inputs) -> Vec<f32> {
     for a in [p.mix_hue, p.mix_sat, p.mix_lum, c, prev, next] {
         u.extend(a);
     }
-    let masks = if i.coords.is_some() { p.mask_count } else { 0 };
+    let masks = match (i.coords.is_some(), i.overlay) {
+        (false, _) => 0,
+        (true, Some(k)) if k < p.mask_total => p.mask_total,
+        (true, _) => p.mask_count,
+    };
     u.extend([flag(p.has_grading), p.blending, p.balance, masks as f32]);
     u.extend(p.grade_offset);
     u.extend(p.grade_lum);
     u.extend([p.vignette, p.vig_mid, p.vig_feather, p.vig_round]);
     u.extend([p.vig_highlights, p.grain, p.grain_cell, p.grain_rough]);
     u.extend([p.sharpen, p.sharpen_radius, p.sharpen_limit, p.sharpen_masking]);
-    // No subject or sky finder here yet: those masks select nothing.
-    u.extend([p.scale, 0.0, 0.0, if i.lut.is_some() { p.lut_amount } else { 0.0 }]);
+    let found = i.found.map_or([false; 3], |f| f.1);
+    u.extend([p.scale, flag(found[0] && p.uses_subject), flag(found[1] && p.uses_sky), if i.lut.is_some() { p.lut_amount } else { 0.0 }]);
     let step = 1.0 / COORD_STEP as f32;
     u.extend([p.source_size[0], p.source_size[1], step, step]);
-    u.extend([1.0, 1.0, i.lut.map_or(2, |l| l.height) as f32, 0.0]);
+    let (fw, fh) = i.found.map_or((1, 1), |f| (f.0.width, f.0.height));
+    u.extend([fw as f32, fh as f32, i.lut.map_or(2, |l| l.height) as f32, 0.0]);
     u.extend(p.masks);
+    let overlay = i.overlay.filter(|&k| k < masks).map_or(0.0, |k| k as f32 + 1.0);
+    u.extend([flag(found[2] && p.uses_depth), overlay, 0.0, 0.0]);
     u.resize(UNIFORM_FLOATS, 0.0);
     debug_assert_eq!(MASK_MAX * MASK_STRIDE, 152);
     u
@@ -338,6 +353,51 @@ pub fn coords_data(geom: &Geometry, scale: f64, w: usize, h: usize, ox: usize, o
         }
     }
     (nx, ny, out)
+}
+
+/// The photo's found maps in one texture: subject in red, sky in green, nearness in blue, each
+/// resized to the first one's size. None when none is found.
+pub fn found_data(maps: [Option<&MaskImage>; 3]) -> Option<(usize, usize, Vec<f32>, [bool; 3])> {
+    let first = maps.iter().flatten().next()?;
+    let (w, h) = (first.width, first.height);
+    let planes: Vec<Option<Vec<f32>>> = maps.iter().map(|m| m.map(|m| fit(m, w, h))).collect();
+    let mut out = vec![0.0; w * h * 4];
+    for (c, p) in planes.iter().enumerate() {
+        if let Some(p) = p {
+            for i in 0..w * h {
+                out[i * 4 + c] = p[i];
+            }
+        }
+    }
+    for i in 0..w * h {
+        out[i * 4 + 3] = 1.0;
+    }
+    Some((w, h, out, [planes[0].is_some(), planes[1].is_some(), planes[2].is_some()]))
+}
+
+/// Masks' own maps by slot (see `map_slots`), packed two rows of four channels: a texture twice
+/// the first map's height.
+pub fn maps_data(slots: &[Option<&MaskImage>]) -> Option<(usize, usize, Vec<f32>)> {
+    let first = slots.iter().flatten().next()?;
+    let (w, h) = (first.width, first.height);
+    let mut out = vec![0.0; w * h * 2 * 4];
+    for (k, m) in slots.iter().enumerate().take(8) {
+        let Some(m) = m else { continue };
+        let p = fit(m, w, h);
+        let (half, ch) = (k / 4, k % 4);
+        for i in 0..w * h {
+            out[(half * w * h + i) * 4 + ch] = p[i];
+        }
+    }
+    Some((w, 2 * h, out))
+}
+
+fn fit(m: &MaskImage, w: usize, h: usize) -> Vec<f32> {
+    if m.width == w && m.height == h {
+        m.data.clone()
+    } else {
+        shootback_core::ai::tensor::resize_map(&m.data, m.width, m.height, w, h)
+    }
 }
 
 /// A LUT as one texture: its blue slices side by side, red across each and green down, so the
@@ -397,7 +457,19 @@ mod tests {
         let scene = engine.texture(w, h, &scene_data(&source.image, 0, w));
         let tone = engine.texture(params.tone.len(), 1, &tone_data(&params.tone));
         let target = engine.target(w, h);
-        let inputs = Inputs { scene: &scene, tone: &tone, curves: None, guide: None, coords: None, lut: None, params: &params, place: Placement::whole(w, h) };
+        let inputs = Inputs {
+            scene: &scene,
+            tone: &tone,
+            curves: None,
+            guide: None,
+            coords: None,
+            lut: None,
+            found: None,
+            maps: None,
+            overlay: None,
+            params: &params,
+            place: Placement::whole(w, h),
+        };
         engine.draw(&inputs, &target);
         let out = engine.read(&target, w, h);
         let worst = (0..w * h).flat_map(|i| (0..3).map(move |c| (i, c))).map(|(i, c)| (out[i * 4 + c] as i32 - srgb[i * 3 + c] as i32).abs()).max().unwrap();

@@ -94,6 +94,8 @@ pub enum Filter {
     Picks,
     Rejected,
     Album(String),
+    /// Shots with someone in them, by `Person::key`.
+    Person(String),
 }
 
 pub struct Library {
@@ -105,6 +107,8 @@ pub struct Library {
     scan: Option<Receiver<Vec<Photo>>>,
     pub scanned_once: bool,
     meta: HashMap<PathBuf, PhotoMeta>,
+    /// The shots each person is in, by `Person::key` (kept up to date by `Insights`).
+    pub people: HashMap<String, HashSet<String>>,
 }
 
 impl Library {
@@ -120,6 +124,7 @@ impl Library {
             scan: None,
             scanned_once: false,
             meta: HashMap::new(),
+            people: HashMap::new(),
         };
         lib.rescan();
         lib
@@ -227,6 +232,7 @@ impl Library {
             Filter::Picks => self.mark(shot) == Some(Mark::Pick),
             Filter::Rejected => self.mark(shot) == Some(Mark::Reject),
             Filter::Album(id) => self.albums.iter().any(|a| &a.id == id && a.contains(&shot.key())),
+            Filter::Person(key) => self.people.get(key).is_some_and(|s| s.contains(&shot.key())),
         }
     }
 
