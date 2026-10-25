@@ -33,6 +33,20 @@ mod wheel;
 mod widgets;
 mod zoom;
 
+/// What to do when the window gives no picture to draw into. After the screen was off, NVIDIA's
+/// driver can leave the window's pictures stuck for good, each try timing out (the app looked
+/// frozen while waiting a second at a time): they are made anew then, as when they're lost.
+fn surface_error(err: eframe::wgpu::SurfaceError) -> eframe::egui_wgpu::SurfaceErrorAction {
+    use eframe::{egui_wgpu::SurfaceErrorAction, wgpu::SurfaceError};
+    match err {
+        SurfaceError::Timeout | SurfaceError::Lost => SurfaceErrorAction::RecreateSurface,
+        // A minimized window on Windows: nothing to draw until it's back.
+        SurfaceError::Outdated if cfg!(windows) => SurfaceErrorAction::SkipFrame,
+        SurfaceError::Outdated => SurfaceErrorAction::RecreateSurface,
+        _ => SurfaceErrorAction::SkipFrame,
+    }
+}
+
 fn main() -> eframe::Result {
     // Models and the runtime that runs them live beside the app's settings.
     if let Some(dir) = eframe::storage_dir("shootback") {
@@ -46,9 +60,13 @@ fn main() -> eframe::Result {
             .with_min_inner_size([960.0, 600.0])
             .with_icon(app::icon()),
         // Not waiting for the screen to show each frame: NVIDIA's Vulkan on Wayland stops showing
-        // them while the screen is off or the window hidden, and a waiting app then hangs for
-        // good. Frames are only drawn when something changes, so this costs nothing.
-        wgpu_options: eframe::egui_wgpu::WgpuConfiguration { present_mode: eframe::wgpu::PresentMode::AutoNoVsync, ..Default::default() },
+        // them while the screen is off or the window hidden. Frames are only drawn when something
+        // changes, so this costs nothing.
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            present_mode: eframe::wgpu::PresentMode::AutoNoVsync,
+            on_surface_error: std::sync::Arc::new(surface_error),
+            ..Default::default()
+        },
         ..Default::default()
     };
     eframe::run_native("Shootback", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
