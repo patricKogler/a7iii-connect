@@ -183,7 +183,11 @@ impl Insights {
 
     /// Calls the people with `ids` `name` (blank forgets the name).
     pub fn rename(&mut self, ids: &[String], name: &str) {
-        let seen: Vec<&Person> = self.people.iter().filter(|p| ids.contains(&p.id)).collect();
+        // Shown as one: everyone with the same name as them.
+        let keys: Vec<String> = self.people.iter().filter(|p| ids.contains(&p.id)).map(Person::key).collect();
+        let seen: Vec<&Person> = self.people.iter().filter(|p| keys.contains(&p.key())).collect();
+        let ids: Vec<String> = seen.iter().map(|p| p.id.clone()).collect();
+        let ids = &ids[..];
         self.remembered = people::rename(&self.remembered, &seen, name);
         self.save(false, &self.remembered);
         self.regroup(false, ids);

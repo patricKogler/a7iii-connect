@@ -22,6 +22,8 @@ fn thresholds(len: usize) -> (f32, f32) {
         (0.35, 0.45)
     }
 }
+/// Faces narrower than this (of the picture's width) only join someone already found.
+const CLEAR_FACE: f32 = 0.045;
 /// The length of the phone's (SFace) looks.
 const PHONE_LOOK: usize = 128;
 /// Unnamed people in fewer shots than this aren't shown.
@@ -120,25 +122,34 @@ pub fn group(insights: &HashMap<String, Insight>, known: &Remembered) -> Vec<Per
     let mut embeddings: HashMap<FaceRef, &[f32]> = HashMap::new();
     let mut keys: Vec<&String> = insights.keys().collect();
     keys.sort();
-    for key in keys {
-        for (i, f) in insights[key].faces.iter().enumerate() {
-            let Some(e) = f.embedding.as_deref() else { continue };
-            if groups.first().is_some_and(|g| g.sum.len() != e.len()) {
-                continue;
-            }
-            let r = FaceRef { shot: key.clone(), index: i };
-            embeddings.insert(r.clone(), e);
-            let best = groups.iter_mut().max_by(|a, b| cosine(&a.centroid, e).total_cmp(&cosine(&b.centroid, e)));
-            match best {
-                Some(g) if cosine(&g.centroid, e) >= thresholds(e.len()).0 => g.add(r, e),
-                _ => {
-                    let mut g = Group::new(format!("p{next}"), None, vec![0.0; e.len()]);
-                    next += 1;
-                    g.add(r, e);
-                    groups.push(g);
-                }
-            }
+    // Faces big in the picture first: they're told apart best, so they make the people, and
+    // small faces (whose looks are rougher) only join someone, never start someone new.
+    let all: Vec<(FaceRef, &[f32], bool)> = keys
+        .iter()
+        .flat_map(|key| {
+            insights[*key]
+                .faces
+                .iter()
+                .enumerate()
+                .filter_map(|(i, f)| Some((FaceRef { shot: (*key).clone(), index: i }, f.embedding.as_deref()?, f.width() >= CLEAR_FACE)))
+        })
+        .collect();
+    for (r, e, clear) in all.iter().filter(|f| f.2).chain(all.iter().filter(|f| !f.2)) {
+        if groups.first().is_some_and(|g| g.sum.len() != e.len()) {
+            continue;
         }
+        let best = groups.iter_mut().max_by(|a, b| cosine(&a.centroid, e).total_cmp(&cosine(&b.centroid, e)));
+        match best {
+            Some(g) if cosine(&g.centroid, e) >= thresholds(e.len()).0 => g.add(r.clone(), e),
+            _ if *clear => {
+                let mut g = Group::new(format!("p{next}"), None, vec![0.0; e.len()]);
+                next += 1;
+                g.add(r.clone(), e);
+                groups.push(g);
+            }
+            _ => continue,
+        }
+        embeddings.insert(r.clone(), e);
     }
     // Unnamed groups that turn out alike join the bigger one.
     loop {
@@ -173,9 +184,19 @@ pub fn group(insights: &HashMap<String, Insight>, known: &Remembered) -> Vec<Per
 }
 
 /// People worth showing: named ones, and anyone in two shots or more; named first, then the most
-/// photographed.
-pub fn shown(people: &[Person]) -> Vec<&Person> {
-    let mut out: Vec<&Person> = people.iter().filter(|p| !p.faces.is_empty() && (p.name.is_some() || p.shots() >= MIN_SHOTS)).collect();
+/// photographed. People given the same name are one (someone can look unlike themselves: a
+/// child grown up, a face far off), under the id of the one in the most shots.
+pub fn shown(people: &[Person]) -> Vec<Person> {
+    let mut by_key: Vec<Person> = Vec::new();
+    let mut sorted: Vec<&Person> = people.iter().filter(|p| !p.faces.is_empty()).collect();
+    sorted.sort_by_key(|p| std::cmp::Reverse(p.shots()));
+    for p in sorted {
+        match by_key.iter_mut().find(|q| q.name.is_some() && q.name == p.name) {
+            Some(q) => q.faces.extend(p.faces.iter().cloned()),
+            None => by_key.push(p.clone()),
+        }
+    }
+    let mut out: Vec<Person> = by_key.into_iter().filter(|p| p.name.is_some() || p.shots() >= MIN_SHOTS).collect();
     out.sort_by_key(|p| (p.name.is_none(), std::cmp::Reverse(p.shots())));
     out
 }
@@ -444,5 +465,32 @@ mod tests {
         let first = |n: &Remembered| n.people.iter().find(|a| a.id == "d0").and_then(|a| a.name.clone());
         assert_eq!(first(&names_from_phone(&people, &looks, &mine, &renamed, true)).as_deref(), Some("Anna"));
         assert_eq!(first(&names_from_phone(&people, &looks, &mine, &renamed, false)).as_deref(), Some("Ann"));
+    }
+
+    #[test]
+    fn one_name_is_one_person_and_small_faces_only_join() {
+        let ann = [1.0, 0.0, 0.0];
+        let mut insights = HashMap::new();
+        insights.insert("a".to_string(), shot(&[&ann]));
+        insights.insert("b".to_string(), shot(&[&ann]));
+        // Far off and looking unlike anyone: too small to be someone new.
+        let mut far = shot(&[&[0.0, 0.0, 1.0]]);
+        far.faces[0].b = [0.0, 0.0, 0.02, 0.03];
+        insights.insert("c".to_string(), far);
+        let people = group(&insights, &Remembered::default());
+        assert_eq!(people.len(), 1);
+        // Two groups called Ann (one far off, the other near) show as one Ann in both shots.
+        let split = vec![
+            Person { id: "p1".into(), name: Some("Ann".into()), centroid: unit(&ann), faces: vec![FaceRef { shot: "a".into(), index: 0 }] },
+            Person {
+                id: "p2".into(),
+                name: Some("Ann".into()),
+                centroid: unit(&[0.0, 1.0, 0.0]),
+                faces: vec![FaceRef { shot: "b".into(), index: 0 }, FaceRef { shot: "c".into(), index: 0 }],
+            },
+        ];
+        let s = shown(&split);
+        assert_eq!(s.len(), 1);
+        assert_eq!((s[0].id.as_str(), s[0].shots()), ("p2", 3));
     }
 }
