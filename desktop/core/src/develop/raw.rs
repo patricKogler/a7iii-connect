@@ -136,6 +136,14 @@ impl<'a> Tiff<'a> {
             .collect()
     }
 
+    fn rationals(&self, e: &Entry) -> Vec<f64> {
+        let Ok(b) = self.entry_bytes(e) else { return Vec::new() };
+        if e.kind != 5 {
+            return Vec::new();
+        }
+        (0..e.count).map(|i| self.u32(&b[i * 8..]) as f64 / self.u32(&b[i * 8 + 4..]).max(1) as f64).collect()
+    }
+
     fn int(&self, ifd: &[Entry], tag: u16) -> Option<i64> {
         ifd.iter().find(|e| e.tag == tag).and_then(|e| self.ints(e).first().copied())
     }
@@ -168,6 +176,9 @@ const TAG_JPEG_OFFSET: u16 = 0x201;
 const TAG_JPEG_LENGTH: u16 = 0x202;
 const TAG_SONY_CURVE: u16 = 0x7010;
 const TAG_CFA_PATTERN: u16 = 0x828e;
+const TAG_BLACK_LEVEL: u16 = 0xc61a;
+const TAG_WHITE_LEVEL: u16 = 0xc61d;
+const TAG_AS_SHOT_NEUTRAL: u16 = 0xc628;
 const TAG_CROP_ORIGIN: u16 = 0xc61f;
 const TAG_CROP_SIZE: u16 = 0xc620;
 const TAG_SR2_PRIVATE: u16 = 0xc634;
@@ -239,6 +250,19 @@ pub fn read_info(src: &[u8]) -> Result<RawInfo, String> {
                 *b >>= 2;
             }
             white >>= 2;
+        }
+    }
+    // Raws Shootback writes itself (HDR merges, focus stacks) say their levels and white
+    // balance in the DNG tags.
+    if let Some(i) = raw_ifd {
+        if let Some(v) = find(i, TAG_BLACK_LEVEL).map(|e| tiff.ints(e)).filter(|v| !v.is_empty()) {
+            black = [v[0] as i32, v[v.len().min(2) - 1] as i32, v[v.len() - 1] as i32];
+        }
+        if let Some(w) = tiff.int(i, TAG_WHITE_LEVEL) {
+            white = w as i32;
+        }
+        if let Some(n) = find(i, TAG_AS_SHOT_NEUTRAL).map(|e| tiff.rationals(e)).filter(|n| n.len() == 3 && n.iter().all(|&v| v > 0.0)) {
+            as_shot = [(n[1] / n[0]) as f32, 1.0, (n[1] / n[2]) as f32];
         }
     }
 

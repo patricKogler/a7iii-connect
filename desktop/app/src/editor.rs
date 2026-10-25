@@ -195,6 +195,11 @@ impl Editor {
         }
     }
 
+    /// Which shots have edits, read again.
+    pub fn store_edited(&self) -> HashSet<String> {
+        self.store.edited()
+    }
+
     /// Reads the edits again: a phone changed them. The open photo takes its new edit unless a
     /// slider is held.
     pub fn reload(&mut self) {

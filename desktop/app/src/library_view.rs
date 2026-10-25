@@ -93,6 +93,7 @@ fn sidebar(app: &mut App, ui: &mut Ui) {
     });
     name_album_dialog(app, ui.ctx());
     name_person_dialog(app, ui.ctx());
+    crate::merge_view::dialog(app, ui.ctx());
 }
 
 /// A person as the sidebar lists them: id, filter key, name, shots, and a face (shot and box).
@@ -516,6 +517,10 @@ pub fn mark_menu(app: &mut App, ui: &mut Ui, key: &str) {
     }
     if ui.button("Clear mark   U").clicked() {
         app.library.set_mark(key, None);
+        ui.close_menu();
+    }
+    if app.library.shots.iter().any(|s| s.key() == key && s.raw.is_some()) && ui.button("Merge HDR or focus stack …").clicked() {
+        app.merging = crate::merge_view::Merging::new(&app.library.shots, key);
         ui.close_menu();
     }
     ui.separator();

@@ -40,6 +40,8 @@ pub struct App {
     pub finder: crate::search::Search,
     /// Person being named: their id and the text so far.
     pub naming_person: Option<(String, String)>,
+    /// The Merge photos dialog, while it's open.
+    pub merging: Option<crate::merge_view::Merging>,
     wheel: crate::wheel::Wheel,
     wheel_wake: Option<f64>,
 }
@@ -61,6 +63,7 @@ impl App {
             insights: crate::insights::Insights::new(&cc.egui_ctx, &root),
             finder: crate::search::Search::new(&cc.egui_ctx, &root),
             naming_person: None,
+            merging: None,
             wheel: Default::default(),
             wheel_wake: None,
             editor,
@@ -289,7 +292,7 @@ impl App {
     }
 
     fn keys(&mut self, ctx: &egui::Context) {
-        if ctx.wants_keyboard_input() || self.naming.is_some() || self.naming_person.is_some() || self.view == View::Cull {
+        if ctx.wants_keyboard_input() || self.naming.is_some() || self.naming_person.is_some() || self.merging.is_some() || self.view == View::Cull {
             return;
         }
         let visible = self.visible();

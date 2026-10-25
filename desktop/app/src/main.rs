@@ -16,6 +16,7 @@ mod library_view;
 mod looks;
 mod mask_view;
 mod masks;
+mod merge_view;
 #[cfg(test)]
 mod parity;
 mod phone_view;

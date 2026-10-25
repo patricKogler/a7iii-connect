@@ -11,6 +11,7 @@ pub mod ftp;
 pub mod import;
 pub mod library;
 pub mod marks;
+pub mod merge;
 pub mod meta;
 pub mod people;
 pub mod sync;
