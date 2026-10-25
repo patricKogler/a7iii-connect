@@ -11,6 +11,7 @@ import dev.kogler.a7iiiconnect.develop.Albums
 import dev.kogler.a7iiiconnect.develop.EditStore
 import dev.kogler.a7iiiconnect.develop.Library
 import dev.kogler.a7iiiconnect.develop.LibraryPhoto
+import dev.kogler.a7iiiconnect.develop.ShotNames
 import dev.kogler.a7iiiconnect.develop.LutLibrary
 import dev.kogler.a7iiiconnect.develop.Mark
 import dev.kogler.a7iiiconnect.develop.People
@@ -128,7 +129,7 @@ object ComputerSync {
 
         say("Comparing with ${computer.name}")
         var state = JSONObject(client.text("GET", "/v1/state"))
-        var phonePhotos = Library.load(app)
+        var phonePhotos = syncable(app)
         val ups = SyncPlan.toUpload(phonePhotos.map { it.file }, computerFiles(state), base)
         val byFile = phonePhotos.associateBy { it.file }
         ups.forEachIndexed { i, f ->
@@ -147,7 +148,7 @@ object ComputerSync {
             val part = File(tmp, "photo.part")
             try {
                 client.download(f.key, part)
-                saveToLibrary(app, f.name, if (f.isRaw) "image/x-sony-arw" else "image/jpeg", f.taken, part)
+                saveToLibrary(app, f.name, if (!f.isRaw) "image/jpeg" else if (f.name.endsWith(".dng", true)) "image/x-adobe-dng" else "image/x-sony-arw", f.taken, part)
                 changed = true
             } finally {
                 part.delete()
@@ -156,7 +157,7 @@ object ComputerSync {
 
         say("Putting marks and edits together")
         if (ups.isNotEmpty()) state = JSONObject(client.text("GET", "/v1/state"))
-        if (downs.isNotEmpty()) phonePhotos = Library.load(app)
+        if (downs.isNotEmpty()) phonePhotos = syncable(app)
         val phoneFiles = phonePhotos.map { it.file }
         val compFiles = computerFiles(state)
         val phoneShots = SyncPlan.shotKeys(phoneFiles)
@@ -277,6 +278,9 @@ object ComputerSync {
     }
 
     private const val TAG = "ComputerSync"
+
+    /** The phone's photos the computer can take: all but HEIC, which Shootback on the computer can't read. */
+    private fun syncable(app: Context) = Library.load(app).filter { !ShotNames.isHeif(it.name, it.mime) }
 
     private val LibraryPhoto.file get() = SyncFile(name, takenMillis)
 

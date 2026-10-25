@@ -41,12 +41,40 @@ impl Photo {
 }
 
 pub fn is_raw_name(name: &str) -> bool {
-    name.to_ascii_lowercase().ends_with(".arw")
+    let n = name.to_ascii_lowercase();
+    n.ends_with(".arw") || n.ends_with(".dng")
 }
 
 pub fn is_photo_name(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    n.ends_with(".arw") || n.ends_with(".jpg") || n.ends_with(".jpeg")
+    is_raw_name(&n) || n.ends_with(".jpg") || n.ends_with(".jpeg")
+}
+
+/// What the RAW and the JPEG of one shot share, lower case, as the phone's ShotNames.stem:
+/// dsc01234 for both DSC01234.ARW and DSC01234.JPG (and MediaStore's "DSC01234 (1).JPG"),
+/// pxl_20261020_141803123 for both files of a Pixel's RAW+JPEG (PXL_….RAW-02.ORIGINAL.dng and
+/// PXL_….RAW-01.COVER.jpg).
+pub fn pair_stem(name: &str) -> String {
+    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+    let stem = match stem.rfind(" (") {
+        Some(i) if stem.ends_with(')') && stem[i + 2..stem.len() - 1].chars().all(|c| c.is_ascii_digit()) && stem.len() > i + 3 => &stem[..i],
+        _ => stem,
+    };
+    let stem = stem.to_lowercase();
+    // pxl_YYYYMMDD_HHMMSSmmm followed by .raw-NN or _raw-NN and anything.
+    if let Some(rest) = stem.strip_prefix("pxl_") {
+        let digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+        if let Some(i) = rest.find(".raw-").or_else(|| rest.find("_raw-")) {
+            let (head, tail) = (&rest[..i], &rest[i + 5..]);
+            let num = tail.split('.').next().unwrap_or("");
+            if let Some((date, time)) = head.split_once('_') {
+                if date.len() == 8 && digits(date) && digits(time) && digits(num) {
+                    return format!("pxl_{head}");
+                }
+            }
+        }
+    }
+    stem
 }
 
 /// One press of the shutter: the RAW and its JPEG twin, or just one of them.
@@ -83,7 +111,7 @@ impl Shot {
 pub fn shots(photos: &[Photo]) -> Vec<Shot> {
     let mut by_stem: HashMap<String, Vec<&Photo>> = HashMap::new();
     for p in photos {
-        by_stem.entry(p.stem().to_lowercase()).or_default().push(p);
+        by_stem.entry(pair_stem(&p.name)).or_default().push(p);
     }
     let mut out = Vec::new();
     for same in by_stem.values() {
@@ -234,6 +262,16 @@ mod tests {
 
     fn photo(name: &str, t: i64) -> Photo {
         Photo { path: PathBuf::from(name), name: name.into(), taken_millis: t, orientation: 1, bytes: 1 }
+    }
+
+    #[test]
+    fn pairs_a_pixel_raw_with_its_cover() {
+        assert_eq!(pair_stem("PXL_20261020_141803123.RAW-02.ORIGINAL.dng"), "pxl_20261020_141803123");
+        assert_eq!(pair_stem("PXL_20261020_141803123.RAW-01.MP.COVER.jpg"), "pxl_20261020_141803123");
+        assert_eq!(pair_stem("PXL_20261020_141803123.jpg"), "pxl_20261020_141803123");
+        assert_eq!(pair_stem("DSC01234 (1).JPG"), "dsc01234");
+        assert_eq!(pair_stem("IMG_20261020_141803.dng"), "img_20261020_141803");
+        assert!(is_raw_name("PXL_20261020_141803123.RAW-02.ORIGINAL.dng") && is_photo_name("x.DNG"));
     }
 
     #[test]

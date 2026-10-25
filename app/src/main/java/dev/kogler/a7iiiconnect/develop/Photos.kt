@@ -77,7 +77,8 @@ object Photos {
     fun thumbnail(context: Context, photo: LibraryPhoto, edge: Int = thumbEdge(context)): Bitmap? {
         thumbs.get(photo.id)?.takeIf { minOf(it.width, it.height) >= edge }?.let { return it }
         val bmp = runCatching {
-            if (photo.isRaw) embeddedPreview(context, photo.uri, edge, shortEdge = true)
+            // A phone's DNG has no quick preview inside; its system thumbnail is quick, like a JPEG's.
+            if (photo.isRaw && !photo.isDng) embeddedPreview(context, photo.uri, edge, shortEdge = true)
             else runCatching { context.contentResolver.loadThumbnail(photo.uri, Size(edge * 3 / 2, edge * 3 / 2), null) }
                 .getOrNull()
                 // Some phones keep only small system thumbnails; those would look soft, so decode the photo.
@@ -122,7 +123,8 @@ object Photos {
             FileInputStream(pfd.fileDescriptor).channel.use { ch ->
                 val src = ChannelSource(ch)
                 val info = Arw.readInfo(src)
-                val range = info.preview ?: return null
+                // Phone DNGs often carry no JPEG: Android's own raw decoder draws one instead.
+                val range = info.preview ?: return decodeJpeg(context, uri, maxEdge, shortEdge)
                 val bytes = src.read(range.first, (range.last - range.first + 1).toInt())
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
@@ -195,7 +197,7 @@ object Photos {
                     val src = ChannelSource(ch)
                     val info = Arw.readInfo(src)
                     val raw = Arw.decode(src, info)
-                    val color = CameraColor.forCamera(info.model)
+                    val color = info.color
                     val half = Demosaic.halfSize(raw)
                     val preview = half.downscaled(PREVIEW_EDGE).oriented(info.orientation)
                     val swap = info.orientation >= 5

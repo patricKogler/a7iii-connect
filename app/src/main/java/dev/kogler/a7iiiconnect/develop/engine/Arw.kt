@@ -16,7 +16,16 @@ class RawInfo internal constructor(
     internal val raw: RawIfd?,
     /** The camera's own lens-correction data for the lens used, if it wrote any. */
     val lens: LensData? = null,
-)
+    /** A DNG's own XYZ-to-camera matrix (for D65 when it has one); null means the built-in one for [model]. */
+    val colorMatrix: DoubleArray? = null,
+    /** A DNG's lens shading, to apply to the raw data before anything else. */
+    val gainMaps: List<GainMap> = emptyList(),
+    /** A DNG's table from stored values to linear ones. */
+    val linearization: IntArray? = null,
+) {
+    /** How this camera's colours relate to XYZ. */
+    val color: CameraColor get() = colorMatrix?.let { runCatching { CameraColor(it) }.getOrNull() } ?: CameraColor.forCamera(model)
+}
 
 /**
  * Sony's embedded lens corrections (tags 0x7032/0x7035/0x7037), as read by darktable: [n] knots
@@ -40,6 +49,18 @@ internal class RawIfd(
     val cropTop: Int,
     val cropWidth: Int,
     val cropHeight: Int,
+    /** A DNG: its data is in [offsets] (strips or tiles of [tileWidth] by [tileHeight]), in the file's byte order. */
+    val dng: Boolean = false,
+    val offsets: LongArray = longArrayOf(offset),
+    val counts: LongArray = longArrayOf(bytes),
+    val tileWidth: Int = width,
+    val tileHeight: Int = height,
+    val little: Boolean = true,
+    /** The DNG's active area: where its gain maps are measured from. */
+    val activeTop: Int = 0,
+    val activeLeft: Int = 0,
+    val activeWidth: Int = width,
+    val activeHeight: Int = height,
 )
 
 /**
@@ -62,8 +83,9 @@ class RawImage(
 }
 
 /**
- * Sony ARW reader (ARW 2.x, as written by the A7III): the 8-bit-per-pixel "compressed" format and
- * uncompressed 14-bit data. Camera white balance and levels come from Sony's encrypted SR2 block.
+ * Raw reader: Sony ARW (ARW 2.x, as written by the A7III), the 8-bit-per-pixel "compressed" format
+ * and uncompressed 14-bit data, with camera white balance and levels from Sony's encrypted SR2
+ * block; and DNG, as phones write it ([Dng]).
  */
 object Arw {
 
@@ -71,6 +93,7 @@ object Arw {
         val tiff = Tiff.open(src)
         val chain = tiff.chain()
         val ifd0 = chain.first()
+        if (Dng.isDng(tiff, ifd0)) return Dng.readInfo(tiff, chain)
         val all = chain.toMutableList()
         for (ifd in chain) {
             ifd[TAG_SUBIFDS]?.let { e -> tiff.ints(e).forEach { off -> runCatching { all += tiff.readIfd(off) } } }
@@ -229,6 +252,11 @@ object Arw {
         val r = info.raw ?: error("no raw image in this file")
         val w = r.width
         val h = r.height
+        if (r.dng) {
+            val data = Dng.decode(src, r, info)
+            Dng.applyGainMaps(data, r, info)
+            return RawImage(info, w, h, data, r.cfa, r.cropLeft, r.cropTop, r.cropWidth, r.cropHeight)
+        }
         val data = ShortArray(w * h)
         when {
             r.compression == 32767 && r.bytes == w.toLong() * h -> decodeArw2(src.read(r.offset, w * h), w, h, r.curve ?: IntArray(4096) { it }, data)

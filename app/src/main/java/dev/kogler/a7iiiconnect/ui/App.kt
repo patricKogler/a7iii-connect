@@ -165,6 +165,9 @@ fun App(state: UiState, actions: UiActions) {
             item { FtpCard(state.ftp, actions.setFtp) }
             item { RemoteCard(actions.openRemote) }
 
+            item { SectionTitle("This phone") }
+            item { dev.kogler.a7iiiconnect.develop.PhoneCameraCard() }
+
             item { SectionTitle("Computer") }
             item { dev.kogler.a7iiiconnect.computer.ComputerCard() }
 

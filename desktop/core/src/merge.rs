@@ -8,7 +8,6 @@
 //! and what moved; a focus stack takes each place from the frame that's sharpest there.
 //! The result is written as a 16-bit raw beside the frames.
 
-use crate::develop::color::CameraColor;
 use crate::develop::image::box_blur;
 use crate::develop::look::encode_srgb;
 use crate::develop::raw::RawImage;
@@ -442,7 +441,7 @@ pub fn merge(kind: Kind, frames: &[RawImage], progress: &dyn Fn(f32), cancel: &A
 /// rolled off: width, height and sRGB bytes, as the sensor sees it (not turned upright).
 pub fn preview_rgb(raw: &RawImage, exposure: f32, edge: usize) -> (usize, usize, Vec<u8>) {
     let img = raw.half_size().downscaled(edge);
-    let m = CameraColor::for_camera(&raw.info.model).rgb_from_cam;
+    let m = raw.info.color().rgb_from_cam;
     let k = 2f64.powf(exposure as f64);
     let rgb = (0..img.width * img.height)
         .flat_map(|i| {

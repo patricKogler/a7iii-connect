@@ -242,6 +242,11 @@ class DevelopActivity : ComponentActivity() {
                             showAlbum?.let { a -> changeAlbum(a.id) { Albums.remove(it, picked.map { s -> s.key }, System.currentTimeMillis()) } }
                         },
                         me = albumStore.phoneId,
+                        onHide = { picked ->
+                            PhoneCamera.hide(this, picked.flatMap { shot -> shot.files.map { it.key } })
+                            android.widget.Toast.makeText(this, if (picked.size == 1) "Hidden from Shootback" else "${picked.size} hidden from Shootback", android.widget.Toast.LENGTH_SHORT).show()
+                            lifecycleScope.launch { reload() }
+                        },
                         onAlbumAction = { action ->
                             val a = showAlbum
                             if (a != null) when (action) {

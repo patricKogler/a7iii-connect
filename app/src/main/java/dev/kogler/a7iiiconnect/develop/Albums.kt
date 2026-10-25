@@ -168,7 +168,7 @@ object Albums {
         val at = key.lastIndexOf('@')
         if (at <= 0) return null
         val time = key.substring(at + 1).toLongOrNull() ?: return null
-        return key.substring(0, at).substringBeforeLast('.').replace(COPY_SUFFIX, "").lowercase() to time
+        return ShotNames.stem(key.substring(0, at)) to time
     }
 
     /**
@@ -177,9 +177,6 @@ object Albums {
      * file counter takes far longer than that to come round to the same name.
      */
     const val MATCH_WINDOW_MS = 25 * 60 * 60 * 1000L
-
-    /** What MediaStore adds to a name already taken: "DSC01234 (1).JPG". */
-    private val COPY_SUFFIX = Regex(" \\(\\d+\\)$")
 
     /** Names are one line of text; an empty one becomes "Album". */
     fun clean(name: String) = name.replace(Regex("[\\t\\r\\n]+"), " ").trim().ifEmpty { "Album" }

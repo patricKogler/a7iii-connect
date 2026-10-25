@@ -8,19 +8,28 @@ import android.provider.MediaStore
 import dev.kogler.a7iiiconnect.RecentPhotos
 import kotlin.math.abs
 
-/** A photo in the A7III Connect album, as the editor sees it. */
+/** Where a photo came from: the camera (by Wi-Fi, USB, FTP or the computer), this phone's own camera, or another app. */
+enum class Source(val label: String) { CAMERA("Camera"), PHONE("Phone"), SHARED("Shared") }
+
+/** A photo in the A7III Connect album (or the phone's camera folder), as the editor sees it. */
 data class LibraryPhoto(
     val id: Long,
     val uri: Uri,
     val name: String,
     val mime: String,
     val takenMillis: Long,
+    val source: Source = Source.CAMERA,
 ) {
-    val isRaw: Boolean
-        get() = mime.contains("arw", ignoreCase = true) || name.endsWith(".arw", ignoreCase = true)
+    val isRaw: Boolean get() = ShotNames.isRaw(name, mime)
+
+    /** A DNG, as phones save their raws. */
+    val isDng: Boolean get() = name.endsWith(".dng", ignoreCase = true) || mime.contains("dng", ignoreCase = true)
 
     /** File name without extension: DSC01234 for both DSC01234.ARW and DSC01234.JPG. */
     val stem: String get() = name.substringBeforeLast('.')
+
+    /** What the RAW and the JPEG of one shot share, lower case: see [ShotNames.stem]. */
+    val pairStem: String get() = ShotNames.stem(name)
 
     /**
      * Stable identity for edits and flags: file name plus capture time. Unlike the MediaStore id it
@@ -37,12 +46,16 @@ data class Shot(val raw: LibraryPhoto?, val jpeg: LibraryPhoto?) {
     val key: String get() = primary.key
     val takenMillis: Long get() = primary.takenMillis
     val files: List<LibraryPhoto> get() = listOfNotNull(raw, jpeg)
+    val source: Source get() = primary.source
     fun contains(id: Long) = raw?.id == id || jpeg?.id == id
 }
 
 object Library {
 
-    /** Every photo the app received, newest first (RAW and JPEG alike). */
+    /**
+     * Every photo the app received, newest first (RAW and JPEG alike), and the phone camera's
+     * since the day [PhoneCamera] says, when it's on; less the ones hidden from Shootback.
+     */
     fun load(context: Context): List<LibraryPhoto> {
         val out = mutableListOf<LibraryPhoto>()
         val projection = arrayOf(
@@ -51,33 +64,47 @@ object Library {
             MediaStore.Images.Media.MIME_TYPE,
             MediaStore.Images.Media.DATE_TAKEN,
             MediaStore.Images.Media.DATE_ADDED,
+            MediaStore.Images.Media.RELATIVE_PATH,
         )
+        val phone = PhoneCamera.on(context)
+        val since = PhoneCamera.since(context)
+        val path = MediaStore.Images.Media.RELATIVE_PATH
+        val own = "${Environment.DIRECTORY_PICTURES}/${RecentPhotos.ALBUM}%"
+        val shared = "${Environment.DIRECTORY_PICTURES}/${RecentPhotos.ALBUM}/${SharedImport.FOLDER}/"
         runCatching {
             context.contentResolver.query(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection,
-                "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?",
-                arrayOf("${Environment.DIRECTORY_PICTURES}/${RecentPhotos.ALBUM}%"), null,
+                if (phone) "$path LIKE ? OR $path LIKE ?" else "$path LIKE ?",
+                if (phone) arrayOf(own, PhoneCamera.FOLDER + "%") else arrayOf(own), null,
             )?.use { c ->
                 val id = c.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
                 val name = c.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
                 val mime = c.getColumnIndexOrThrow(MediaStore.Images.Media.MIME_TYPE)
                 val taken = c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN)
                 val added = c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
+                val folder = c.getColumnIndexOrThrow(path)
                 while (c.moveToNext()) {
                     val n = c.getString(name) ?: ""
                     val m = c.getString(mime) ?: ""
-                    if (!(m.startsWith("image/jpeg") || m.contains("arw") || n.endsWith(".arw", true) ||
-                            n.endsWith(".jpg", true) || n.endsWith(".jpeg", true))
-                    ) continue
+                    if (!ShotNames.isPhoto(n, m)) continue
                     val t = if (c.isNull(taken) || c.getLong(taken) == 0L) c.getLong(added) * 1000 else c.getLong(taken)
+                    val dir = c.getString(folder) ?: ""
+                    val source = when {
+                        dir.startsWith(PhoneCamera.FOLDER) -> Source.PHONE
+                        dir.equals(shared, ignoreCase = true) -> Source.SHARED
+                        else -> Source.CAMERA
+                    }
+                    if (source == Source.PHONE && t < since) continue
                     out += LibraryPhoto(
                         c.getLong(id),
                         ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(id)),
-                        n, m, t,
+                        n, m, t, source,
                     )
                 }
             }
         }
+        val hidden = PhoneCamera.hidden(context)
+        if (hidden.isNotEmpty()) out.removeAll { it.key in hidden }
         // Same capture time: show the RAW before its JPEG twin.
         return out.sortedWith(compareByDescending<LibraryPhoto> { it.takenMillis }.thenByDescending { it.name }.thenBy { !it.isRaw })
     }
@@ -89,7 +116,7 @@ object Library {
      */
     fun shots(photos: List<LibraryPhoto>): List<Shot> {
         val out = mutableListOf<Shot>()
-        for ((_, same) in photos.groupBy { it.stem.lowercase() }) {
+        for ((_, same) in photos.groupBy { it.pairStem }) {
             val jpegs = same.filter { !it.isRaw }.toMutableList()
             for (raw in same.filter { it.isRaw }) {
                 val twin = jpegs.filter { abs(it.takenMillis - raw.takenMillis) <= Albums.MATCH_WINDOW_MS }
