@@ -152,6 +152,18 @@ class SmartTest {
     }
 
     @Test
+    fun sourceChipsNarrowToWhereShotsCameFrom() {
+        val camera = shot("DSC01234", 1)
+        val phone = Shot(null, LibraryPhoto(2, Uri.EMPTY, "PXL_20261020_141803123.jpg", "image/jpeg", 2, Source.PHONE))
+        val facts = listOf(camera, phone).map { ShotFacts(it, null) }
+        val onlyPhone = ShotFilter(sources = setOf(Source.PHONE))
+        assertEquals(listOf(phone), facts.filter { onlyPhone.matches(it) }.map { it.shot })
+        // The chip shows it, so it isn't one of the removable filter chips too; a saved filter keeps it.
+        assertTrue(onlyPhone.chips().isEmpty())
+        assertEquals(onlyPhone, SavedFilters.decode(SavedFilters.encode(onlyPhone)))
+    }
+
+    @Test
     fun searchFindsWhatsInThePhoto() {
         val s = shot("A", 1)
         val f = ShotFacts(s, ShotMeta(lens = "FE 85mm F1.8"), place = "Hallstatt",

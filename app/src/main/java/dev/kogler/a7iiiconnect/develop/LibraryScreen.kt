@@ -49,6 +49,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Smartphone
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material3.LinearProgressIndicator
@@ -207,6 +210,8 @@ fun LibraryScreen(
     onAlbumAction: (AlbumAction) -> Unit = {},
     /** This phone's id, to tell my albums from ones I was invited into. */
     me: String = "",
+    /** Take phone or shared shots out of Shootback, leaving them on the phone. */
+    onHide: (List<Shot>) -> Unit = {},
 ) {
     // Days picked by long-pressing their headers; Review then covers just those.
     var selectedDays by remember { mutableStateOf(emptySet<Long>()) }
@@ -299,6 +304,12 @@ fun LibraryScreen(
                             onClick = { onAddToAlbum(picked); selectedShots = emptySet(); selectedDays = emptySet() },
                             modifier = Modifier.testTag("album-add"),
                         ) { Icon(Icons.Rounded.LibraryAdd, "Add to album") }
+                        if (picked.any { it.source != Source.CAMERA }) {
+                            IconButton(
+                                onClick = { onHide(picked.filter { it.source != Source.CAMERA }); selectedShots = emptySet(); selectedDays = emptySet() },
+                                modifier = Modifier.testTag("hide"),
+                            ) { Icon(Icons.Rounded.VisibilityOff, "Hide from Shootback") }
+                        }
                         Box {
                             IconButton(onClick = { flagMenu = true }, modifier = Modifier.testTag("flag")) { Icon(Icons.Rounded.Flag, "Pick or reject") }
                             DropdownMenu(expanded = flagMenu, onDismissRequest = { flagMenu = false }) {
@@ -409,6 +420,20 @@ fun LibraryScreen(
                     label = { Text(if (active > 0) "Filter · $active" else "Filter") },
                     modifier = Modifier.testTag("filter"),
                 )
+                // Where shots came from, once there's more than the camera: one at a time, for its own Review.
+                val present = remember(shots) { shots.map { it.source }.toSet() }
+                if (present.size > 1) {
+                    for (src in Source.entries.filter { it in present }) {
+                        val on = sheetFilter.sources == setOf(src)
+                        FilterChip(
+                            selected = on,
+                            onClick = { onSheetFilter(sheetFilter.copy(sources = if (on) emptySet() else setOf(src))) },
+                            leadingIcon = { Icon(src.icon, null, Modifier.size(16.dp)) },
+                            label = { Text(src.label) },
+                            modifier = Modifier.testTag("source-${src.name.lowercase()}"),
+                        )
+                    }
+                }
                 // Saved filters: tapping one applies it, tapping it again clears it. First, so
                 // they never scroll out of sight.
                 for (s in saved) {
@@ -451,7 +476,7 @@ fun LibraryScreen(
             }
             // What the sheet filters on, each removable; a saved filter shows as its own chip instead.
             // The search words are in the search field already.
-            val unsearched = sheetFilter.copy(query = null)
+            val unsearched = sheetFilter.copy(query = null, sources = emptySet())
             if (!unsearched.isEmpty && saved.none { it.filter == sheetFilter }) {
                 Row(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
@@ -486,7 +511,13 @@ fun LibraryScreen(
                     onClick = onDeleteRejected,
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                ) { Text("Delete $rejected rejected (RAW and JPEG)") }
+                ) {
+                    // Phone shots live in the phone's gallery: deleting them here deletes them there too.
+                    Text(
+                        if (shots.any { it.source == Source.PHONE && marks[it.key]?.rejected == true }) "Delete $rejected rejected (also from the phone's gallery)"
+                        else "Delete $rejected rejected (RAW and JPEG)",
+                    )
+                }
             }
             if (shown.isEmpty()) {
                 Column(
@@ -834,6 +865,7 @@ fun Thumb(
                         .padding(horizontal = 4.dp, vertical = 1.dp),
                 )
             }
+            if (photo.source != Source.CAMERA) Badge(photo.source.icon, photo.source.label)
             if (edited) Badge(Icons.Rounded.Tune, "Edited")
             if (exported) Badge(Icons.Rounded.IosShare, "Exported")
         }
@@ -859,3 +891,11 @@ private fun Badge(icon: ImageVector, label: String, modifier: Modifier = Modifie
         modifier = modifier.size(16.dp).background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(3.dp)).padding(2.dp),
     )
 }
+
+/** The mark a shot's source gets on chips and thumbnails. */
+val Source.icon: ImageVector
+    get() = when (this) {
+        Source.CAMERA -> Icons.Rounded.PhotoCamera
+        Source.PHONE -> Icons.Rounded.Smartphone
+        Source.SHARED -> Icons.Rounded.Share
+    }

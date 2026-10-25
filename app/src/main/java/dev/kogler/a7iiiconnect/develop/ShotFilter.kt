@@ -86,6 +86,8 @@ data class ShotFilter(
     val query: String? = null,
     /** [Person.key]s: shots with any of them. */
     val people: Set<String> = emptySet(),
+    /** Where the shots came from; set by the Camera / Phone / Shared chips, which show it themselves. */
+    val sources: Set<Source> = emptySet(),
 ) {
     val isEmpty get() = this == ShotFilter()
 
@@ -109,6 +111,7 @@ data class ShotFilter(
         if (files.isNotEmpty() && kindOf(f.shot) !in files) return false
         if (exported != null && f.exported != exported) return false
         if (people.isNotEmpty() && people.none { it in f.people }) return false
+        if (sources.isNotEmpty() && f.shot.source !in sources) return false
         if (!query.isNullOrBlank() && !f.found(query)) return false
         return true
     }
@@ -212,6 +215,7 @@ object SavedFilters {
         f.exported?.let { put("exported", it) }
         f.query?.takeIf { it.isNotBlank() }?.let { put("query", it) }
         if (f.people.isNotEmpty()) put("people", org.json.JSONArray(f.people.toList()))
+        names("sources", f.sources)
     }
 
     fun decode(o: org.json.JSONObject): ShotFilter {
@@ -238,6 +242,7 @@ object SavedFilters {
             exported = bool("exported"),
             query = o.optString("query").takeIf { it.isNotBlank() },
             people = strings("people").toSet(),
+            sources = strings("sources").mapNotNull { n -> Source.entries.find { it.name == n } }.toSet(),
         )
     }
 }
