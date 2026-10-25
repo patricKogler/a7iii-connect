@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 /// Long edge of the picture faces and focus are judged on, as on the phone.
 const EDGE: u32 = 1600;
 /// Faces narrower than this many pixels (at `EDGE`) are too small to recognise.
-const MIN_FACE_PX: f32 = 56.0;
+const MIN_FACE_PX: f32 = 40.0;
 /// Faces turned further than this (`Face::turned`, about 35 degrees) are profiles: not recognised.
 const TURNED: f32 = 0.55;
 /// People are grouped again at most this often while shots come in.
@@ -53,8 +53,12 @@ impl Insights {
         let queue = Arc::new(Queue { todo: Mutex::default(), ready: Condvar::new(), stop: AtomicBool::new(false), faces_error: Mutex::default() });
         let (tx, rx) = channel();
         let store = CullStore::new(root);
-        let known = store.insights();
-        let done: HashSet<String> = known.iter().filter(|(_, i)| i.version == Insight::VERSION).map(|(k, _)| k.clone()).collect();
+        let mut known = store.insights();
+        // Faces seen by the models before can't be put with these; they're looked at again.
+        for i in known.values_mut().filter(|i| !fresh(i)) {
+            i.faces.iter_mut().for_each(|f| f.embedding = None);
+        }
+        let done: HashSet<String> = known.iter().filter(|(_, i)| fresh(i)).map(|(k, _)| k.clone()).collect();
         let (q, c) = (queue.clone(), ctx.clone());
         std::thread::Builder::new().name("insights".into()).spawn(move || work(&store, done, &q, &tx, &c)).expect("insights thread");
         let mut me = Insights {
@@ -88,20 +92,25 @@ impl Insights {
         self.queue.faces_error.lock().unwrap().clone()
     }
 
-    fn people_file(&self) -> PathBuf {
-        self.root.join(STATE_DIR).join("people.txt")
+    /// The people remembered here, and (`phone`) as the phone sees them.
+    fn people_file(&self, phone: bool) -> PathBuf {
+        self.root.join(STATE_DIR).join(if phone { "people.txt" } else { "people-desktop.txt" })
+    }
+
+    fn read_people(&self, phone: bool) -> Remembered {
+        people::decode(&std::fs::read_to_string(self.people_file(phone)).unwrap_or_default())
     }
 
     /// Reads the remembered people again (a phone changed them) and groups.
     pub fn reload_people(&mut self) {
-        self.remembered = people::decode(&std::fs::read_to_string(self.people_file()).unwrap_or_default());
-        self.regroup();
+        self.remembered = self.read_people(false);
+        self.regroup(true, &[]);
     }
 
     /// Looks at `shots` before anything else, in that order.
     pub fn first(&self, shots: &[Shot]) {
         let mut q = self.queue.todo.lock().unwrap();
-        for s in shots.iter().rev().filter(|s| !self.known.contains_key(&s.key())) {
+        for s in shots.iter().rev().filter(|s| !self.looked_at(s)) {
             q.push_front(s.clone());
         }
         self.queue.ready.notify_one();
@@ -118,11 +127,11 @@ impl Insights {
         if (!self.all || rescanned) && ai::installed(&FACES) && self.faces_error().is_none() {
             self.all = true;
             let mut q = self.queue.todo.lock().unwrap();
-            q.extend(shots.iter().filter(|s| !self.known.contains_key(&s.key())).cloned());
+            q.extend(shots.iter().filter(|s| !self.looked_at(s)).cloned());
             self.queue.ready.notify_one();
         }
         if self.dirty && self.grouped.elapsed() >= REGROUP {
-            self.regroup();
+            self.regroup(false, &[]);
         }
         std::mem::take(&mut self.regrouped)
     }
@@ -134,33 +143,50 @@ impl Insights {
 
     /// How many of `keys` have been looked at.
     pub fn count(&self, keys: impl Iterator<Item = String>) -> (usize, usize) {
-        keys.fold((0, 0), |(k, n), key| (k + self.known.contains_key(&key) as usize, n + 1))
+        keys.fold((0, 0), |(k, n), key| (k + self.known.get(&key).is_some_and(fresh) as usize, n + 1))
     }
 
-    fn regroup(&mut self) {
+    fn looked_at(&self, s: &Shot) -> bool {
+        self.known.get(&s.key()).is_some_and(fresh)
+    }
+
+    /// Groups the faces into people again, takes names from the phone (over names given here
+    /// when `phone_first`) and gives it these people, the ones with `renamed` ids just renamed.
+    fn regroup(&mut self, phone_first: bool, renamed: &[String]) {
         self.dirty = false;
         self.regrouped = true;
         self.grouped = Instant::now();
         self.people = people::group(&self.known, &self.remembered);
-        let now = people::remember(&self.people, &self.remembered);
+        let looks = people::phone_looks(&self.people, &self.known);
+        let phone = self.read_people(true);
+        let now = people::names_from_phone(&self.people, &looks, &people::remember(&self.people, &self.remembered), &phone, phone_first);
+        for p in &mut self.people {
+            if let Some(a) = now.people.iter().find(|a| a.id == p.id) {
+                p.name.clone_from(&a.name);
+            }
+        }
         if now != self.remembered {
             self.remembered = now;
-            self.save_people();
+            self.save(false, &self.remembered);
+        }
+        let theirs = people::for_phone(&self.remembered, &looks, &phone, renamed);
+        if theirs != phone {
+            self.save(true, &theirs);
         }
     }
 
-    fn save_people(&self) {
-        let f = self.people_file();
+    fn save(&self, phone: bool, r: &Remembered) {
+        let f = self.people_file(phone);
         let _ = std::fs::create_dir_all(f.parent().unwrap());
-        let _ = write_atomic(&f, people::encode(&self.remembered).as_bytes());
+        let _ = write_atomic(&f, people::encode(r).as_bytes());
     }
 
     /// Calls the people with `ids` `name` (blank forgets the name).
     pub fn rename(&mut self, ids: &[String], name: &str) {
         let seen: Vec<&Person> = self.people.iter().filter(|p| ids.contains(&p.id)).collect();
         self.remembered = people::rename(&self.remembered, &seen, name);
-        self.save_people();
-        self.regroup();
+        self.save(false, &self.remembered);
+        self.regroup(false, ids);
     }
 
     /// The shots each shown person is in, by `Person::key`.
@@ -211,8 +237,13 @@ fn work(store: &CullStore, mut done: HashSet<String>, q: &Queue, tx: &Sender<(St
     }
 }
 
+/// Looked at as it's looked at now.
+fn fresh(i: &Insight) -> bool {
+    i.version == Insight::VERSION && i.model == Insight::FACE_MODEL
+}
+
 fn empty() -> Insight {
-    Insight { faces: Vec::new(), sharp: 0.0, labels: Vec::new(), text: String::new(), version: Insight::VERSION }
+    Insight { faces: Vec::new(), sharp: 0.0, labels: Vec::new(), text: String::new(), version: Insight::VERSION, model: Insight::FACE_MODEL }
 }
 
 /// Faces and focus in a shot, and whether faces were looked for. Fails with why faces can't be
@@ -240,11 +271,14 @@ fn analyse(shot: &Shot, faces_ok: &mut bool) -> Result<(Insight, bool), Option<S
             let region =
                 [(b[0] * fw + bw * 0.15) as usize, (b[1] * fh + bh * 0.15) as usize, (b[2] * fw - bw * 0.15) as usize, (b[3] * fh - bh * 0.15) as usize];
             let sharp = if region[2] < region[0] + 8 || region[3] < region[1] + 8 { 0.0 } else { cull::sharpness(&grey, w, h, Some(region)) };
-            let embedding = (f.width() >= MIN_FACE_PX && f.turned() <= TURNED).then(|| ai::faces::embed(&px, &f).ok()).flatten();
-            infos.push(FaceInfo { b, eyes_open: None, smile: None, sharp, embedding });
+            let known = f.width() >= MIN_FACE_PX && f.turned() <= TURNED;
+            let embedding = known.then(|| ai::faces::embed(&px, &f).ok()).flatten();
+            let phone = known.then(|| ai::faces::embed_phone(&px, &f).ok()).flatten();
+            infos.push(FaceInfo { b, eyes_open: None, smile: None, sharp, embedding, phone });
         }
     }
     let looked = *faces_ok;
     let main = infos.iter().max_by(|a, b| a.width().total_cmp(&b.width())).map(|f| f.sharp);
-    Ok((Insight { sharp: main.unwrap_or(overall), faces: infos, labels: Vec::new(), text: String::new(), version: Insight::VERSION }, looked))
+    let model = if looked { Insight::FACE_MODEL } else { 0 };
+    Ok((Insight { sharp: main.unwrap_or(overall), faces: infos, labels: Vec::new(), text: String::new(), version: Insight::VERSION, model }, looked))
 }

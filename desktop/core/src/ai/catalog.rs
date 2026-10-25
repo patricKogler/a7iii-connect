@@ -148,18 +148,19 @@ pub static UPSCALE: Model = Model {
     files: &["x2.onnx", "x4.onnx"],
 };
 
-/// Faces: finding them, and telling them apart the way the phone does (the same SFace model).
+/// Faces: SCRFD finds them and ArcFace tells people apart (InsightFace's small set); SFace, the
+/// phone's model, also looks at each face so names can be matched with the phone's.
 pub static FACES: Model = Model {
-    id: "faces-yunet-sface",
+    id: "faces-scrfd-arcface",
     label: "Faces",
-    about: "Finds faces and tells people apart, like the phone",
-    licence: "MIT / Apache-2.0",
-    origin: "YuNet and SFace (OpenCV Zoo)",
+    about: "Finds faces and tells people apart",
+    licence: "InsightFace: non-commercial use / SFace: Apache-2.0",
+    origin: "SCRFD and ArcFace (InsightFace buffalo_s), SFace (OpenCV Zoo)",
     sources: &[
         Source {
-            url: "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
-            bytes: 232_589,
-            packaging: Packaging::File("yunet.onnx"),
+            url: "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_s.zip",
+            bytes: 127_607_557,
+            packaging: Packaging::Zip(&[("det_500m.onnx", "scrfd.onnx"), ("w600k_mbf.onnx", "arcface.onnx")]),
         },
         Source {
             url: "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_recognition_sface/face_recognition_sface_2021dec_int8.onnx",
@@ -167,7 +168,7 @@ pub static FACES: Model = Model {
             packaging: Packaging::File("sface.onnx"),
         },
     ],
-    files: &["yunet.onnx", "sface.onnx"],
+    files: &["scrfd.onnx", "arcface.onnx", "sface.onnx"],
 };
 
 /// The Remove tool: filling in what's painted out from its surroundings.

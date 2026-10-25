@@ -1,19 +1,21 @@
-//! Faces: YuNet finds them (with eyes, nose and mouth corners) and SFace tells them apart, the
-//! same SFace the phone uses, lined up the same way, so both recognise the same people.
+//! Faces: SCRFD finds them (with eyes, nose and mouth corners) and ArcFace tells them apart.
+//! SFace, the phone's model, lined up the phone's way, also looks at each face, so the people
+//! found here can be matched with the phone's.
 
 use super::catalog::FACES;
 use super::tensor::{self, Input, Rgb};
 
-/// YuNet's input side; pictures are fitted inside, top left.
-const SIZE: usize = 640;
 const STRIDES: [usize; 3] = [8, 16, 32];
+/// The sides pictures are looked at in: the small one for faces that fill the frame, the large
+/// one for faces far away in a group.
+const SIZES: [usize; 3] = [320, 640, 1280];
 /// A face this likely or more counts.
-const SCORE: f32 = 0.7;
+const SCORE: f32 = 0.5;
 /// Boxes overlapping more than this are the same face.
-const NMS: f32 = 0.3;
+const NMS: f32 = 0.4;
 
-/// SFace's crop side, and where the eyes, nose tip and mouth corners go in it (left to right on
-/// the picture): the phone's FaceAlign.
+/// The crop side both recognisers take, and where the eyes, nose tip and mouth corners go in it
+/// (left to right on the picture): the phone's FaceAlign, and ArcFace's own.
 pub const SIDE: usize = 112;
 const TEMPLATE: [f32; 10] = [38.2946, 51.6963, 73.5318, 51.5014, 56.0252, 71.7366, 41.5493, 92.3655, 70.7299, 92.2041];
 
@@ -43,43 +45,50 @@ impl Face {
 
 /// The faces in `px` (sRGB 0..1), most likely first.
 pub fn find(px: &Rgb) -> Result<Vec<Face>, String> {
-    let session = super::session(&FACES, "yunet.onnx")?;
-    let k = SIZE as f32 / px.width.max(px.height) as f32;
-    let (w, h) = (((px.width as f32 * k) as usize).clamp(1, SIZE), ((px.height as f32 * k) as usize).clamp(1, SIZE));
-    let small = px.resized(w, h);
-    // Blue, green, red planes, 0..255, as OpenCV feeds it; the rest stays black.
-    let n = SIZE * SIZE;
-    let mut input = vec![0.0f32; 3 * n];
-    for y in 0..h {
-        for x in 0..w {
-            let [r, g, b] = small.at(x, y);
-            let i = y * SIZE + x;
-            input[i] = b * 255.0;
-            input[n + i] = g * 255.0;
-            input[2 * n + i] = r * 255.0;
-        }
-    }
-    let out = tensor::run(&mut session.lock().unwrap(), vec![Input::F32("input", vec![1, 3, SIZE as i64, SIZE as i64], input)])?;
-    if out.len() < 12 {
-        return Err("the face model gave too little back".into());
-    }
+    let session = super::session(&FACES, "scrfd.onnx")?;
     let mut faces = Vec::new();
-    for (s, &stride) in STRIDES.iter().enumerate() {
-        let (cls, obj, bbox, kps) = (&out[s].1, &out[3 + s].1, &out[6 + s].1, &out[9 + s].1);
-        let cols = SIZE / stride;
-        for (idx, (&c, &o)) in cls.iter().zip(obj).enumerate() {
-            let score = (c.clamp(0.0, 1.0) * o.clamp(0.0, 1.0)).sqrt();
-            if score < SCORE {
-                continue;
+    let long = px.width.max(px.height);
+    for (i, size) in SIZES.into_iter().enumerate() {
+        // Never larger than the picture: once a size holds all of it, larger ones see nothing new.
+        if i > 0 && long <= SIZES[i - 1] {
+            break;
+        }
+        let k = (size as f32 / long as f32).min(1.0);
+        let (w, h) = (((px.width as f32 * k) as usize).clamp(1, size), ((px.height as f32 * k) as usize).clamp(1, size));
+        // The model takes sides in steps of 32; the picture sits top left, the rest grey.
+        let (iw, ih) = (w.div_ceil(32) * 32, h.div_ceil(32) * 32);
+        let small = px.resized(w, h);
+        let n = iw * ih;
+        let mut input = vec![0.0f32; 3 * n];
+        for y in 0..h {
+            for x in 0..w {
+                let c = small.at(x, y);
+                for ch in 0..3 {
+                    input[ch * n + y * iw + x] = (c[ch] * 255.0 - 127.5) / 128.0;
+                }
             }
-            let (col, row) = ((idx % cols) as f32, (idx / cols) as f32);
+        }
+        let out = tensor::run(&mut session.lock().unwrap(), vec![Input::F32("input.1", vec![1, 3, ih as i64, iw as i64], input)])?;
+        if out.len() < 9 {
+            return Err("the face model gave too little back".into());
+        }
+        for (s, &stride) in STRIDES.iter().enumerate() {
+            let (scores, boxes, kps) = (&out[s].1, &out[3 + s].1, &out[6 + s].1);
+            let cols = iw / stride;
             let st = stride as f32;
-            let bb = &bbox[idx * 4..idx * 4 + 4];
-            let (cx, cy) = ((col + bb[0]) * st, (row + bb[1]) * st);
-            let (bw, bh) = (bb[2].exp() * st, bb[3].exp() * st);
-            let kp = &kps[idx * 10..idx * 10 + 10];
-            let points = std::array::from_fn(|p| [(kp[2 * p] + col) * st / k, (kp[2 * p + 1] + row) * st / k]);
-            faces.push(Face { b: [(cx - bw / 2.0) / k, (cy - bh / 2.0) / k, (cx + bw / 2.0) / k, (cy + bh / 2.0) / k], score, points });
+            for (idx, &score) in scores.iter().enumerate() {
+                if score < SCORE {
+                    continue;
+                }
+                // Two anchors per place, row by row.
+                let cell = idx / 2;
+                let (cx, cy) = ((cell % cols) as f32 * st, (cell / cols) as f32 * st);
+                let d = &boxes[idx * 4..idx * 4 + 4];
+                let b = [(cx - d[0] * st) / k, (cy - d[1] * st) / k, (cx + d[2] * st) / k, (cy + d[3] * st) / k];
+                let p = &kps[idx * 10..idx * 10 + 10];
+                let points = std::array::from_fn(|i| [(cx + p[2 * i] * st) / k, (cy + p[2 * i + 1] * st) / k]);
+                faces.push(Face { b, score, points });
+            }
         }
     }
     faces.sort_by(|a, b| b.score.total_cmp(&a.score));
@@ -104,10 +113,31 @@ fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     }
 }
 
-/// Who `face` (found in `px`) is, as a unit vector of 128: two pictures of the same person point
-/// the same way.
+/// Who `face` (found in `px`) is, as a unit vector of 512 (ArcFace): two pictures of the same
+/// person point the same way.
 pub fn embed(px: &Rgb, face: &Face) -> Result<Vec<f32>, String> {
+    let session = super::session(&FACES, "arcface.onnx")?;
+    let input = aligned(px, face, |v| (v * 255.0 - 127.5) / 127.5);
+    run(&session, "input.1", input)
+}
+
+/// Who `face` is as the phone sees it: SFace's unit vector of 128.
+pub fn embed_phone(px: &Rgb, face: &Face) -> Result<Vec<f32>, String> {
     let session = super::session(&FACES, "sface.onnx")?;
+    let input = aligned(px, face, |v| v * 255.0);
+    run(&session, "data", input)
+}
+
+fn run(session: &std::sync::Mutex<ort::session::Session>, name: &'static str, input: Vec<f32>) -> Result<Vec<f32>, String> {
+    let mut out = tensor::run(&mut session.lock().unwrap(), vec![Input::F32(name, vec![1, 3, SIDE as i64, SIDE as i64], input)])?;
+    let (_, mut v) = out.pop().ok_or("the face model gave nothing back")?;
+    normalize(&mut v);
+    Ok(v)
+}
+
+/// The face turned upright and scaled onto the template, as red, green and blue planes, each
+/// value (0..1) through `level`.
+fn aligned(px: &Rgb, face: &Face, level: impl Fn(f32) -> f32) -> Vec<f32> {
     // The template goes left to right on the picture.
     let p = &face.points;
     let mut eyes = [p[0], p[1]];
@@ -127,14 +157,11 @@ pub fn embed(px: &Rgb, face: &Face) -> Result<Vec<f32>, String> {
             let (sx, sy) = (inv[0] * dx + inv[1] * dy - 0.5, inv[2] * dx + inv[3] * dy - 0.5);
             let c = bilinear(px, sx, sy);
             for ch in 0..3 {
-                input[ch * n + y * SIDE + x] = c[ch] * 255.0;
+                input[ch * n + y * SIDE + x] = level(c[ch]);
             }
         }
     }
-    let mut out = tensor::run(&mut session.lock().unwrap(), vec![Input::F32("data", vec![1, 3, SIDE as i64, SIDE as i64], input)])?;
-    let (_, mut v) = out.pop().ok_or("the face model gave nothing back")?;
-    normalize(&mut v);
-    Ok(v)
+    input
 }
 
 pub fn normalize(v: &mut [f32]) {

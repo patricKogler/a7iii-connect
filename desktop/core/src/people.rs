@@ -1,16 +1,29 @@
 //! People: faces grouped by who they are, as the phone does it (People.kt), and the remembered
-//! people (`.shootback/people.txt`, the phone's file format) put together with the phone's, so a
-//! name given on either side shows on both.
+//! people put together with the phone's, so a name given on either side shows on both.
+//!
+//! The computer tells faces apart with ArcFace and the phone with SFace, whose looks can't be
+//! compared. So the computer keeps its people in `.shootback/people-desktop.txt`, and
+//! `.shootback/people.txt` (the phone's file, which sync puts together with the phone's) holds
+//! them as the phone sees them: each face here has an SFace look too, and a person's SFace look is
+//! what pairs them with a person on the phone.
 
 use crate::cull::{pack_embedding, unpack_embedding, Insight};
 use std::collections::HashMap;
 
-/// A face joins the person it looks most like at this cosine or more (same-person pairs measure
-/// about 0.7 to 1 with SFace, strangers under about 0.3); otherwise it starts someone new.
-pub const JOIN: f32 = 0.42;
-/// Two unnamed groups this alike are one person seen two ways; merged. Also how alike a person
-/// on the phone and one here have to be to be the same person.
-const MERGE: f32 = 0.5;
+/// A face joins the person it looks most like at this cosine or more, otherwise it starts someone
+/// new; and two unnamed groups this alike are one person seen two ways, merged. Also how alike a
+/// person on the phone and one here have to be to be the same person. By the length of the looks:
+/// SFace's (128; same-person pairs about 0.6 to 1, strangers under about 0.3) or ArcFace's (512;
+/// same-person pairs about 0.6 to 1, strangers under about 0.15).
+fn thresholds(len: usize) -> (f32, f32) {
+    if len == PHONE_LOOK {
+        (0.42, 0.5)
+    } else {
+        (0.35, 0.45)
+    }
+}
+/// The length of the phone's (SFace) looks.
+const PHONE_LOOK: usize = 128;
 /// Unnamed people in fewer shots than this aren't shown.
 const MIN_SHOTS: usize = 2;
 
@@ -117,7 +130,7 @@ pub fn group(insights: &HashMap<String, Insight>, known: &Remembered) -> Vec<Per
             embeddings.insert(r.clone(), e);
             let best = groups.iter_mut().max_by(|a, b| cosine(&a.centroid, e).total_cmp(&cosine(&b.centroid, e)));
             match best {
-                Some(g) if cosine(&g.centroid, e) >= JOIN => g.add(r, e),
+                Some(g) if cosine(&g.centroid, e) >= thresholds(e.len()).0 => g.add(r, e),
                 _ => {
                     let mut g = Group::new(format!("p{next}"), None, vec![0.0; e.len()]);
                     next += 1;
@@ -133,7 +146,12 @@ pub fn group(insights: &HashMap<String, Insight>, known: &Remembered) -> Vec<Per
         'search: for a in 0..groups.len() {
             for b in 0..groups.len() {
                 let (ga, gb) = (&groups[a], &groups[b]);
-                if a != b && gb.name.is_none() && !gb.faces.is_empty() && ga.faces.len() >= gb.faces.len() && cosine(&ga.centroid, &gb.centroid) >= MERGE {
+                if a != b
+                    && gb.name.is_none()
+                    && !gb.faces.is_empty()
+                    && ga.faces.len() >= gb.faces.len()
+                    && cosine(&ga.centroid, &gb.centroid) >= thresholds(ga.centroid.len()).1
+                {
                     pair = Some((a, b));
                     break 'search;
                 }
@@ -201,7 +219,7 @@ pub fn merge(mine: &Remembered, theirs: &Remembered) -> Remembered {
             .iter_mut()
             .filter(|o| o.centroid.len() == a.centroid.len())
             .map(|o| (cosine(&o.centroid, &a.centroid), o))
-            .filter(|(c, _)| *c >= MERGE)
+            .filter(|(c, _)| *c >= thresholds(a.centroid.len()).1)
             .max_by(|x, y| x.0.total_cmp(&y.0));
         if let Some((_, o)) = same {
             if o.name.is_none() {
@@ -219,6 +237,76 @@ pub fn merge(mine: &Remembered, theirs: &Remembered) -> Remembered {
     }
     next = next.max(first_free(out.iter().map(|a| a.id.as_str())));
     Remembered { people: out, next }
+}
+
+/// Each person's look as the phone sees them (their faces' SFace looks put together), by id.
+pub fn phone_looks(people: &[Person], insights: &HashMap<String, Insight>) -> HashMap<String, Vec<f32>> {
+    let mut out = HashMap::new();
+    for p in people {
+        let mut sum = vec![0.0; PHONE_LOOK];
+        let mut any = false;
+        for f in &p.faces {
+            if let Some(e) = insights.get(&f.shot).and_then(|i| i.faces.get(f.index)).and_then(|f| f.phone.as_deref()).filter(|e| e.len() == PHONE_LOOK) {
+                sum.iter_mut().zip(e).for_each(|(s, v)| *s += v);
+                any = true;
+            }
+        }
+        if any {
+            out.insert(p.id.clone(), normalized(&sum));
+        }
+    }
+    out
+}
+
+/// The phone's person (in `phone`) who is `look`, if one is.
+fn on_phone<'a>(phone: &'a mut [Anchor], look: &[f32]) -> Option<&'a mut Anchor> {
+    phone
+        .iter_mut()
+        .filter(|o| o.centroid.len() == look.len())
+        .map(|o| (cosine(&o.centroid, look), o))
+        .filter(|(c, _)| *c >= thresholds(PHONE_LOOK).1)
+        .max_by(|x, y| x.0.total_cmp(&y.0))
+        .map(|(_, o)| o)
+}
+
+/// `phone` (the people as the phone sees them) with the people remembered here (`mine`, their
+/// phone looks in `looks`) in it: one the phone has gets the name given here, if there is one or
+/// they are among `renamed` (a name taken away); the rest come along with new ids.
+pub fn for_phone(mine: &Remembered, looks: &HashMap<String, Vec<f32>>, phone: &Remembered, renamed: &[String]) -> Remembered {
+    let mut out = phone.people.clone();
+    let mut next = phone.next.max(first_free(out.iter().map(|a| a.id.as_str())));
+    for a in &mine.people {
+        let Some(look) = looks.get(&a.id) else { continue };
+        if let Some(o) = on_phone(&mut out, look) {
+            if a.name.is_some() || renamed.contains(&a.id) {
+                o.name = a.name.clone();
+            }
+            continue;
+        }
+        out.push(Anchor { id: format!("p{next}"), name: a.name.clone(), centroid: look.clone() });
+        next += 1;
+    }
+    Remembered { people: out, next }
+}
+
+/// `known` (the people remembered here) with the names the phone gave the people in `people`
+/// (their phone looks in `looks`): all of them when `phone_first` (the phone just changed them),
+/// otherwise only for people with no name here.
+pub fn names_from_phone(people: &[Person], looks: &HashMap<String, Vec<f32>>, known: &Remembered, phone: &Remembered, phone_first: bool) -> Remembered {
+    let mut out = known.clone();
+    let mut theirs: Vec<Anchor> = phone.people.iter().filter(|a| a.name.is_some()).cloned().collect();
+    for p in people {
+        let Some(look) = looks.get(&p.id) else { continue };
+        let Some(o) = on_phone(&mut theirs, look) else { continue };
+        if o.name == p.name || (p.name.is_some() && !phone_first) {
+            continue;
+        }
+        match out.people.iter_mut().find(|a| a.id == p.id) {
+            Some(a) => a.name = o.name.clone(),
+            None => out.people.push(Anchor { id: p.id.clone(), name: o.name.clone(), centroid: p.centroid.clone() }),
+        }
+    }
+    out
 }
 
 /// One line per person (id, name, look) after a `#next` line, as on the phone.
@@ -260,11 +348,15 @@ mod tests {
 
     fn shot(faces: &[&[f32]]) -> Insight {
         Insight {
-            faces: faces.iter().map(|e| FaceInfo { b: [0.0, 0.0, 0.2, 0.2], eyes_open: None, smile: None, sharp: 1.0, embedding: Some(unit(e)) }).collect(),
+            faces: faces
+                .iter()
+                .map(|e| FaceInfo { b: [0.0, 0.0, 0.2, 0.2], eyes_open: None, smile: None, sharp: 1.0, embedding: Some(unit(e)), phone: None })
+                .collect(),
             sharp: 1.0,
             labels: Vec::new(),
             text: String::new(),
             version: Insight::VERSION,
+            model: Insight::FACE_MODEL,
         }
     }
 
@@ -308,5 +400,49 @@ mod tests {
         assert_eq!(decode(&encode(&m)).people[1].name, bob.name);
         // Putting it together again changes nothing.
         assert_eq!(merge(&m, &m).people.len(), 2);
+    }
+
+    #[test]
+    fn names_pass_to_the_phone_by_its_look() {
+        let one = |i: usize| (0..PHONE_LOOK).map(|k| if k == i { 1.0 } else { 0.05 }).collect::<Vec<f32>>();
+        // Three people here (each seen twice, so remembered), with the phone's look of them.
+        let mut insights = HashMap::new();
+        let mut people = Vec::new();
+        for (n, name) in [Some("Ann"), None, None].into_iter().enumerate() {
+            let mut i = shot(&[&[n as f32, 1.0, 0.0]]);
+            i.faces[0].phone = Some(unit(&one(n)));
+            insights.insert(format!("s{n}"), i);
+            people.push(Person {
+                id: format!("d{n}"),
+                name: name.map(String::from),
+                centroid: unit(&[n as f32, 1.0, 0.0]),
+                faces: vec![FaceRef { shot: format!("s{n}"), index: 0 }; 2],
+            });
+        }
+        let looks = phone_looks(&people, &insights);
+        assert_eq!(looks.len(), 3);
+        let phone = Remembered {
+            people: vec![
+                Anchor { id: "p1".into(), name: None, centroid: unit(&one(0)) },
+                Anchor { id: "p2".into(), name: Some("Bob".into()), centroid: unit(&one(1)) },
+            ],
+            next: 3,
+        };
+        let mine = remember(&people, &Remembered::default());
+        let out = for_phone(&mine, &looks, &phone, &[]);
+        assert_eq!(out.people.len(), 3);
+        assert_eq!(out.people[0].name.as_deref(), Some("Ann"));
+        assert_eq!(out.people[1].name.as_deref(), Some("Bob"));
+        assert_eq!((out.people[2].id.as_str(), out.people[2].centroid.len()), ("p3", PHONE_LOOK));
+        // Bob's name comes back here; Ann keeps hers.
+        let named = names_from_phone(&people, &looks, &mine, &out, false);
+        let name = |id: &str| named.people.iter().find(|a| a.id == id).and_then(|a| a.name.clone());
+        assert_eq!((name("d0").as_deref(), name("d1").as_deref(), name("d2")), (Some("Ann"), Some("Bob"), None));
+        // Renamed on the phone: taken when the phone just changed them, not otherwise.
+        let mut renamed = out.clone();
+        renamed.people[0].name = Some("Anna".into());
+        let first = |n: &Remembered| n.people.iter().find(|a| a.id == "d0").and_then(|a| a.name.clone());
+        assert_eq!(first(&names_from_phone(&people, &looks, &mine, &renamed, true)).as_deref(), Some("Anna"));
+        assert_eq!(first(&names_from_phone(&people, &looks, &mine, &renamed, false)).as_deref(), Some("Ann"));
     }
 }
