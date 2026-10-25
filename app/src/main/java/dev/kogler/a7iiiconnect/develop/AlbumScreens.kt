@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PhotoAlbum
+import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -70,13 +71,19 @@ fun AlbumPicker(
     onPick: (Album) -> Unit,
     onNew: () -> Unit,
     onDismiss: () -> Unit,
+    title: String? = null,
+    /** Offered when the shots aren't in the library yet: just add them there, no album. */
+    onLibraryOnly: (() -> Unit)? = null,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (count == 1) "Add to album" else "Add $count shots to album") },
+        title = { Text(title ?: if (count == 1) "Add to album" else "Add $count shots to album") },
         text = {
             LazyColumn(Modifier.heightIn(max = 360.dp)) {
                 item {
+                    if (onLibraryOnly != null) {
+                        AlbumRow(Icons.Rounded.PhotoLibrary, "Just the library", null, Modifier.clickable(onClick = onLibraryOnly).testTag("album-library"))
+                    }
                     AlbumRow(Icons.Rounded.Add, "New album", null, Modifier.clickable(onClick = onNew).testTag("album-new"))
                     HorizontalDivider()
                 }

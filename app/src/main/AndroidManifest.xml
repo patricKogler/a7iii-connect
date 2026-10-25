@@ -81,6 +81,25 @@
             android:screenOrientation="fullUser"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:theme="@android:style/Theme.Material.NoActionBar" />
+        <!-- Share to Shootback: photos from Google Photos, WhatsApp, Signal… into the library or an album. -->
+        <activity
+            android:name=".develop.ShareActivity"
+            android:exported="true"
+            android:label="Shootback"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
         <!-- Together: hosting, or joining by touching the host phone (its tag opens shootback://duo). -->
         <activity
             android:name=".duo.DuoActivity"
