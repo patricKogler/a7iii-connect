@@ -29,6 +29,7 @@ mod theme;
 mod viewer;
 mod wheel;
 mod widgets;
+mod zoom;
 
 fn main() -> eframe::Result {
     // Models and the runtime that runs them live beside the app's settings.

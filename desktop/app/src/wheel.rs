@@ -42,6 +42,11 @@ impl Wheel {
         let mut events = Vec::with_capacity(raw.events.len());
         for e in raw.events.drain(..) {
             match e {
+                // Ctrl+scroll zooms (see zoom.rs), at egui's own pace and without gliding.
+                Event::MouseWheel { modifiers, .. } if modifiers.ctrl || modifiers.command => {
+                    self.stop();
+                    events.push(e);
+                }
                 Event::MouseWheel { unit: MouseWheelUnit::Point, delta, modifiers } => {
                     let d = delta * POINT_GAIN;
                     touch += d;
@@ -175,6 +180,16 @@ mod tests {
         let (moved, again) = frame(&mut w, t, vec![line]);
         assert_eq!(moved.y, 40.0 * LINE_GAIN);
         assert!(again.is_none());
+    }
+
+    #[test]
+    fn ctrl_scrolling_is_left_as_it_is() {
+        let mut w = Wheel::default();
+        let ctrl = egui::Modifiers { ctrl: true, ..Default::default() };
+        let e = Event::MouseWheel { unit: MouseWheelUnit::Point, delta: Vec2::new(0.0, -30.0), modifiers: ctrl };
+        let mut raw = RawInput { time: Some(0.1), events: vec![e.clone()], ..Default::default() };
+        assert_eq!(w.feed(&mut raw), None);
+        assert_eq!(raw.events, vec![e]);
     }
 
     #[test]

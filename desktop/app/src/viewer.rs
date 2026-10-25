@@ -2,10 +2,11 @@
 //! filmstrip of its neighbours.
 
 use crate::app::{App, View};
-use crate::images::{LARGE, THUMB};
+use crate::images::{FULL, LARGE, THUMB};
 use crate::library_view::{details, mark_menu};
 use crate::theme::palette;
 use crate::widgets::{outline_button, paint_badge, paint_seal, seal_button, stage_chip};
+use crate::zoom::Zoom;
 use eframe::egui::{self, Align2, Color32, Frame, Key, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use shootback_core::marks::Mark;
 
@@ -179,7 +180,7 @@ fn stage(app: &mut App, ui: &mut Ui, preview: Option<(egui::TextureId, Vec2)>) {
     // A strip above the photo for the before/after switch and what's going on.
     let bar = Rect::from_min_size(full.min, Vec2::new(full.width(), 30.0));
     let rect = Rect::from_min_max(Pos2::new(full.left(), bar.bottom() + 8.0), full.max);
-    let resp = ui.allocate_rect(full, Sense::click());
+    let resp = ui.allocate_rect(full, Sense::click_and_drag());
     let held = ui.input(|i| i.key_down(Key::Backslash));
     let id = ui.id().with("show-before");
     let mut before: bool = ui.memory(|m| m.data.get_temp(id).unwrap_or(false));
@@ -198,6 +199,30 @@ fn stage(app: &mut App, ui: &mut Ui, preview: Option<(egui::TextureId, Vec2)>) {
         app.editor.masking = !app.editor.masking;
         app.editor.cropping = false;
         app.editor.removing = false;
+    }
+    let tex = match preview {
+        Some((id, size)) if !(before || held) => Some((id, size)),
+        // The camera's picture, at full size when looking close.
+        _ => (!app.editor.zoom.fitted())
+            .then(|| app.images.get(&show.path, FULL, show.orientation))
+            .flatten()
+            .or_else(|| app.images.get(&show.path, LARGE, show.orientation))
+            .or_else(|| app.images.any(&show.path))
+            .map(|t| (t.id(), t.size_vec2())),
+    };
+    // How large one photo pixel is at 100%, against fitted.
+    let actual = tex.map_or(1.0, |(_, size)| {
+        let frame_w = app.editor.frame_px().map_or(size.x, |(w, _)| w as f32);
+        Zoom::actual(rect, size, frame_w, ui.ctx().pixels_per_point())
+    });
+    let zoom_label = if app.editor.zoom.fitted() { "Fit  Z".to_string() } else { format!("{:.0}%  Z", app.editor.zoom.z / actual * 100.0) };
+    if stage_chip(&mut bar_ui, !app.editor.zoom.fitted(), &zoom_label)
+        .on_hover_text("Pinch or Ctrl+scroll to zoom, scroll or drag to move around. Double-click or Z goes between fitted and 100%.")
+        .clicked()
+    {
+        if let Some((_, size)) = tex {
+            app.editor.zoom.toggle(rect.center(), rect, size, actual);
+        }
     }
     let remove = if app.editor.s.removals.is_empty() { "Remove  Q".to_string() } else { format!("Remove {}  Q", app.editor.s.removals.len()) };
     if stage_chip(&mut bar_ui, app.editor.removing, &remove).on_hover_text("Paint things out, take out dust spots").clicked() {
@@ -223,20 +248,37 @@ fn stage(app: &mut App, ui: &mut Ui, preview: Option<(egui::TextureId, Vec2)>) {
             ui.label(RichText::new("Edited").size(12.0).color(Color32::from_gray(160)));
         });
     }
-    let tex = match preview {
-        Some((id, size)) if !(before || held) => Some((id, size)),
-        _ => app.images.get(&show.path, LARGE, show.orientation).or_else(|| app.images.any(&show.path)).map(|t| (t.id(), t.size_vec2())),
-    };
     match tex {
         Some((id, size)) => {
-            let s = (rect.width() / size.x).min(rect.height() / size.y);
-            let r = Rect::from_center_size(rect.center(), size * s);
-            ui.painter().image(id, r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+            let cropping = app.editor.cropping;
+            app.editor.zoom.settle(rect, size, actual, cropping);
+            zoom_input(app, ui, &resp, rect, size, actual);
+            let r = app.editor.zoom.place(rect, size);
+            // The photo stays below the bar when zoomed in, and so do the tools drawn over it.
+            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+            ui.painter().image(id, r, whole, Color32::WHITE);
+            let seen = r.intersect(rect);
+            // Past the preview's own pixels, the part in view developed at full size.
+            if preview.is_some() && !(before || held) && r.width() * ui.ctx().pixels_per_point() > size.x * 1.2 {
+                if let Some((fw, fh)) = app.editor.frame_px() {
+                    let at = |p: Pos2| ((p - r.min) / r.size()) * Vec2::new(fw as f32, fh as f32);
+                    let (a, b) = (at(seen.min), at(seen.max));
+                    let (x0, y0) = (a.x.floor().max(0.0) as usize, a.y.floor().max(0.0) as usize);
+                    let (x1, y1) = ((b.x.ceil() as usize).min(fw), (b.y.ceil() as usize).min(fh));
+                    if x1 > x0 && y1 > y0 {
+                        if let Some((tid, [x, y, w, h])) = app.editor.detail(ui.ctx(), [x0, y0, x1 - x0, y1 - y0]) {
+                            let to_screen = |px: usize, py: usize| r.min + Vec2::new(px as f32 / fw as f32, py as f32 / fh as f32) * r.size();
+                            ui.painter().image(tid, Rect::from_min_max(to_screen(x, y), to_screen(x + w, y + h)), whole, Color32::WHITE);
+                        }
+                    }
+                }
+            }
             if app.library.mark(&shot) == Some(Mark::Pick) {
-                paint_seal(ui.painter(), r.right_top() + Vec2::new(-10.0, 10.0), "Pick", Align2::RIGHT_TOP);
+                paint_seal(ui.painter(), seen.right_top() + Vec2::new(-10.0, 10.0), "Pick", Align2::RIGHT_TOP);
             }
             if before || held {
-                paint_badge(ui, ui.painter(), r.left_top() + Vec2::new(10.0, 10.0), "Before", Align2::LEFT_TOP, false);
+                paint_badge(ui, ui.painter(), seen.left_top() + Vec2::new(10.0, 10.0), "Before", Align2::LEFT_TOP, false);
             } else if app.editor.cropping && preview.is_some() {
                 crop_overlay(app, ui, r);
             } else if app.editor.masking && preview.is_some() {
@@ -254,6 +296,35 @@ fn stage(app: &mut App, ui: &mut Ui, preview: Option<(egui::TextureId, Vec2)>) {
         None => {}
     }
     resp.context_menu(|ui| mark_menu(app, ui, &key));
+}
+
+/// Looking closer: a pinch or Ctrl+scroll zooms where the pointer is; scrolling, or dragging
+/// when no tool takes the drag, moves around; a double-click or Z goes between fitted and 100%.
+fn zoom_input(app: &mut App, ui: &Ui, resp: &egui::Response, view: Rect, size: Vec2, actual: f32) {
+    let ed = &mut app.editor;
+    let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|p| view.contains(*p));
+    if let Some(at) = pointer {
+        let (factor, scroll) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta));
+        if factor != 1.0 {
+            ed.zoom.zoom_at(factor.clamp(0.5, 2.0), at, view, size, actual);
+        }
+        if !ed.zoom.fitted() && scroll != Vec2::ZERO {
+            ed.zoom.pan(scroll, view, size);
+        }
+    }
+    let tool = ed.cropping || ed.masking || ed.removing;
+    if !tool && !ed.zoom.fitted() {
+        if resp.dragged() {
+            ed.zoom.pan(resp.drag_delta(), view, size);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        } else if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+    }
+    let z_key = ui.input(|i| !i.modifiers.any() && i.key_pressed(Key::Z)) && !ui.ctx().wants_keyboard_input();
+    if resp.double_clicked() || z_key {
+        ed.zoom.toggle(pointer.unwrap_or(view.center()), view, size, actual);
+    }
 }
 
 /// Which part of the crop box a drag holds: edges as left, top, right, bottom flags.
