@@ -65,6 +65,12 @@ fn main() -> eframe::Result {
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             present_mode: eframe::wgpu::PresentMode::AutoNoVsync,
             on_surface_error: std::sync::Arc::new(surface_error),
+            // The graphics built into the processor, not a separate card: on laptops with both
+            // (Patrick's: AMD and NVIDIA) the screen hangs off the built-in one, and NVIDIA's
+            // driver drawing for it on Wayland left the window frozen after the screen had been
+            // off. The editor's drawing is light enough for either. WGPU_POWER_PREF=high still
+            // picks the card.
+            power_preference: eframe::wgpu::util::power_preference_from_env().unwrap_or(eframe::wgpu::PowerPreference::LowPower),
             ..Default::default()
         },
         ..Default::default()
