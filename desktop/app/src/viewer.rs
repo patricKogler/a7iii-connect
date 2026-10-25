@@ -108,14 +108,17 @@ fn panel(app: &mut App, ui: &mut Ui) {
     if status.running {
         ui.add(egui::ProgressBar::new(status.progress).desired_height(6.0).fill(p.seal));
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Exporting at full size ...").color(p.text2));
+            ui.label(RichText::new(&status.message).color(p.text2));
             if ui.add(egui::Label::new(RichText::new("Cancel").color(p.text3)).sense(Sense::click())).clicked() {
                 ed.cancel_export();
             }
         });
     } else {
+        export_size(ui, ed);
+        ui.add_space(4.0);
         ui.add_enabled_ui(ed.opened.is_some(), |ui| {
-            if seal_button(ui, "Export JPEG").on_hover_text(format!("Full size, into {}  (Ctrl+Shift+E)", ed.export_dir().display())).clicked() {
+            let size = if ed.export_scale > 1 { format!("{}x larger by AI upscaling", ed.export_scale) } else { "Full size".to_string() };
+            if seal_button(ui, "Export JPEG").on_hover_text(format!("{size}, into {}  (Ctrl+Shift+E)", ed.export_dir().display())).clicked() {
                 ed.export(ui.ctx());
             }
         });
@@ -129,6 +132,31 @@ fn panel(app: &mut App, ui: &mut Ui) {
                 }
             });
         }
+    }
+}
+
+/// The export's size: the photo's own, or made 2 or 4 times larger by AI upscaling (when the
+/// result stays a sensible size).
+fn export_size(ui: &mut Ui, ed: &mut crate::editor::Editor) {
+    let p = palette(ui.ctx());
+    let (w, h) = ed.opened.as_ref().map_or((0, 0), |o| (o.source.full_width, o.source.full_height));
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Size").color(p.text2));
+        for (scale, label) in [(1, "Full"), (2, "2x"), (4, "4x")] {
+            let fits = scale == 1 || shootback_core::ai::upscale::fits(w, h, scale);
+            let tip = match scale {
+                1 => format!("{w} x {h}, as the photo is"),
+                _ if fits => format!("{} x {}, upscaled by AI (the model downloads the first time)", w * scale, h * scale),
+                _ => "Too large for this photo".to_string(),
+            };
+            let resp = ui.add_enabled_ui(fits, |ui| crate::widgets::chip(ui, ed.export_scale == scale, label)).inner.on_hover_text(tip);
+            if resp.clicked() {
+                ed.export_scale = scale;
+            }
+        }
+    });
+    if !shootback_core::ai::upscale::fits(w, h, ed.export_scale) {
+        ed.export_scale = 1;
     }
 }
 

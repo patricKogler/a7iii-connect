@@ -196,3 +196,23 @@ fn removals_reach_the_preview_and_the_export() {
     eprintln!("changed {changed} of {}", before.r.len());
     assert!(changed > 100);
 }
+
+#[test]
+fn upscaling_brings_back_detail() {
+    let Some(dir) = setup() else { return };
+    use std::sync::atomic::AtomicBool;
+    let big = photo(&dir, "building.jpg", 1200);
+    for factor in [2, 4] {
+        let (w, h) = (big.width / factor, big.height / factor);
+        let small = big.resized(w, h);
+        let up = ai::upscale::upscale(&small.to_bytes(), w, h, factor, &|_| {}, &AtomicBool::new(false)).unwrap();
+        let (bw, bh) = (w * factor, h * factor);
+        let truth = big.resized(bw, bh).to_bytes();
+        let plain = small.resized(bw, bh).to_bytes();
+        let err = |a: &[u8]| a.iter().zip(&truth).map(|(&a, &b)| (a as f32 - b as f32).powi(2)).sum::<f32>() / a.len() as f32;
+        let (model, resized) = (err(&up), err(&plain));
+        eprintln!("{factor}x: model {model:.1}, resized {resized:.1}");
+        assert_eq!(up.len(), bw * bh * 3);
+        assert!(model < resized * 0.9, "{factor}x: model {model} vs resized {resized}");
+    }
+}

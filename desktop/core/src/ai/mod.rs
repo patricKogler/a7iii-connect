@@ -18,6 +18,7 @@ pub mod objects;
 pub mod sky;
 pub mod subject;
 pub mod tensor;
+pub mod upscale;
 
 use catalog::{Model, Packaging, RUNTIME};
 use ort::environment::Environment;

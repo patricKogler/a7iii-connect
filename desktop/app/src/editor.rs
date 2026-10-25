@@ -124,6 +124,8 @@ pub struct Editor {
     pub edited: HashSet<String>,
     pub export: Arc<Mutex<ExportStatus>>,
     cancel: Arc<AtomicBool>,
+    /// How many times larger exports are made by AI upscaling (1 for the photo's own size).
+    pub export_scale: usize,
 }
 
 impl Editor {
@@ -173,6 +175,7 @@ impl Editor {
             cropping: false,
             export: Default::default(),
             cancel: Default::default(),
+            export_scale: 1,
         }
     }
 
@@ -577,16 +580,32 @@ impl Editor {
         let status = self.export.clone();
         let cancel = self.cancel.clone();
         cancel.store(false, Ordering::Relaxed);
-        *status.lock().unwrap() = ExportStatus { running: true, message: "Exporting ...".into(), ..Default::default() };
+        let scale = self.export_scale;
+        *status.lock().unwrap() = ExportStatus { running: true, message: "Exporting at full size ...".into(), ..Default::default() };
         let c = ctx.clone();
         std::thread::spawn(move || {
             let stem = file.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "photo".into());
-            let out = dir.join(format!("{stem}-edit.jpg"));
+            let out = dir.join(if scale > 1 { format!("{stem}-edit-{scale}x.jpg") } else { format!("{stem}-edit.jpg") });
+            // With upscaling, developing is the first fifth of the way.
+            let share = if scale > 1 { 0.2 } else { 1.0 };
             let progress = |f: f32| {
-                status.lock().unwrap().progress = f;
+                status.lock().unwrap().progress = f * share;
                 c.request_repaint();
             };
-            let result = render::full_size(&engine, &opened, &s, lut.as_ref(), &maps, &progress, &cancel).and_then(|(w, h, rgb)| {
+            let developed = render::full_size(&engine, &opened, &s, lut.as_ref(), &maps, &progress, &cancel);
+            let result = developed.and_then(|(w, h, rgb)| {
+                if scale == 1 {
+                    return Ok((w, h, rgb));
+                }
+                status.lock().unwrap().message = format!("Upscaling {scale}x ...");
+                let up = |f: f32| {
+                    status.lock().unwrap().progress = share + f * (1.0 - share);
+                    c.request_repaint();
+                };
+                let rgb = shootback_core::ai::upscale::upscale(&rgb, w, h, scale, &up, &cancel)?;
+                Ok((w * scale, h * scale, rgb))
+            });
+            let result = result.and_then(|(w, h, rgb)| {
                 let exif = develop::export::exif_for(&file);
                 let jpeg = render::encode_jpeg(w, h, &rgb, exif.as_deref())?;
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
