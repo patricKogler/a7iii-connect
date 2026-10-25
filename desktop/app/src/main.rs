@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod batch;
 mod cull;
 mod cull_view;
 mod denoise;
@@ -24,6 +25,7 @@ mod remove;
 mod remove_view;
 mod render;
 mod search;
+mod selection;
 mod state;
 mod theme;
 mod viewer;

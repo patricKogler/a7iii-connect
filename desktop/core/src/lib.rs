@@ -6,6 +6,7 @@ pub mod ai;
 pub mod albums;
 pub mod camera;
 pub mod cull;
+pub mod deleted;
 pub mod develop;
 pub mod ftp;
 pub mod import;

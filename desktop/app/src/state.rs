@@ -197,6 +197,39 @@ impl Library {
         let _ = self.marks.set(key, mark);
     }
 
+    /// Sets marks on several shots at once; answers what they were before.
+    pub fn set_marks(&mut self, keys: &[String], mark: Option<Mark>) -> Vec<(String, Option<Mark>)> {
+        let before = keys.iter().map(|k| (k.clone(), self.marks.get(k))).collect();
+        let _ = self.marks.set_many(&keys.iter().map(|k| (k.clone(), mark)).collect::<Vec<_>>());
+        before
+    }
+
+    pub fn restore_marks(&mut self, marks: &[(String, Option<Mark>)]) {
+        let _ = self.marks.set_many(marks);
+    }
+
+    /// Puts `keys` into an album, or takes them out; answers the ones that changed.
+    pub fn set_in_album(&mut self, id: &str, keys: &[String], inside: bool) -> Vec<String> {
+        let Some(a) = self.albums.iter_mut().find(|a| a.id == id) else { return Vec::new() };
+        let changed: Vec<String> = keys.iter().filter(|k| a.contains(k) != inside).cloned().collect();
+        if !changed.is_empty() {
+            *a = if inside { albums::add(a, &changed, now_millis()) } else { albums::remove(a, &changed, now_millis()) };
+            self.save_albums();
+        }
+        changed
+    }
+
+    /// Takes `keys` out of every album; answers which albums had which.
+    pub fn take_out_of_albums(&mut self, keys: &[String]) -> Vec<(String, Vec<String>)> {
+        let ids: Vec<String> = self.alive_albums().map(|a| a.id.clone()).collect();
+        ids.into_iter().map(|id| (id.clone(), self.set_in_album(&id, keys, false))).filter(|(_, k)| !k.is_empty()).collect()
+    }
+
+    /// Forgets shots whose files are gone, until the next scan.
+    pub fn drop_shots(&mut self, keys: &HashSet<String>) {
+        self.shots.retain(|s| !keys.contains(&s.key()));
+    }
+
     pub fn alive_albums(&self) -> impl Iterator<Item = &Album> {
         self.albums.iter().filter(|a| a.alive())
     }

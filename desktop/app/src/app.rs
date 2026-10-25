@@ -26,8 +26,14 @@ pub struct App {
     pub view: View,
     pub filter: Filter,
     pub search: String,
-    /// Key of the selected shot.
+    /// Key of the selected shot: the active one when several are selected.
     pub selected: Option<String>,
+    /// Several shots selected in the library.
+    pub selection: crate::selection::Selection,
+    /// The last batch done to them, to show and undo.
+    pub done: Option<crate::batch::Done>,
+    /// The delete confirmation, while it's open.
+    pub deleting: Option<crate::batch::Deleting>,
     pub tile: f32,
     /// Album being named (new or renamed): its id, or "" for a new one, and the text so far.
     pub naming: Option<(String, String)>,
@@ -76,6 +82,9 @@ impl App {
             filter: Filter::All,
             search: String::new(),
             selected: None,
+            selection: Default::default(),
+            done: None,
+            deleting: None,
             tile: 168.0,
             naming: None,
             show_log: false,
@@ -108,7 +117,8 @@ impl App {
         self.editor.set_root(&root);
         self.phone_sync.start(&root, &self.settings.device_id);
         self.settings.library = Some(root);
-        self.selected = None;
+        self.select_one(None);
+        self.done = None;
         self.filter = Filter::All;
         self.cull.reset();
         self.insights.set_root(&self.library.root.clone());
@@ -292,43 +302,91 @@ impl App {
     }
 
     fn keys(&mut self, ctx: &egui::Context) {
-        if ctx.wants_keyboard_input() || self.naming.is_some() || self.naming_person.is_some() || self.merging.is_some() || self.view == View::Cull {
+        if ctx.wants_keyboard_input()
+            || self.naming.is_some()
+            || self.naming_person.is_some()
+            || self.merging.is_some()
+            || self.deleting.is_some()
+            || self.view == View::Cull
+        {
             return;
         }
         let visible = self.visible();
         let cols = if self.view == View::Library { library_columns(ctx, self.tile) } else { 1 };
+        let library = self.view == View::Library;
+        let (copy, paste) = ctx.input(|i| {
+            let paste = i.events.iter().find_map(|e| match e {
+                egui::Event::Paste(t) if t.starts_with("v=2\n") => Some(t.clone()),
+                _ => None,
+            });
+            (i.events.iter().any(|e| matches!(e, egui::Event::Copy)), paste)
+        });
+        if library {
+            if copy {
+                self.copy_settings(ctx);
+            }
+            if let Some(text) = paste {
+                self.editor.copy_from(shootback_core::develop::Settings::decode(&text));
+                self.batch_paste();
+            }
+        }
         ctx.input(|i| {
             use shootback_core::marks::Mark;
-            let key = self.selected.clone();
-            if let Some(key) = &key {
-                if i.key_pressed(Key::P) {
-                    self.library.set_mark(key, Some(Mark::Pick));
-                }
-                if i.key_pressed(Key::X) {
-                    self.library.set_mark(key, Some(Mark::Reject));
-                }
-                if i.key_pressed(Key::U) {
-                    self.library.set_mark(key, None);
+            let plain = !i.modifiers.command && !i.modifiers.alt;
+            let mark = [(Key::P, Some(Mark::Pick)), (Key::X, Some(Mark::Reject)), (Key::U, None)]
+                .into_iter()
+                .find(|(k, _)| plain && i.key_pressed(*k))
+                .map(|(_, m)| m);
+            if let Some(mark) = mark {
+                if library && self.many() {
+                    self.batch_mark(mark);
+                } else if let Some(key) = self.selected.clone() {
+                    self.library.set_mark(&key, mark);
                 }
             }
+            let shift = library && i.modifiers.shift;
+            let mut arrow = |by: isize| {
+                if shift {
+                    self.extend(&visible, by);
+                } else {
+                    self.step(&visible, by);
+                    if library {
+                        self.selection.clear();
+                        self.selection.anchor = self.selected.clone();
+                    }
+                }
+            };
             if i.key_pressed(Key::ArrowRight) {
-                self.step(&visible, 1);
+                arrow(1);
             }
             if i.key_pressed(Key::ArrowLeft) {
-                self.step(&visible, -1);
+                arrow(-1);
             }
-            if self.view == View::Library {
+            if library {
                 if i.key_pressed(Key::ArrowDown) {
-                    self.step(&visible, cols as isize);
+                    arrow(cols as isize);
                 }
                 if i.key_pressed(Key::ArrowUp) {
-                    self.step(&visible, -(cols as isize));
+                    arrow(-(cols as isize));
                 }
                 if (i.key_pressed(Key::Enter) || i.key_pressed(Key::E)) && self.selected.is_some() {
+                    self.selection.clear();
                     self.view = View::Edit;
                 }
                 if i.key_pressed(Key::C) && !i.modifiers.command {
                     self.view = View::Cull;
+                }
+                if i.modifiers.command && i.key_pressed(Key::A) {
+                    self.select_all(&visible);
+                }
+                if i.key_pressed(Key::Escape) {
+                    self.selection.clear();
+                }
+                if i.key_pressed(Key::Delete) {
+                    self.ask_delete(i.modifiers.shift);
+                }
+                if i.modifiers.command && !i.modifiers.shift && i.key_pressed(Key::Z) {
+                    self.undo_batch();
                 }
             } else if self.view == View::Edit && !self.editor.cropping && !self.editor.removing && (i.key_pressed(Key::Escape) || i.key_pressed(Key::G)) {
                 self.view = View::Library;
