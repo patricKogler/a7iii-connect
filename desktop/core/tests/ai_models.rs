@@ -157,3 +157,42 @@ fn search_finds_photos_from_words() {
         assert_eq!(found.first().map(|f| f.0.as_str()), Some(want), "{words}");
     }
 }
+
+#[test]
+fn remove_fills_a_spot_from_around_it() {
+    let Some(dir) = setup() else { return };
+    let mut px = photo(&dir, "truck.jpg", 1024);
+    let (w, h) = (px.width, px.height);
+    // A dark blot on the red wall, top left.
+    let (cx, cy, r) = (150.0f32, 90.0f32, 14.0f32);
+    let wall = px.at(150, 60);
+    for y in 0..h {
+        for x in 0..w {
+            if ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt() < r {
+                let i = (y * w + x) * 3;
+                px.data[i..i + 3].copy_from_slice(&[0.05, 0.05, 0.05]);
+            }
+        }
+    }
+    let patch = ai::inpaint::fill(|x, y| px.at(x, y), w, h, &[[cx, cy]], r + 2.0).unwrap();
+    let k = (cy as usize - patch.y) * patch.w + (cx as usize - patch.x);
+    let got = patch.rgb[k];
+    eprintln!("wall {wall:?} filled {got:?} alpha {}", patch.alpha[k]);
+    assert_eq!(patch.alpha[k], 1.0);
+    assert!((0..3).all(|c| (got[c] - wall[c]).abs() < 0.12), "{got:?} vs {wall:?}");
+}
+
+#[test]
+fn removals_reach_the_preview_and_the_export() {
+    let Some(dir) = setup() else { return };
+    let o = shootback_core::develop::open(&dir.join("truck.jpg")).unwrap();
+    let mut s = shootback_core::develop::Settings::default();
+    s.removals.push(shootback_core::develop::params::Removal { radius: 0.012, points: vec![[0.445, 0.202], [0.52, 0.13]] });
+    let before = o.preview(&s).into_owned();
+    o.fill_removal(&s, 0).unwrap();
+    assert_eq!(o.removals_ready(&s), 1);
+    let after = o.preview(&s);
+    let changed = before.r.iter().zip(&after.r).filter(|(a, b)| (*a - *b).abs() > 0.01).count();
+    eprintln!("changed {changed} of {}", before.r.len());
+    assert!(changed > 100);
+}

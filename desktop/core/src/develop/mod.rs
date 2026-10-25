@@ -36,6 +36,8 @@ pub struct Opened {
     pub raw: Option<raw::RawImage>,
     /// The raw after AI denoise, once that's been run (see `ai::denoise`).
     pub denoised: OnceLock<Denoised>,
+    /// The Remove tool's fills for the preview, by `removal_keys`.
+    pub removed: std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<crate::ai::inpaint::Patch>>>,
 }
 
 /// A raw's active area after AI denoise: at full size as `RawImage::demosaic` gives it, and as
@@ -116,7 +118,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
             full_height: if swap { raw.width } else { raw.height },
             lens: raw.info.lens.clone(),
         };
-        return Ok(Opened { path: path.to_path_buf(), source, orientation, raw: Some(raw), denoised: OnceLock::new() });
+        return Ok(Opened { path: path.to_path_buf(), source, orientation, raw: Some(raw), denoised: OnceLock::new(), removed: Default::default() });
     }
     let orientation = crate::meta::read(path).orientation;
     let (img, fw, fh) = decode_jpeg(&bytes, Some(PREVIEW_EDGE))?;
@@ -130,7 +132,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
         full_height: if swap { fw } else { fh },
         lens: None,
     };
-    Ok(Opened { path: path.to_path_buf(), source, orientation, raw: None, denoised: OnceLock::new() })
+    Ok(Opened { path: path.to_path_buf(), source, orientation, raw: None, denoised: OnceLock::new(), removed: Default::default() })
 }
 
 impl Opened {
@@ -143,8 +145,65 @@ impl Opened {
         }
     }
 
-    /// The preview with AI denoise mixed in as `s` asks.
+    /// What each of the removals in `s` is filled for: it and the ones before it (a fill sees
+    /// the earlier ones done).
+    pub fn removal_keys(s: &Settings) -> Vec<String> {
+        let mut key = String::new();
+        s.removals
+            .iter()
+            .map(|r| {
+                key.push_str(&r.encode());
+                key.push('|');
+                key.clone()
+            })
+            .collect()
+    }
+
+    /// How many of the removals in `s` (from the first) the preview has fills for.
+    pub fn removals_ready(&self, s: &Settings) -> usize {
+        let have = self.removed.lock().unwrap();
+        Self::removal_keys(s).iter().take_while(|k| have.contains_key(*k)).count()
+    }
+
+    /// Works out the preview's fill for removal `i` of `s` (the ones before it ready).
+    pub fn fill_removal(&self, s: &Settings, i: usize) -> Result<(), String> {
+        let key = Self::removal_keys(s).swap_remove(i);
+        let before = Settings { removals: s.removals[..i].to_vec(), ..s.clone() };
+        let img = self.preview(&before);
+        let (pts, radius) = crate::ai::inpaint::place(&s.removals[i], img.width, img.height, 1);
+        let w = img.width;
+        let patch = crate::ai::inpaint::fill(|x, y| [img.r[y * w + x], img.g[y * w + x], img.b[y * w + x]], w, img.height, &pts, radius)?;
+        self.removed.lock().unwrap().insert(key, std::sync::Arc::new(patch));
+        Ok(())
+    }
+
+    /// The preview with AI denoise mixed in and the removals filled, as `s` asks (as far as
+    /// their fills are ready).
     pub fn preview(&self, s: &Settings) -> std::borrow::Cow<'_, LinearImage> {
+        let img = self.denoised_preview(s);
+        if s.removals.is_empty() {
+            return img;
+        }
+        let have = self.removed.lock().unwrap();
+        let patches: Vec<_> = Self::removal_keys(s).iter().map_while(|k| have.get(k).cloned()).collect();
+        drop(have);
+        if patches.is_empty() {
+            return img;
+        }
+        let mut img = img.into_owned();
+        let w = img.width;
+        for p in patches {
+            for (x, y, n, a) in p.pixels() {
+                let i = y * w + x;
+                img.r[i] = mix(img.r[i], n[0], a);
+                img.g[i] = mix(img.g[i], n[1], a);
+                img.b[i] = mix(img.b[i], n[2], a);
+            }
+        }
+        std::borrow::Cow::Owned(img)
+    }
+
+    fn denoised_preview(&self, s: &Settings) -> std::borrow::Cow<'_, LinearImage> {
         let t = self.denoise_amount(s);
         match self.denoised.get() {
             Some(d) if t > 0.0 && d.preview.width == self.source.image.width && d.preview.height == self.source.image.height => {
@@ -180,13 +239,43 @@ impl Opened {
                 }
                 _ => raw.demosaic(),
             };
-            return Ok(FullImage { width: raw.width, height: raw.height, data, orientation: self.orientation });
+            let mut full = FullImage { width: raw.width, height: raw.height, data, orientation: self.orientation };
+            remove_in(&mut full, s)?;
+            return Ok(full);
         }
         let bytes = fs::read(&self.path).map_err(|e| e.to_string())?;
         let (img, w, h) = decode_jpeg(&bytes, None)?;
         let data = (0..w * h).flat_map(|i| [img.r[i], img.g[i], img.b[i]].map(|v| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16)).collect();
-        Ok(FullImage { width: w, height: h, data, orientation: self.orientation })
+        let mut full = FullImage { width: w, height: h, data, orientation: self.orientation };
+        remove_in(&mut full, s)?;
+        Ok(full)
     }
+}
+
+/// Fills the removals of `s` into the full-size picture, one after the other.
+fn remove_in(full: &mut FullImage, s: &Settings) -> Result<(), String> {
+    let (w, h) = (full.width, full.height);
+    for r in &s.removals {
+        let (pts, radius) = crate::ai::inpaint::place(r, w, h, full.orientation);
+        let data = &full.data;
+        let patch = crate::ai::inpaint::fill(
+            |x, y| {
+                let i = (y * w + x) * 3;
+                [data[i] as f32 / 65535.0, data[i + 1] as f32 / 65535.0, data[i + 2] as f32 / 65535.0]
+            },
+            w,
+            h,
+            &pts,
+            radius,
+        )?;
+        for (x, y, n, a) in patch.pixels() {
+            let i = (y * w + x) * 3;
+            for (v, n) in full.data[i..i + 3].iter_mut().zip(n) {
+                *v = (mix(*v as f32 / 65535.0, n, a).clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// AI-denoised raws beside the library (`.shootback/denoised/`), so denoising runs once per

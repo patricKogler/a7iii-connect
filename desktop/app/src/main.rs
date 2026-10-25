@@ -19,6 +19,8 @@ mod masks;
 #[cfg(test)]
 mod parity;
 mod phone_view;
+mod remove;
+mod remove_view;
 mod render;
 mod search;
 mod state;

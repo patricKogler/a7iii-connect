@@ -12,6 +12,7 @@ pub mod clip;
 pub mod denoise;
 pub mod depth;
 pub mod faces;
+pub mod inpaint;
 
 pub mod objects;
 pub mod sky;

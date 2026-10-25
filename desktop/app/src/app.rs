@@ -327,7 +327,7 @@ impl App {
                 if i.key_pressed(Key::C) && !i.modifiers.command {
                     self.view = View::Cull;
                 }
-            } else if self.view == View::Edit && !self.editor.cropping && (i.key_pressed(Key::Escape) || i.key_pressed(Key::G)) {
+            } else if self.view == View::Edit && !self.editor.cropping && !self.editor.removing && (i.key_pressed(Key::Escape) || i.key_pressed(Key::G)) {
                 self.view = View::Library;
             }
         });

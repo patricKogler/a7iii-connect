@@ -85,7 +85,10 @@ fn panel(app: &mut App, ui: &mut Ui) {
             ui.label(RichText::new(e).color(p.accent));
         }
         let mut s = ed.s.clone();
-        if ed.masking {
+        if ed.removing {
+            ed.overlay = None;
+            crate::remove_view::panel(ui, ed, &mut s);
+        } else if ed.masking {
             crate::mask_view::panel(ui, ed, &mut s);
         } else {
             ed.overlay = None;
@@ -152,11 +155,19 @@ fn stage(app: &mut App, ui: &mut Ui, preview: Option<(egui::TextureId, Vec2)>) {
     if stage_chip(&mut bar_ui, app.editor.cropping, "Crop  R").on_hover_text("Drag the edges, corners or the middle of the box").clicked() {
         app.editor.cropping = !app.editor.cropping;
         app.editor.masking = false;
+        app.editor.removing = false;
     }
     let masks = if app.editor.s.masks.is_empty() { "Masks  M".to_string() } else { format!("Masks {}  M", app.editor.s.masks.len()) };
     if stage_chip(&mut bar_ui, app.editor.masking, &masks).on_hover_text("Gradients, brush, subject, sky, objects and depth").clicked() {
         app.editor.masking = !app.editor.masking;
         app.editor.cropping = false;
+        app.editor.removing = false;
+    }
+    let remove = if app.editor.s.removals.is_empty() { "Remove  Q".to_string() } else { format!("Remove {}  Q", app.editor.s.removals.len()) };
+    if stage_chip(&mut bar_ui, app.editor.removing, &remove).on_hover_text("Paint things out, take out dust spots").clicked() {
+        app.editor.removing = !app.editor.removing;
+        app.editor.cropping = false;
+        app.editor.masking = false;
     }
     let ed = &app.editor;
     let state = if ed.error.is_some() {
@@ -194,6 +205,11 @@ fn stage(app: &mut App, ui: &mut Ui, preview: Option<(egui::TextureId, Vec2)>) {
                 crop_overlay(app, ui, r);
             } else if app.editor.masking && preview.is_some() {
                 crate::mask_view::overlay(&mut app.editor, ui, r);
+            } else if app.editor.removing && preview.is_some() {
+                if app.editor.show_spots {
+                    crate::remove_view::spots(&mut app.editor, ui, r);
+                }
+                crate::remove_view::overlay(&mut app.editor, ui, r);
             }
         }
         None if app.images.failed(&show.path, LARGE) => {
@@ -343,6 +359,7 @@ pub fn keys(app: &mut App, ctx: &egui::Context) {
     }
     let ed = &mut app.editor;
     crate::mask_view::keys(ed, ctx);
+    crate::remove_view::keys(ed, ctx);
     let (undo, redo, export, copy, paste) = ctx.input(|i| {
         let cmd = i.modifiers.command;
         let shift = i.modifiers.shift;
@@ -375,15 +392,29 @@ pub fn keys(app: &mut App, ctx: &egui::Context) {
     if export {
         ed.export(ctx);
     }
-    let (crop, masks, done) = ctx.input(|i| {
-        (!i.modifiers.any() && i.key_pressed(Key::R), !i.modifiers.any() && i.key_pressed(Key::M), i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape))
+    let (crop, masks, remove, done) = ctx.input(|i| {
+        let plain = !i.modifiers.any();
+        (
+            plain && i.key_pressed(Key::R),
+            plain && i.key_pressed(Key::M),
+            plain && i.key_pressed(Key::Q),
+            i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape),
+        )
     });
     if crop && !ctx.wants_keyboard_input() {
         ed.cropping = !ed.cropping;
         ed.masking = false;
+        ed.removing = false;
     } else if masks && !ctx.wants_keyboard_input() {
         ed.masking = !ed.masking;
         ed.cropping = false;
+        ed.removing = false;
+    } else if remove && !ctx.wants_keyboard_input() {
+        ed.removing = !ed.removing;
+        ed.cropping = false;
+        ed.masking = false;
+    } else if done && ed.removing {
+        ed.removing = false;
     } else if done && ed.cropping {
         ed.cropping = false;
     } else if done && ed.masking && ed.tool.selected.is_none() {

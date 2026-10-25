@@ -102,6 +102,15 @@ pub struct Editor {
     /// The open photo's masks' maps.
     pub maps: Maps,
     pub denoise: Denoiser,
+    pub remover: crate::remove::Remover,
+    /// Remove mode: the photo takes brush strokes to paint things out.
+    pub removing: bool,
+    /// The Remove brush's radius, as a share of the photo's longer side.
+    pub remove_radius: f32,
+    /// Show spots: the preview turned into a map of fine detail, where dust stands out.
+    pub show_spots: bool,
+    /// Show spots' picture, for which opened photo.
+    pub spots_tex: Option<(String, egui::TextureHandle)>,
     map_tex: Option<MapTextures>,
     /// The mask tinted on the preview, while its panel is being worked in.
     pub overlay: Option<usize>,
@@ -152,6 +161,11 @@ impl Editor {
             drawn: None,
             maps: Maps::new(root),
             denoise: Denoiser::new(root),
+            remover: Default::default(),
+            removing: false,
+            remove_radius: 0.012,
+            show_spots: false,
+            spots_tex: None,
             map_tex: None,
             overlay: None,
             tool: Default::default(),
@@ -208,6 +222,9 @@ impl Editor {
         self.drawn = None;
         self.maps.close();
         self.denoise.close();
+        self.remover.close();
+        self.removing = false;
+        self.spots_tex = None;
         self.map_tex = None;
         self.overlay = None;
         self.tool.selected = None;
@@ -453,6 +470,7 @@ impl Editor {
             self.denoise.follow(key, &opened, &shown, ctx);
         }
         self.denoise.poll();
+        self.remover.follow(&opened, &shown, ctx);
         self.upload_maps(&engine, &shown);
         let key = slow_key(&opened, &shown, self.cropping);
         if key != self.requested {
@@ -629,7 +647,17 @@ fn slow_key(o: &Opened, s: &Settings, whole_frame: bool) -> String {
     let geom = o.source.geometry(s, whole_frame);
     let look = Look::new(&o.source, s);
     let flat = Look::new(&o.source, &s.clone().with(&p::EXPOSURE, 0.0));
-    format!("{geom:?}|{:?}|{}|{:?}|{}|{}", look.prepare_key(), look.needs_guide(), flat.matrix, s.masks.is_empty(), o.denoise_amount(s))
+    format!("{geom:?}|{:?}|{}|{:?}|{}|{}|{}", look.prepare_key(), look.needs_guide(), flat.matrix, s.masks.is_empty(), o.denoise_amount(s), removed_key(o, s))
+}
+
+/// Which removals the preview has filled in.
+fn removed_key(o: &Opened, s: &Settings) -> String {
+    let n = o.removals_ready(s);
+    if n == 0 {
+        String::new()
+    } else {
+        Opened::removal_keys(s).swap_remove(n - 1)
+    }
 }
 
 fn worker(jobs: Receiver<Job>, done: Sender<Prepared>, ctx: egui::Context) {
@@ -641,7 +669,7 @@ fn worker(jobs: Receiver<Job>, done: Sender<Prepared>, ctx: egui::Context) {
         }
         let source = &job.opened.source;
         let geom = source.geometry(&job.s, job.whole_frame);
-        let geom_key = format!("{:p}|{geom:?}|{}", Arc::as_ptr(&job.opened), job.opened.denoise_amount(&job.s));
+        let geom_key = format!("{:p}|{geom:?}|{}|{}", Arc::as_ptr(&job.opened), job.opened.denoise_amount(&job.s), removed_key(&job.opened, &job.s));
         if sampled.as_ref().is_none_or(|c| c.0 != geom_key) {
             let image = job.opened.preview(&job.s);
             // Output pixels per full-size pixel.

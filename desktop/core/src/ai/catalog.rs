@@ -170,6 +170,21 @@ pub static FACES: Model = Model {
     files: &["yunet.onnx", "sface.onnx"],
 };
 
+/// The Remove tool: filling in what's painted out from its surroundings.
+pub static INPAINT: Model = Model {
+    id: "inpaint-lama",
+    label: "Remove",
+    about: "Fills in what you paint out, from what's around it",
+    licence: "Apache-2.0",
+    origin: "LaMa (Samsung AI), via OpenCV Zoo",
+    sources: &[Source {
+        url: "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/inpainting_lama/inpainting_lama_2025jan.onnx",
+        bytes: 92_591_623,
+        packaging: Packaging::File("lama.onnx"),
+    }],
+    files: &["lama.onnx"],
+};
+
 /// Search in words: pictures and text in one space.
 pub static CLIP: Model = Model {
     id: "clip-vit-b32",
@@ -198,4 +213,4 @@ pub static CLIP: Model = Model {
 };
 
 /// Everything the Models window lists, in its order.
-pub static ALL: [&Model; 8] = [&SUBJECT, &OBJECTS, &DEPTH, &RAW_DENOISE, &UPSCALE, &FACES, &CLIP, &RUNTIME];
+pub static ALL: [&Model; 9] = [&SUBJECT, &OBJECTS, &DEPTH, &RAW_DENOISE, &INPAINT, &UPSCALE, &FACES, &CLIP, &RUNTIME];

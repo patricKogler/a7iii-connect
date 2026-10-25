@@ -587,6 +587,43 @@ impl Mask {
     }
 }
 
+/// Something painted out with the Remove tool (a dust spot is a stroke of one point): where it
+/// was painted, in the upright uncropped photo (0..1 each way), and how wide, as a share of the
+/// photo's longer side. Filled in by AI from its surroundings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Removal {
+    pub radius: f32,
+    pub points: Vec<[f32; 2]>,
+}
+
+impl Removal {
+    pub fn encode(&self) -> String {
+        let f = kotlin_float;
+        let pts: Vec<String> = self.points.iter().map(|p| format!("{}_{}", f(p[0]), f(p[1]))).collect();
+        format!("r={};p={}", f(self.radius), pts.join(","))
+    }
+
+    pub fn decode(text: &str) -> Option<Removal> {
+        let mut r = Removal { radius: 0.0, points: Vec::new() };
+        for part in text.split(';') {
+            match part.split_once('=') {
+                Some(("r", v)) => r.radius = v.trim().parse::<f32>().ok()?.clamp(0.0005, 0.5),
+                Some(("p", v)) => {
+                    r.points = v
+                        .split(',')
+                        .filter_map(|p| {
+                            let (x, y) = p.split_once('_')?;
+                            Some([x.trim().parse::<f32>().ok()?.clamp(0.0, 1.0), y.trim().parse::<f32>().ok()?.clamp(0.0, 1.0)])
+                        })
+                        .collect()
+                }
+                _ => {}
+            }
+        }
+        (r.radius > 0.0 && !r.points.is_empty()).then_some(r)
+    }
+}
+
 /// One photo's edit. Only values that differ from their default are stored.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
@@ -598,11 +635,13 @@ pub struct Settings {
     pub masks: Vec<Mask>,
     /// A film look from a LUT, by its id; None for none.
     pub lut: Option<String>,
+    /// Painted out with the Remove tool, in order.
+    pub removals: Vec<Removal>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { values: BTreeMap::new(), profile: Profile::Color, curves: Default::default(), masks: Vec::new(), lut: None }
+        Settings { values: BTreeMap::new(), profile: Profile::Color, curves: Default::default(), masks: Vec::new(), lut: None, removals: Vec::new() }
     }
 }
 
@@ -683,6 +722,7 @@ impl Settings {
             profile: if light { from.profile } else { self.profile },
             curves: if groups.contains(&Group::Curve) { from.curves.clone() } else { self.curves.clone() },
             masks: self.masks.clone(),
+            removals: self.removals.clone(),
             lut: if light { from.lut.clone() } else { self.lut.clone() },
         }
     }
@@ -704,12 +744,16 @@ impl Settings {
         for (i, m) in self.masks.iter().enumerate() {
             s += &format!("mask.{i}={}\n", m.encode());
         }
+        for (i, r) in self.removals.iter().enumerate() {
+            s += &format!("remove.{i}={}\n", r.encode());
+        }
         s
     }
 
     pub fn decode(text: &str) -> Settings {
         let mut out = Settings::default();
         let mut masks = BTreeMap::new();
+        let mut removals = BTreeMap::new();
         for line in text.lines() {
             let Some(i) = line.find('=') else { continue };
             if i == 0 {
@@ -728,6 +772,10 @@ impl Settings {
                 if let (Ok(n), Some(m)) = (n.parse::<usize>(), Mask::decode(v)) {
                     masks.insert(n, m);
                 }
+            } else if let Some(n) = k.strip_prefix("remove.") {
+                if let (Ok(n), Some(r)) = (n.parse::<usize>(), Removal::decode(v)) {
+                    removals.insert(n, r);
+                }
             } else if let (Some(p), Ok(f)) = (p::by_key(k), v.parse::<f32>()) {
                 if f != p.default {
                     out.values.insert(k.to_string(), f);
@@ -735,6 +783,7 @@ impl Settings {
             }
         }
         out.masks = masks.into_values().collect();
+        out.removals = removals.into_values().collect();
         out
     }
 }
