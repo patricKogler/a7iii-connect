@@ -126,6 +126,9 @@ pub struct Editor {
     cancel: Arc<AtomicBool>,
     /// How many times larger exports are made by AI upscaling (1 for the photo's own size).
     pub export_scale: usize,
+    /// How close the stage looks, and the full-size renders for looking close.
+    pub zoom: crate::zoom::Zoom,
+    detail: crate::zoom::Detail,
 }
 
 impl Editor {
@@ -136,6 +139,7 @@ impl Editor {
         let c = ctx.clone();
         std::thread::spawn(move || worker(rx, tx, c));
         let store = EditStore::new(root);
+        let detail = crate::zoom::Detail::new(engine.clone(), ctx);
         Editor {
             engine,
             render_state,
@@ -176,6 +180,8 @@ impl Editor {
             export: Default::default(),
             cancel: Default::default(),
             export_scale: 1,
+            zoom: Default::default(),
+            detail,
         }
     }
 
@@ -237,6 +243,8 @@ impl Editor {
         self.overlay = None;
         self.tool.selected = None;
         self.cropping = false;
+        self.zoom = Default::default();
+        self.detail.close();
         self.requested.clear();
         self.undo.clear();
         self.redo.clear();
@@ -656,6 +664,28 @@ impl Editor {
         let g = self.shown_geometry()?;
         let (x, y) = g.unmap(u as f64 * g.src_w, v as f64 * g.src_h);
         Some(((x / g.out_w) as f32, (y / g.out_h) as f32))
+    }
+
+    /// The frame the preview shows, in full-size pixels.
+    pub fn frame_px(&self) -> Option<(usize, usize)> {
+        Some(shootback_core::develop::look::frame_size(&self.shown_geometry()?, 1.0))
+    }
+
+    /// The part `visible` of the frame (left, top, width and height in full-size pixels) developed
+    /// at full size, once that's done: its texture and the area it covers. Not while the preview
+    /// shows a tool's picture instead of the photo.
+    pub fn detail(&mut self, ctx: &egui::Context, visible: [usize; 4]) -> Option<(egui::TextureId, [usize; 4])> {
+        if self.overlay.is_some() || self.show_spots {
+            return None;
+        }
+        let opened = self.opened.clone()?;
+        let frame = self.frame_px()?;
+        let s = self.shown().clone();
+        let key = format!("{:p}|{}|{}|{}", Arc::as_ptr(&opened), s.encode(), self.cropping, self.maps.version);
+        let whole_frame = self.cropping;
+        let lut = s.lut.as_ref().and_then(|id| self.lut.as_ref().filter(|l| &l.0 == id).and_then(|l| l.1.clone()));
+        let maps = render::MaskMaps { found: self.maps.found.clone(), own: self.maps.slots(&s).into_iter().map(|m| m.cloned()).collect() };
+        self.detail.get(ctx, &key.clone(), visible, frame, move |area| crate::zoom::Ask { key, opened, s, whole_frame, lut, maps, area })
     }
 
     /// The upright photo's width over its height.
