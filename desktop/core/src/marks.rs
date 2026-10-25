@@ -62,6 +62,17 @@ impl Marks {
         write_atomic(&self.file, encode(&self.map).as_bytes())
     }
 
+    /// Sets several marks with one write.
+    pub fn set_many(&mut self, marks: &[(String, Option<Mark>)]) -> io::Result<()> {
+        for (key, mark) in marks {
+            match mark {
+                Some(m) => self.map.insert(key.clone(), *m),
+                None => self.map.remove(key),
+            };
+        }
+        write_atomic(&self.file, encode(&self.map).as_bytes())
+    }
+
     pub fn all(&self) -> &HashMap<String, Mark> {
         &self.map
     }

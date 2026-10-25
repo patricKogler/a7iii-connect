@@ -12,6 +12,7 @@ use shootback_core::develop::image::LinearImage;
 use shootback_core::develop::look::{natural_scale, sample, Guide, Look};
 use shootback_core::develop::lut::{self, Lut};
 use shootback_core::develop::luts;
+use shootback_core::develop::maps::MapStore;
 use shootback_core::develop::params::{p, Group};
 use shootback_core::develop::{self, EditStore, Opened, Settings, PREVIEW_EDGE};
 use shootback_core::library::Shot;
@@ -337,10 +338,43 @@ impl Editor {
 
     /// Pastes everything copied except the crop and the masks, which belong to one picture.
     pub fn paste(&mut self) {
-        if let Some(from) = self.clipboard.clone() {
-            let groups =
-                [Group::Light, Group::Curve, Group::Color, Group::Mixer, Group::Grading, Group::Effects, Group::Detail, Group::Optics, Group::Geometry];
-            self.change(self.s.paste_from(&from, &groups));
+        if let Some(s) = self.pasted(&self.s) {
+            self.change(s);
+        }
+    }
+
+    /// `onto` with the copied settings pasted in, if any are copied.
+    pub fn pasted(&self, onto: &Settings) -> Option<Settings> {
+        let groups = [Group::Light, Group::Curve, Group::Color, Group::Mixer, Group::Grading, Group::Effects, Group::Detail, Group::Optics, Group::Geometry];
+        self.clipboard.as_ref().map(|from| onto.paste_from(from, &groups))
+    }
+
+    /// A shot's edit as saved (the open one's as it is now).
+    pub fn edits_of(&self, key: &str) -> Settings {
+        if self.key.as_deref() == Some(key) {
+            return self.s.clone();
+        }
+        self.store.load(key)
+    }
+
+    /// Saves a shot's edit from outside Edit (a batch from the library). The open shot takes it as
+    /// one undo step.
+    pub fn set_edits(&mut self, key: &str, s: &Settings) {
+        if self.key.as_deref() == Some(key) {
+            self.change(s.clone());
+            self.save();
+            return;
+        }
+        match self.store.save(key, s) {
+            Ok(()) => {
+                let name = develop::file_name(key);
+                if s.is_default() {
+                    self.edited.remove(&name);
+                } else {
+                    self.edited.insert(name);
+                }
+            }
+            Err(e) => self.error = Some(format!("Couldn't save the edit: {e}")),
         }
     }
 
@@ -636,6 +670,82 @@ impl Editor {
                     st.failed = true;
                     st.message = format!("Export failed: {e}");
                 }
+            }
+            c.request_repaint();
+        });
+    }
+
+    /// Exports several shots (key and primary file) at full size with their edits, one after the
+    /// other, in the background.
+    pub fn export_many(&mut self, ctx: &egui::Context, shots: Vec<(String, PathBuf)>) {
+        let Some(engine) = self.engine.clone() else { return };
+        if shots.is_empty() || self.export.lock().unwrap().running {
+            return;
+        }
+        self.save();
+        let root = self.root.clone();
+        let dir = self.export_dir();
+        let status = self.export.clone();
+        let cancel = self.cancel.clone();
+        cancel.store(false, Ordering::Relaxed);
+        let n = shots.len();
+        *status.lock().unwrap() = ExportStatus { running: true, message: format!("Exporting 1 of {n} ..."), ..Default::default() };
+        let c = ctx.clone();
+        std::thread::spawn(move || {
+            let (store, maps, denoised) = (EditStore::new(&root), MapStore::new(&root), develop::DenoiseStore::new(&root));
+            let mut failed = Vec::new();
+            for (i, (key, file)) in shots.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                status.lock().unwrap().message = format!("Exporting {} of {n} ...", i + 1);
+                let progress = |f: f32| {
+                    status.lock().unwrap().progress = (i as f32 + f) / n as f32;
+                    c.request_repaint();
+                };
+                let s = store.load(key);
+                let result = develop::open(file).and_then(|opened| {
+                    if let Some(raw) = opened.raw.as_ref().filter(|_| s.get(&p::AI_DENOISE) > 0.0) {
+                        if let Some(full) = denoised.load(key, raw.width, raw.height) {
+                            let _ = opened.denoised.set(develop::Denoised::new(full, raw.width, raw.height, opened.orientation));
+                        }
+                    }
+                    for r in 0..s.removals.len() {
+                        opened.fill_removal(&s, r)?;
+                    }
+                    let lut = s.lut.as_ref().and_then(|id| lut::find(&root, id));
+                    let mut found = [None, None, None];
+                    for (slot, kind) in crate::masks::KINDS.iter().enumerate() {
+                        found[slot] = maps.load(key, *kind);
+                    }
+                    let slots = shootback_core::develop::look::map_slots(&s);
+                    let mut own = vec![None; slots.iter().flatten().count()];
+                    for (k, slot) in slots.iter().enumerate() {
+                        if let (Some(slot), Some(m)) = (slot, s.masks.get(k)) {
+                            own[*slot] = maps.load_mask(key, &m.id);
+                        }
+                    }
+                    let (w, h, rgb) = render::full_size(&engine, &opened, &s, lut.as_ref(), &render::MaskMaps { found, own }, &progress, &cancel)?;
+                    let jpeg = render::encode_jpeg(w, h, &rgb, develop::export::exif_for(file).as_deref())?;
+                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                    let stem = file.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "photo".into());
+                    shootback_core::library::write_atomic(&dir.join(format!("{stem}-edit.jpg")), &jpeg).map_err(|e| e.to_string())
+                });
+                if let Err(e) = result {
+                    failed.push(format!("{}: {e}", file.file_name().unwrap_or_default().to_string_lossy()));
+                }
+            }
+            let mut st = status.lock().unwrap();
+            st.running = false;
+            st.progress = 1.0;
+            if cancel.load(Ordering::Relaxed) {
+                st.message = "Export stopped".into();
+            } else if failed.is_empty() {
+                st.message = format!("Saved {n} photos to {}", dir.file_name().unwrap_or_default().to_string_lossy());
+                st.last = Some(dir);
+            } else {
+                st.failed = true;
+                st.message = format!("{} of {n} couldn't be exported ({})", failed.len(), failed[0]);
             }
             c.request_repaint();
         });

@@ -94,6 +94,7 @@ fn sidebar(app: &mut App, ui: &mut Ui) {
     name_album_dialog(app, ui.ctx());
     name_person_dialog(app, ui.ctx());
     crate::merge_view::dialog(app, ui.ctx());
+    crate::batch::delete_dialog(app, ui.ctx());
 }
 
 /// A person as the sidebar lists them: id, filter key, name, shots, and a face (shot and box).
@@ -253,7 +254,7 @@ fn name_album_dialog(app: &mut App, ctx: &egui::Context) {
         app.naming = None;
     } else if done {
         if id.is_empty() {
-            let keys: Vec<String> = app.selected.iter().cloned().collect();
+            let keys = app.targets();
             let new = app.library.create_album(&text, &keys, &app.settings.device_id);
             app.filter = Filter::Album(new);
         } else {
@@ -330,7 +331,8 @@ fn search_status(app: &mut App, ui: &mut Ui) {
 }
 
 enum Row {
-    Day(String),
+    /// A day's heading, and the day's shots.
+    Day(String, Vec<usize>),
     Tiles(Vec<usize>),
 }
 
@@ -341,6 +343,13 @@ fn grid(app: &mut App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             widgets::heading(ui, &title(&app.filter, app));
             ui.label(RichText::new(format!("{} shots", widgets::thousands(visible.len()))).color(p.text3));
+            if crate::batch::offers_delete_all(app)
+                && !visible.is_empty()
+                && outline_button(ui, &format!("Delete all {} …", widgets::thousands(visible.len()))).clicked()
+            {
+                app.select_all(&visible);
+                app.ask_delete(false);
+            }
             widgets::right_to_left(ui, |ui| {
                 for (size, label) in [(232.0, "L"), (168.0, "M"), (128.0, "S")] {
                     if chip(ui, app.tile == size, label).on_hover_text("Tile size").clicked() {
@@ -377,6 +386,7 @@ fn grid(app: &mut App, ui: &mut Ui) {
         return;
     }
 
+    app.tidy_selection(&visible);
     // Lay the shots out by day, a row of tiles at a time, and draw only the rows in view.
     let tile = app.tile;
     let gap = 8.0;
@@ -393,13 +403,13 @@ fn grid(app: &mut App, ui: &mut Ui) {
         while j < visible.len() && day_of(app.library.shots[visible[j]].taken_millis()) == day {
             j += 1;
         }
-        rows.push(Row::Day(format!("{} · {} shots", day.format("%A, %b %-d %Y"), j - i)));
+        rows.push(Row::Day(format!("{} · {} shots", day.format("%A, %b %-d %Y"), j - i), visible[i..j].to_vec()));
         for chunk in visible[i..j].chunks(cols) {
             rows.push(Row::Tiles(chunk.to_vec()));
         }
         i = j;
     }
-    let heights: Vec<f32> = rows.iter().map(|r| if matches!(r, Row::Day(_)) { 36.0 } else { tile_h + label_h + gap }).collect();
+    let heights: Vec<f32> = rows.iter().map(|r| if matches!(r, Row::Day(..)) { 36.0 } else { tile_h + label_h + gap }).collect();
     let total: f32 = heights.iter().sum::<f32>() + 16.0;
 
     // Keep the selection in view when the keyboard moves it.
@@ -422,6 +432,8 @@ fn grid(app: &mut App, ui: &mut Ui) {
     }
     let out = scroll.show_viewport(ui, |ui, viewport| {
         ui.set_height(total);
+        // Under the tiles: a click between them leaves just the active shot selected.
+        let bg = ui.interact(Rect::from_min_size(ui.min_rect().min, Vec2::new(ui.available_width(), total)), ui.id().with("grid-bg"), Sense::click());
         let origin = ui.min_rect().min + Vec2::new(20.0, 8.0);
         let mut y = 0.0;
         for (r, row) in rows.iter().enumerate() {
@@ -429,24 +441,61 @@ fn grid(app: &mut App, ui: &mut Ui) {
             if y + h >= viewport.min.y && y <= viewport.max.y {
                 let top = origin.y + y;
                 match row {
-                    Row::Day(text) => {
-                        ui.painter().text(Pos2::new(origin.x, top + 22.0), Align2::LEFT_BOTTOM, text, FontId::new(14.0, display()), p.text2);
-                    }
+                    Row::Day(text, day) => day_heading(app, ui, Pos2::new(origin.x, top), width, text, day),
                     Row::Tiles(items) => {
                         for (c, &idx) in items.iter().enumerate() {
                             let rect = Rect::from_min_size(Pos2::new(origin.x + c as f32 * (tile_w + gap), top), Vec2::new(tile_w, tile_h));
-                            tile_ui(app, ui, idx, rect, label_h);
+                            tile_ui(app, ui, idx, rect, label_h, &visible);
                         }
                     }
                 }
             }
             y += h;
         }
+        if bg.clicked() {
+            app.selection.clear();
+        }
     });
     ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::new("grid-offset"), out.state.offset.y));
+    crate::batch::done_line(app, ui);
 }
 
-fn tile_ui(app: &mut App, ui: &mut Ui, idx: usize, rect: Rect, label_h: f32) {
+/// A day's heading, with a tick (on hover, or while gathering) that selects the whole day.
+fn day_heading(app: &mut App, ui: &mut Ui, at: Pos2, width: f32, text: &str, day: &[usize]) {
+    let p = palette(ui.ctx());
+    let r = ui.painter().text(at + Vec2::new(0.0, 22.0), Align2::LEFT_BOTTOM, text, FontId::new(14.0, display()), p.text2);
+    let row = Rect::from_min_size(at, Vec2::new(width, 30.0));
+    let hovered = ui.rect_contains_pointer(row);
+    if !(hovered || app.gathering()) {
+        return;
+    }
+    let all = app.day_selected(day);
+    let center = Pos2::new(r.right() + 16.0, r.center().y);
+    let hit = Rect::from_center_size(center, Vec2::splat(24.0));
+    let resp = ui.interact(hit, ui.id().with(("day", day.first())), Sense::click()).on_hover_text(if all { "Take this day away" } else { "Select this day" });
+    paint_tick(ui, center, all, resp.hovered(), false);
+    if resp.clicked() {
+        app.tick_day(day);
+    }
+}
+
+/// A round tick: filled with a check when on, an empty ring when off. `over_photo` gives the ring
+/// a ground so it reads on any picture.
+fn paint_tick(ui: &Ui, center: Pos2, on: bool, hovered: bool, over_photo: bool) {
+    let p = palette(ui.ctx());
+    let painter = ui.painter();
+    let radius = 9.0;
+    if on {
+        painter.circle_filled(center, radius, p.seal);
+        let pts = [center + Vec2::new(-4.0, 0.2), center + Vec2::new(-1.2, 3.0), center + Vec2::new(4.2, -3.0)];
+        painter.add(egui::Shape::line(pts.to_vec(), Stroke::new(1.8_f32, p.on_seal)));
+    } else {
+        let ground = if over_photo { p.bg.gamma_multiply(if hovered { 0.9 } else { 0.6 }) } else { egui::Color32::TRANSPARENT };
+        painter.circle(center, radius, ground, Stroke::new(1.5_f32, if hovered { p.strong } else { p.text2 }));
+    }
+}
+
+fn tile_ui(app: &mut App, ui: &mut Ui, idx: usize, rect: Rect, label_h: f32, visible: &[usize]) {
     let p = palette(ui.ctx());
     let shot = app.library.shots[idx].clone();
     let key = shot.key();
@@ -478,7 +527,10 @@ fn tile_ui(app: &mut App, ui: &mut Ui, idx: usize, rect: Rect, label_h: f32) {
         (Some(_), None) => "RAW",
         _ => "JPEG",
     };
-    paint_badge(ui, &painter, rect.left_top() + Vec2::new(6.0, 6.0), kind, Align2::LEFT_TOP, false);
+    // The tick shows on hover and while gathering; the file badge makes room for it.
+    let ticks = resp.hovered() || app.gathering();
+    let tick_at = rect.left_top() + Vec2::new(16.0, 16.0);
+    paint_badge(ui, &painter, rect.left_top() + Vec2::new(if ticks { 30.0 } else { 6.0 }, 6.0), kind, Align2::LEFT_TOP, false);
     match mark {
         Some(Mark::Pick) => paint_seal(&painter, rect.right_top() + Vec2::new(-6.0, 6.0), "Pick", Align2::RIGHT_TOP),
         Some(Mark::Reject) => paint_badge(ui, &painter, rect.right_top() + Vec2::new(-6.0, 6.0), "Reject", Align2::RIGHT_TOP, true),
@@ -487,9 +539,11 @@ fn tile_ui(app: &mut App, ui: &mut Ui, idx: usize, rect: Rect, label_h: f32) {
     if app.editor.is_edited(&shot) {
         paint_badge(ui, &painter, rect.right_bottom() + Vec2::new(-6.0, -6.0), "Edited", Align2::RIGHT_BOTTOM, false);
     }
-    let selected = app.selected.as_deref() == Some(key.as_str());
+    let selected = app.is_selected(&key);
+    let active = app.selected.as_deref() == Some(key.as_str());
     if selected {
-        painter.rect_stroke(rect.expand(2.0), p.tile_radius + 2.0, Stroke::new(2.0_f32, p.accent));
+        let w = if app.many() && active { 3.0 } else { 2.0 };
+        painter.rect_stroke(rect.expand(w), p.tile_radius + w, Stroke::new(w, p.accent));
     } else if resp.hovered() {
         painter.rect_stroke(rect.expand(1.0), p.tile_radius + 1.0, Stroke::new(p.line, p.control));
     }
@@ -497,16 +551,31 @@ fn tile_ui(app: &mut App, ui: &mut Ui, idx: usize, rect: Rect, label_h: f32) {
     let time = Local.timestamp_millis_opt(shot.taken_millis()).single().map_or(String::new(), |t| t.format("%H:%M").to_string());
     painter.text(rect.left_bottom() + Vec2::new(0.0, 4.0), Align2::LEFT_TOP, name, FontId::monospace(11.5), p.text2);
     painter.text(rect.right_bottom() + Vec2::new(0.0, 4.0), Align2::RIGHT_TOP, time, FontId::proportional(11.5), p.text3);
-    if resp.clicked() {
-        app.selected = Some(key.clone());
+    let mut ticked = false;
+    if ticks {
+        // Added after the tile, so it takes the clicks on it.
+        let t = ui.interact(Rect::from_center_size(tick_at, Vec2::splat(26.0)), ui.id().with(("tick", &key)), Sense::click());
+        paint_tick(ui, tick_at, selected && app.gathering(), t.hovered(), true);
+        if t.clicked() {
+            app.tick(&key);
+            ticked = true;
+        }
     }
-    if resp.double_clicked() {
-        app.selected = Some(key.clone());
+    if resp.clicked() && !ticked {
+        let m = ui.input(|i| i.modifiers);
+        app.click(&key, visible, m);
+    }
+    if resp.double_clicked() && !app.gathering() {
+        app.select_one(Some(key.clone()));
         app.view = View::Edit;
     }
     resp.context_menu(|ui| {
-        app.selected = Some(key.clone());
-        mark_menu(app, ui, &key);
+        if app.many() && app.selection.keys.contains(&key) {
+            crate::batch::context_menu(app, ui);
+        } else {
+            app.select_one(Some(key.clone()));
+            mark_menu(app, ui, &key);
+        }
     });
 }
 
@@ -545,6 +614,10 @@ pub fn mark_menu(app: &mut App, ui: &mut Ui, key: &str) {
 /// The selected shot: preview, marks, how it was shot, albums.
 pub fn details(app: &mut App, ui: &mut Ui) {
     let p = palette(ui.ctx());
+    if app.view == View::Library && app.many() {
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| crate::batch::panel(app, ui));
+        return;
+    }
     let Some(key) = app.selected.clone() else {
         ui.label(RichText::new("Select a photo to see its details.").color(p.text3));
         return;

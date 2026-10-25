@@ -21,6 +21,7 @@
 //! - `POST done`: the sync finished.
 
 use crate::albums::{self, AlbumStore};
+use crate::deleted;
 use crate::develop::{file_name, luts, presets};
 use crate::import::{day_folder, PartFile};
 use crate::library::{self, write_atomic, Index, Photo, MATCH_WINDOW_MS, STATE_DIR};
@@ -244,8 +245,14 @@ impl Library {
 
     pub fn state(&mut self) -> State {
         self.rescan();
-        let photos: Vec<PhotoInfo> =
+        let mut photos: Vec<PhotoInfo> =
             self.photos.iter().map(|p| PhotoInfo { key: p.key(), name: p.name.clone(), taken: p.taken_millis, size: p.bytes }).collect();
+        // Deleted here but still on a phone: listed as here, so the phone stops sending them.
+        for g in deleted::load(&self.root) {
+            if g.phone && !self.photos.iter().any(|p| g.is(&p.name, p.taken_millis)) {
+                photos.push(PhotoInfo { key: g.key(), name: g.name.clone(), taken: g.taken, size: g.bytes });
+            }
+        }
         let marks = fs::read_to_string(self.state_dir().join("flags.txt")).map(|t| marks::decode(&t)).unwrap_or_default();
         let mut edits = BTreeMap::new();
         for p in &photos {
@@ -285,6 +292,18 @@ impl Library {
         }
         if self.photos.is_empty() {
             self.rescan();
+        }
+        let mut gone = deleted::load(&self.root);
+        if let Some(g) = gone.iter_mut().find(|g| g.is(&safe, taken)) {
+            if !self.photos.iter().any(|p| g.is(&p.name, p.taken_millis)) {
+                // Deleted here: not taken back, and from now on listed so the phone stops trying.
+                io::copy(body, &mut io::sink())?;
+                if !g.phone {
+                    g.phone = true;
+                    deleted::save(&self.root, &gone)?;
+                }
+                return Ok(false);
+            }
         }
         let day = chrono::DateTime::from_timestamp_millis(taken).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string());
         let mut part = PartFile::create(&self.root.join(day_folder(day.as_deref())), &safe)?;
@@ -412,7 +431,17 @@ impl Library {
                 Reply::json(&self.state())
             }
             ("GET", "/v1/photo") => {
-                let Some(p) = q.get("key").and_then(|k| self.find(k)) else { return Reply::text(404, "no such photo") };
+                let Some(p) = q.get("key").and_then(|k| self.find(k)) else {
+                    // A deleted photo listed for a phone that no longer has it: stop listing it.
+                    if let Some(key) = q.get("key") {
+                        let mut gone = deleted::load(&self.root);
+                        if let Some(g) = gone.iter_mut().find(|g| g.phone && &g.key() == key) {
+                            g.phone = false;
+                            let _ = deleted::save(&self.root, &gone);
+                        }
+                    }
+                    return Reply::text(404, "no such photo");
+                };
                 self.activity(format!("Sending {} to {}", p.name, phone.name));
                 match fs::File::open(&p.path) {
                     Ok(f) => {
@@ -713,6 +742,30 @@ mod tests {
         let (d, mut lib, shared) = lib();
         assert_eq!(call(&mut lib, "GET", "/v1/hello", "s3cret", b"").0, 200);
         (d, lib, shared)
+    }
+
+    #[test]
+    fn deleted_photos_are_not_taken_back() {
+        let (_d, mut lib, _) = call_ready();
+        let url = "/v1/photo?name=DSC00002.ARW&taken=1700000000000";
+        assert_eq!(call(&mut lib, "PUT", url, "s3cret", b"raw").0, 201);
+        let (_, body) = call(&mut lib, "GET", "/v1/state", "s3cret", b"");
+        let photo = serde_json::from_slice::<State>(&body).unwrap().photos[0].clone();
+        let path = lib.photos[0].path.clone();
+        deleted::add(&lib.root, &lib.photos).unwrap();
+        fs::remove_file(&path).unwrap();
+        // Not listed until the phone shows it still has it ...
+        let (_, body) = call(&mut lib, "GET", "/v1/state", "s3cret", b"");
+        assert!(serde_json::from_slice::<State>(&body).unwrap().photos.is_empty());
+        // ... by sending it back, which is turned down.
+        assert_eq!(call(&mut lib, "PUT", url, "s3cret", b"raw").0, 200);
+        assert!(!path.exists());
+        let (_, body) = call(&mut lib, "GET", "/v1/state", "s3cret", b"");
+        assert_eq!(serde_json::from_slice::<State>(&body).unwrap().photos, vec![photo.clone()]);
+        // A phone that lost it asks for it: it is listed no more.
+        assert_eq!(call(&mut lib, "GET", &format!("/v1/photo?key={}", encode(&photo.key)), "s3cret", b"").0, 404);
+        let (_, body) = call(&mut lib, "GET", "/v1/state", "s3cret", b"");
+        assert!(serde_json::from_slice::<State>(&body).unwrap().photos.is_empty());
     }
 
     #[test]
