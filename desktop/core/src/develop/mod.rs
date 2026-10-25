@@ -120,6 +120,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
             full_height: if swap { raw.width } else { raw.height },
             lens: raw.info.lens.clone(),
             baseline: raw.info.baseline_exposure,
+            tone_curve: raw.info.tone_curve.clone(),
         };
         return Ok(Opened { path: path.to_path_buf(), source, orientation, raw: Some(raw), denoised: OnceLock::new(), removed: Default::default() });
     }
@@ -135,6 +136,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
         full_height: if swap { fw } else { fh },
         lens: None,
         baseline: 0.0,
+        tone_curve: None,
     };
     Ok(Opened { path: path.to_path_buf(), source, orientation, raw: None, denoised: OnceLock::new(), removed: Default::default() })
 }

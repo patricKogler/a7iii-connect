@@ -24,6 +24,8 @@ pub struct Source {
     pub lens: Option<LensData>,
     /// Stops the render adds on top of Exposure (a DNG's BaselineExposure).
     pub baseline: f64,
+    /// A DNG's own base tone curve (ProfileToneCurve: linear in, linear out), used by the Color profile.
+    pub tone_curve: Option<Vec<[f32; 2]>>,
 }
 
 impl Source {
@@ -83,6 +85,31 @@ fn encode_f(v: f32) -> f32 {
     } else {
         1.055 * c.powf(1.0 / 2.4) - 0.055
     }
+}
+
+/// Rolls scene values above a knee smoothly into 0..1, so a camera's 0..1 tone curve keeps
+/// highlight detail instead of clipping it.
+fn soft_clip(x: f64) -> f64 {
+    const KNEE: f64 = 0.75;
+    if x <= KNEE {
+        x.max(0.0)
+    } else {
+        KNEE + (1.0 - KNEE) * (1.0 - (-(x - KNEE) / (1.0 - KNEE)).exp())
+    }
+}
+
+/// A DNG ProfileToneCurve (points sorted by input) at `x`, linear in between.
+fn profile_curve(curve: &[[f32; 2]], x: f64) -> f64 {
+    let i = curve.partition_point(|p| (p[0] as f64) < x);
+    if i == 0 {
+        return curve[0][1] as f64;
+    }
+    if i >= curve.len() {
+        return curve[curve.len() - 1][1] as f64;
+    }
+    let ([x0, y0], [x1, y1]) = (curve[i - 1], curve[i]);
+    let t = if x1 > x0 { (x - x0 as f64) / (x1 - x0) as f64 } else { 0.0 };
+    y0 as f64 + (y1 - y0) as f64 * t
 }
 
 pub fn lerp_table(t: &[f32], v: f32) -> f32 {
@@ -189,6 +216,7 @@ pub struct ShaderParams {
 pub struct Look {
     s: Settings,
     raw: bool,
+    tone_curve: Option<Vec<[f32; 2]>>,
     full: (f64, f64),
     pub matrix: [f32; 9],
     scene_matrix: [f32; 9],
@@ -232,6 +260,7 @@ impl Look {
         let mut look = Look {
             s: s.clone(),
             raw: source.is_raw,
+            tone_curve: source.tone_curve.clone().filter(|_| source.is_raw && s.profile == Profile::Color),
             full: (source.full_width as f64, source.full_height as f64),
             matrix: std::array::from_fn(|i| (m[i] * gain) as f32),
             scene_matrix: std::array::from_fn(|i| c.rgb_from_cam[i] as f32),
@@ -274,7 +303,9 @@ impl Look {
         for i in 0..=TONE_SIZE {
             let t = i as f64 / TONE_SIZE as f64;
             let x = t * t * TONE_MAX;
-            let mut y = if self.raw {
+            let mut y = if let Some(curve) = &self.tone_curve {
+                profile_curve(curve, soft_clip(x / white))
+            } else if self.raw {
                 let xn = x.powf(n);
                 a * xn / (xn + k)
             } else {
@@ -883,6 +914,7 @@ mod tests {
             full_height: 480,
             lens: None,
             baseline: 0.0,
+            tone_curve: None,
         }
     }
 

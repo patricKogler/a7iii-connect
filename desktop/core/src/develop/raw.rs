@@ -60,6 +60,8 @@ pub struct RawInfo {
     pub color_matrix: Option<[f64; 9]>,
     /// How many stops a DNG asks the render to brighten by (phones underexpose to keep highlights).
     pub baseline_exposure: f64,
+    /// A DNG's base tone curve (ProfileToneCurve), as (input, output) points from 0 to 1.
+    pub tone_curve: Option<Vec<[f32; 2]>>,
     /// A DNG's lens shading, applied to the raw data before anything else.
     gain_maps: Vec<GainMap>,
     /// A DNG's table from stored values to linear ones.
@@ -227,6 +229,7 @@ const TAG_CAMERA_CALIBRATION2: u16 = 0xc624;
 const TAG_ANALOG_BALANCE: u16 = 0xc627;
 const TAG_AS_SHOT_WHITE_XY: u16 = 0xc629;
 const TAG_BASELINE_EXPOSURE: u16 = 0xc62a;
+const TAG_PROFILE_TONE_CURVE: u16 = 0xc6fc;
 const TAG_CROP_ORIGIN: u16 = 0xc61f;
 const TAG_CROP_SIZE: u16 = 0xc620;
 const TAG_SR2_PRIVATE: u16 = 0xc634;
@@ -358,6 +361,7 @@ pub fn read_info(src: &[u8]) -> Result<RawInfo, String> {
         lens,
         color_matrix: None,
         baseline_exposure: 0.0,
+        tone_curve: None,
         gain_maps: Vec::new(),
         linearization: None,
         raw,
@@ -428,6 +432,10 @@ fn read_dng(tiff: &Tiff, ifd0: &[Entry], all: &[&Vec<Entry>]) -> Result<RawInfo,
     // Phones underexpose to keep highlights and say by how much the render should lift.
     let baseline_exposure = look(TAG_BASELINE_EXPOSURE).and_then(|e| tiff.doubles(e).first().copied()).filter(|v| v.is_finite()).unwrap_or(0.0);
 
+    let tone_curve = look(TAG_PROFILE_TONE_CURVE)
+        .map(|e| tiff.doubles(e))
+        .filter(|v| v.len() >= 4 && v.len() % 2 == 0)
+        .map(|v| v.chunks(2).map(|p| [p[0] as f32, p[1] as f32]).collect::<Vec<_>>());
     let gain_maps = look(TAG_OPCODE_LIST2).and_then(|e| tiff.entry_bytes(e).ok()).map(dng::opcodes).unwrap_or_default();
     let linearization = look(TAG_LINEARIZATION).map(|e| tiff.ints(e).iter().map(|&v| v as u16).collect::<Vec<_>>()).filter(|t| t.len() >= 2);
 
@@ -442,6 +450,7 @@ fn read_dng(tiff: &Tiff, ifd0: &[Entry], all: &[&Vec<Entry>]) -> Result<RawInfo,
         lens: None,
         color_matrix,
         baseline_exposure,
+        tone_curve,
         gain_maps,
         linearization,
         raw: Some(raw),
@@ -734,6 +743,7 @@ impl RawInfo {
             lens: None,
             color_matrix: None,
             baseline_exposure: 0.0,
+            tone_curve: None,
             gain_maps: Vec::new(),
             linearization: None,
             raw: None,
