@@ -3,6 +3,7 @@
 //! (the app's shader, a WGSL port of the phone's AGSL one).
 
 pub mod color;
+pub mod dng;
 pub mod export;
 pub mod geometry;
 pub mod image;
@@ -111,7 +112,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
         let swap = orientation >= 5;
         let source = Source {
             image: preview,
-            color: color::CameraColor::for_camera(&raw.info.model),
+            color: raw.info.color(),
             baked: raw.info.as_shot,
             is_raw: true,
             full_width: if swap { raw.height } else { raw.width },

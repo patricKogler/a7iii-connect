@@ -1,5 +1,5 @@
 //! Photo pictures for the screen: grid thumbnails and the big view. A RAW shows the camera's own
-//! JPEG inside it; JPEGs are decoded at a reduced DCT scale, which is fast even at 24 MP. Decoding
+//! JPEG inside it (a phone's DNG, which has none, is developed); JPEGs are decoded at a reduced DCT scale, which is fast even at 24 MP. Decoding
 //! runs on worker threads, newest request first, so whatever just scrolled into view comes first.
 
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
@@ -144,11 +144,20 @@ impl Images {
     }
 }
 
+/// A raw without a JPEG inside (a phone's DNG): developed with the default look, upright.
+fn developed(path: &Path, edge: u32) -> Option<ColorImage> {
+    let opened = shootback_core::develop::open(path).ok()?;
+    let rgb = shootback_core::ai::tensor::display(&opened.source, edge as usize);
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    let rgba: Vec<u8> = rgb.data.as_chunks::<3>().0.iter().flat_map(|c| [q(c[0]), q(c[1]), q(c[2]), 255]).collect();
+    Some(ColorImage::from_rgba_unmultiplied([rgb.width, rgb.height], &rgba))
+}
+
 /// Upright picture, longer edge at most `edge`.
 pub fn decode(path: &Path, edge: u32, orientation: u8) -> Option<ColorImage> {
     let (bytes, orientation) = if is_raw_name(&path.to_string_lossy()) {
         let preview = tiff::raw_preview(BufReader::new(File::open(path).ok()?)).ok()?;
-        let (off, len) = preview.jpeg?;
+        let Some((off, len)) = preview.jpeg else { return developed(path, edge) };
         let mut t = tiff::Tiff::open(BufReader::new(File::open(path).ok()?)).ok()?;
         (t.read_at(off, len).ok()?, preview.orientation)
     } else {

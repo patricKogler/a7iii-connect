@@ -1,6 +1,9 @@
-//! Sony ARW reading (ARW 2.x, as the A7 III writes it) and demosaicing: the phone's Arw.kt,
-//! Tiff.kt and the Malvar-He-Cutler demosaic from native/src/demosaic.rs.
+//! Sony ARW reading (ARW 2.x, as the A7 III writes it), DNG as phones write it, and
+//! demosaicing: the phone's Arw.kt, Dng.kt, Tiff.kt and the Malvar-He-Cutler demosaic from
+//! native/src/demosaic.rs.
 
+use super::color::CameraColor;
+use super::dng::{self, GainMap};
 use super::image::LinearImage;
 use rayon::prelude::*;
 
@@ -24,6 +27,18 @@ struct RawIfd {
     cfa: [usize; 4],
     curve: Option<Vec<u16>>,
     crop: (usize, usize, usize, usize),
+    /// A DNG: its data in strips or tiles of `tile` (width, height), in the file's byte order,
+    /// and its active area (top, left, width, height), which its gain maps are measured in.
+    dng: Option<DngData>,
+}
+
+#[derive(Clone, Debug)]
+struct DngData {
+    offsets: Vec<usize>,
+    counts: Vec<usize>,
+    tile: (usize, usize),
+    little: bool,
+    active: (usize, usize, usize, usize),
 }
 
 /// What the editor needs to know about a raw file before decoding its pixels.
@@ -39,6 +54,13 @@ pub struct RawInfo {
     /// The biggest embedded JPEG preview (offset, length).
     pub preview: Option<(usize, usize)>,
     pub lens: Option<LensData>,
+    /// A DNG's own XYZ-to-camera matrix (for D65 when it has one); None means the built-in one
+    /// for the model.
+    pub color_matrix: Option<[f64; 9]>,
+    /// A DNG's lens shading, applied to the raw data before anything else.
+    gain_maps: Vec<GainMap>,
+    /// A DNG's table from stored values to linear ones.
+    linearization: Option<Vec<u16>>,
     raw: Option<RawIfd>,
 }
 
@@ -144,6 +166,24 @@ impl<'a> Tiff<'a> {
         (0..e.count).map(|i| self.u32(&b[i * 8..]) as f64 / self.u32(&b[i * 8 + 4..]).max(1) as f64).collect()
     }
 
+    /// Numeric values of any entry: integers, (signed) rationals and floats alike.
+    fn doubles(&self, e: &Entry) -> Vec<f64> {
+        let Ok(b) = self.entry_bytes(e) else { return Vec::new() };
+        let ratio = |n: f64, d: f64| if d == 0.0 { 0.0 } else { n / d };
+        match e.kind {
+            5 => (0..e.count).map(|i| ratio(self.u32(&b[i * 8..]) as f64, self.u32(&b[i * 8 + 4..]) as f64)).collect(),
+            10 => (0..e.count).map(|i| ratio(self.u32(&b[i * 8..]) as i32 as f64, self.u32(&b[i * 8 + 4..]) as i32 as f64)).collect(),
+            11 => (0..e.count).map(|i| f32::from_bits(self.u32(&b[i * 4..])) as f64).collect(),
+            12 => (0..e.count)
+                .map(|i| {
+                    let (a, c) = (self.u32(&b[i * 8..]) as u64, self.u32(&b[i * 8 + 4..]) as u64);
+                    f64::from_bits(if self.little { (c << 32) | a } else { (a << 32) | c })
+                })
+                .collect(),
+            _ => self.ints(e).into_iter().map(|v| v as f64).collect(),
+        }
+    }
+
     fn int(&self, ifd: &[Entry], tag: u16) -> Option<i64> {
         ifd.iter().find(|e| e.tag == tag).and_then(|e| self.ints(e).first().copied())
     }
@@ -182,6 +222,21 @@ const TAG_AS_SHOT_NEUTRAL: u16 = 0xc628;
 const TAG_CROP_ORIGIN: u16 = 0xc61f;
 const TAG_CROP_SIZE: u16 = 0xc620;
 const TAG_SR2_PRIVATE: u16 = 0xc634;
+const TAG_DNG_VERSION: u16 = 0xc612;
+const TAG_ROWS_PER_STRIP: u16 = 0x116;
+const TAG_TILE_WIDTH: u16 = 0x142;
+const TAG_TILE_LENGTH: u16 = 0x143;
+const TAG_CFA_REPEAT: u16 = 0x828d;
+const TAG_LINEARIZATION: u16 = 0xc618;
+const TAG_BLACK_REPEAT: u16 = 0xc619;
+const TAG_COLOR_MATRIX1: u16 = 0xc621;
+const TAG_COLOR_MATRIX2: u16 = 0xc622;
+const TAG_ILLUMINANT1: u16 = 0xc65a;
+const TAG_ILLUMINANT2: u16 = 0xc65b;
+const TAG_ACTIVE_AREA: u16 = 0xc68d;
+const TAG_OPCODE_LIST2: u16 = 0xc741;
+const PHOTOMETRIC_CFA: i64 = 32803;
+const D65: i64 = 21;
 
 pub fn read_info(src: &[u8]) -> Result<RawInfo, String> {
     let little = match src.get(..2) {
@@ -211,6 +266,9 @@ pub fn read_info(src: &[u8]) -> Result<RawInfo, String> {
         }
     }
     let all: Vec<&Vec<Entry>> = chain.iter().chain(subs.iter()).collect();
+    if find(&chain[0], TAG_DNG_VERSION).is_some() {
+        return read_dng(&tiff, &chain[0], &all);
+    }
 
     let mut preview: Option<(usize, usize)> = None;
     for ifd in &all {
@@ -291,8 +349,202 @@ pub fn read_info(src: &[u8]) -> Result<RawInfo, String> {
         white,
         preview,
         lens,
+        color_matrix: None,
+        gain_maps: Vec::new(),
+        linearization: None,
         raw,
     })
+}
+
+/// A DNG's tags: the raw is its biggest Bayer directory; levels, white balance and the colour
+/// matrix come from tags, and the lens shading from the GainMaps in OpcodeList2.
+fn read_dng(tiff: &Tiff, ifd0: &[Entry], all: &[&Vec<Entry>]) -> Result<RawInfo, String> {
+    let raw_ifd = all
+        .iter()
+        .filter(|i| tiff.int(i, TAG_PHOTOMETRIC) == Some(PHOTOMETRIC_CFA))
+        .max_by_key(|i| tiff.int(i, TAG_WIDTH).unwrap_or(0) * tiff.int(i, TAG_HEIGHT).unwrap_or(0))
+        .copied()
+        .ok_or("no Bayer raw in this DNG")?;
+    let raw = read_dng_ifd(tiff, raw_ifd).ok_or("unreadable DNG raw")?;
+
+    // An 8-bit JPEG preview, if the phone wrote one (Pixels don't).
+    let mut preview: Option<(usize, usize)> = None;
+    for ifd in all {
+        if std::ptr::eq(*ifd, raw_ifd) {
+            continue;
+        }
+        let jpeg = matches!(tiff.int(ifd, TAG_COMPRESSION), Some(6 | 7)) && tiff.int(ifd, TAG_BITS).unwrap_or(8) == 8;
+        let at = if jpeg { tiff.int(ifd, TAG_STRIP_OFFSETS).zip(tiff.int(ifd, TAG_STRIP_BYTES)) } else { None }
+            .or_else(|| tiff.int(ifd, TAG_JPEG_OFFSET).zip(tiff.int(ifd, TAG_JPEG_LENGTH)));
+        let Some((off, len)) = at else { continue };
+        let (off, len) = (off as usize, len as usize);
+        if len > 0 && off + len <= tiff.src.len() && preview.is_none_or(|(_, l)| len > l) {
+            preview = Some((off, len));
+        }
+    }
+
+    let look = |tag| find(raw_ifd, tag).or_else(|| find(ifd0, tag));
+    let cfa = raw.cfa;
+    // Black level: one value, or one per position of a repeating block.
+    let levels = look(TAG_BLACK_LEVEL).map(|e| tiff.doubles(e)).filter(|v| !v.is_empty()).unwrap_or(vec![0.0]);
+    let dims = look(TAG_BLACK_REPEAT).map(|e| tiff.ints(e)).filter(|d| d.len() >= 2 && (d[0] * d[1]) as usize == levels.len());
+    let mut black = [levels[0].round() as i32; 3];
+    if let Some(d) = dims.filter(|_| levels.len() > 1) {
+        let (mut sum, mut n) = ([0.0; 3], [0; 3]);
+        for row in 0..2 {
+            for col in 0..2 {
+                let v = levels[(row % d[0] as usize) * d[1] as usize + col % d[1] as usize];
+                sum[cfa[row * 2 + col]] += v;
+                n[cfa[row * 2 + col]] += 1;
+            }
+        }
+        for c in 0..3 {
+            if n[c] > 0 {
+                black[c] = (sum[c] / n[c] as f64).round() as i32;
+            }
+        }
+    }
+    let white = look(TAG_WHITE_LEVEL).and_then(|e| tiff.doubles(e).first().copied()).map_or((1 << raw.bits) - 1, |w| w as i32);
+
+    // Colour: the D65 matrix when there is one (the editor's model is one daylight matrix).
+    let matrix = |tag| look(tag).map(|e| tiff.doubles(e)).filter(|m| m.len() == 9).map(|m| std::array::from_fn(|i| m[i]));
+    let illuminant = |tag| look(tag).and_then(|e| tiff.ints(e).first().copied());
+    let (cm1, cm2): (Option<[f64; 9]>, Option<[f64; 9]>) = (matrix(TAG_COLOR_MATRIX1), matrix(TAG_COLOR_MATRIX2));
+    let color_matrix = match (cm1, cm2) {
+        (_, Some(m)) if illuminant(TAG_ILLUMINANT2) == Some(D65) => Some(m),
+        (Some(m), _) if illuminant(TAG_ILLUMINANT1) == Some(D65) => Some(m),
+        _ => cm2.or(cm1),
+    };
+
+    // As-shot white balance: the neutral in camera space; multipliers are its inverse, G = 1.
+    let neutral = look(TAG_AS_SHOT_NEUTRAL).map(|e| tiff.doubles(e)).filter(|n| n.len() >= 3 && n.iter().all(|&v| v > 0.0));
+    let as_shot = match (&neutral, color_matrix) {
+        (Some(n), _) => [(n[1] / n[0]) as f32, 1.0, (n[1] / n[2]) as f32],
+        (None, Some(m)) => CameraColor::new(m).multipliers(6500.0, 0.0).map(|v| v as f32),
+        _ => [2.0, 1.0, 1.6],
+    };
+
+    let gain_maps = look(TAG_OPCODE_LIST2).and_then(|e| tiff.entry_bytes(e).ok()).map(dng::opcodes).unwrap_or_default();
+    let linearization = look(TAG_LINEARIZATION).map(|e| tiff.ints(e).iter().map(|&v| v as u16).collect::<Vec<_>>()).filter(|t| t.len() >= 2);
+
+    Ok(RawInfo {
+        make: tiff.string(ifd0, TAG_MAKE).unwrap_or_default(),
+        model: tiff.string(ifd0, TAG_MODEL).unwrap_or_default(),
+        orientation: tiff.int(ifd0, TAG_ORIENTATION).unwrap_or(1).clamp(1, 8) as u8,
+        as_shot,
+        black,
+        white,
+        preview,
+        lens: None,
+        color_matrix,
+        gain_maps,
+        linearization,
+        raw: Some(raw),
+    })
+}
+
+fn read_dng_ifd(tiff: &Tiff, ifd: &[Entry]) -> Option<RawIfd> {
+    let width = tiff.int(ifd, TAG_WIDTH)? as usize;
+    let height = tiff.int(ifd, TAG_HEIGHT)? as usize;
+    let tiled = find(ifd, TAG_TILE_OFFSETS).is_some();
+    let list = |tag| find(ifd, tag).map(|e| tiff.ints(e).iter().map(|&v| v as usize).collect::<Vec<_>>());
+    let offsets = list(if tiled { TAG_TILE_OFFSETS } else { TAG_STRIP_OFFSETS })?;
+    let counts = list(if tiled { TAG_TILE_BYTES } else { TAG_STRIP_BYTES })?;
+    let repeat = find(ifd, TAG_CFA_REPEAT).map(|e| tiff.ints(e));
+    let cfa = find(ifd, TAG_CFA_PATTERN)
+        .map(|e| tiff.ints(e))
+        .filter(|v| v.len() >= 4 && repeat.as_ref().is_none_or(|d| d.len() >= 2 && d[0] == 2 && d[1] == 2))
+        .map(|v| std::array::from_fn(|i| v[i].clamp(0, 2) as usize))
+        .unwrap_or([0, 1, 1, 2]);
+    // ActiveArea (top, left, bottom, right) leaves out masked pixels; DefaultCrop is within it.
+    let (at, al, ah, aw) = find(ifd, TAG_ACTIVE_AREA)
+        .map(|e| tiff.ints(e))
+        .filter(|a| a.len() == 4 && a[2] > a[0] && a[3] > a[1])
+        .map_or((0, 0, height, width), |a| (a[0] as usize, a[1] as usize, (a[2] - a[0]) as usize, (a[3] - a[1]) as usize));
+    let mut crop = (al, at, aw, ah);
+    if let (Some(o), Some(s)) = (find(ifd, TAG_CROP_ORIGIN).map(|e| tiff.doubles(e)), find(ifd, TAG_CROP_SIZE).map(|e| tiff.doubles(e))) {
+        if o.len() >= 2 && s.len() >= 2 {
+            crop = (al + o[0] as usize, at + o[1] as usize, s[0] as usize, s[1] as usize);
+        }
+    }
+    if crop.2 == 0 || crop.3 == 0 || crop.0 + crop.2 > width || crop.1 + crop.3 > height {
+        crop = (0, 0, width, height);
+    }
+    let tile = if tiled {
+        (tiff.int(ifd, TAG_TILE_WIDTH).map_or(width, |v| v as usize), tiff.int(ifd, TAG_TILE_LENGTH).map_or(height, |v| v as usize))
+    } else {
+        (width, tiff.int(ifd, TAG_ROWS_PER_STRIP).map_or(height, |v| (v as usize).clamp(1, height)))
+    };
+    Some(RawIfd {
+        width,
+        height,
+        compression: tiff.int(ifd, TAG_COMPRESSION).unwrap_or(1) as u32,
+        bits: tiff.int(ifd, TAG_BITS).unwrap_or(16) as u32,
+        offset: *offsets.first()?,
+        bytes: counts.iter().sum(),
+        cfa,
+        curve: None,
+        crop,
+        dng: Some(DngData { offsets, counts, tile, little: tiff.little, active: (at, al, aw, ah) }),
+    })
+}
+
+/// A DNG's sensor values as stored, then linearized and with its gain maps applied.
+fn decode_dng(src: &[u8], r: &RawIfd, d: &DngData, info: &RawInfo) -> Result<Vec<u16>, String> {
+    let (w, h) = (r.width, r.height);
+    let (tw, th) = d.tile;
+    let across = w.div_ceil(tw.max(1));
+    let tiles: Vec<Vec<u16>> = (0..d.offsets.len())
+        .into_par_iter()
+        .map(|i| {
+            let bytes = src.get(d.offsets[i]..d.offsets[i] + d.counts[i]).ok_or("raw data cut short")?;
+            match r.compression {
+                1 => Ok(dng::unpack(bytes, tw, th, r.bits, d.little)),
+                7 => dng::lossless_jpeg(bytes),
+                c => Err(format!("unsupported DNG compression {c}")),
+            }
+        })
+        .collect::<Result<_, String>>()?;
+    let mut out = vec![0u16; w * h];
+    for (i, samples) in tiles.iter().enumerate() {
+        // A lossless JPEG tile may be coded two rows as one: its samples still run in raster order.
+        let (ty, tx) = ((i / across) * th, (i % across) * tw);
+        for y in 0..th.min(h.saturating_sub(ty)) {
+            let s = y * tw;
+            if s >= samples.len() {
+                break;
+            }
+            let n = tw.min(w.saturating_sub(tx)).min(samples.len() - s);
+            out[(ty + y) * w + tx..(ty + y) * w + tx + n].copy_from_slice(&samples[s..s + n]);
+        }
+    }
+    if let Some(table) = &info.linearization {
+        out.par_iter_mut().for_each(|v| *v = table[(*v as usize).min(table.len() - 1)]);
+    }
+    // Lens shading: each map lifts its plane's pixels above black, as DNG's stage-2 opcodes ask.
+    let (at, al, aw, ah) = d.active;
+    for m in &info.gain_maps {
+        let (top, bottom, left, right) = (m.top, m.bottom.min(ah), m.left, m.right.min(aw));
+        if top >= bottom || left >= right {
+            continue;
+        }
+        out.par_chunks_mut(w).enumerate().for_each(|(y, line)| {
+            let Some(row) = y.checked_sub(at) else { return };
+            if row < top || row >= bottom || (row - top) % m.row_pitch != 0 {
+                return;
+            }
+            let v = row as f64 / ah as f64;
+            for col in (left..right).step_by(m.col_pitch) {
+                let x = col + al;
+                let b = info.black[r.cfa[((y & 1) << 1) | (x & 1)]].max(0) as f32;
+                let raw = line[x] as f32;
+                if raw > b {
+                    line[x] = (b + (raw - b) * m.gain(v, col as f64 / aw as f64)).round().min(65535.0) as u16;
+                }
+            }
+        });
+    }
+    Ok(out)
 }
 
 fn read_raw_ifd(tiff: &Tiff, ifd: &[Entry]) -> Option<RawIfd> {
@@ -322,6 +574,7 @@ fn read_raw_ifd(tiff: &Tiff, ifd: &[Entry]) -> Option<RawIfd> {
         cfa,
         curve,
         crop,
+        dng: None,
     })
 }
 
@@ -395,6 +648,11 @@ fn sony_decrypt(buf: &mut [u8], start_key: u32) {
 pub fn decode(src: &[u8], info: RawInfo) -> Result<RawImage, String> {
     let r = info.raw.clone().ok_or("no raw image in this file")?;
     let (w, h) = (r.width, r.height);
+    if let Some(d) = &r.dng {
+        let data = decode_dng(src, &r, d, &info)?;
+        let (left, top, width, height) = r.crop;
+        return Ok(RawImage { info, raw_width: w, data, cfa: r.cfa, left, top, width, height });
+    }
     let mut data = vec![0u16; w * h];
     let slice = |len: usize| src.get(r.offset..r.offset + len).ok_or_else(|| "raw data cut short".to_string());
     if r.compression == 32767 && r.bytes == w * h {
@@ -460,7 +718,25 @@ fn decode_arw2(src: &[u8], w: usize, curve: &[u16], out: &mut [u16]) {
 impl RawInfo {
     /// Only levels and white balance, for raws made up in tests.
     pub fn plain(black: i32, white: i32, as_shot: [f32; 3]) -> RawInfo {
-        RawInfo { make: String::new(), model: String::new(), orientation: 1, as_shot, black: [black; 3], white, preview: None, lens: None, raw: None }
+        RawInfo {
+            make: String::new(),
+            model: String::new(),
+            orientation: 1,
+            as_shot,
+            black: [black; 3],
+            white,
+            preview: None,
+            lens: None,
+            color_matrix: None,
+            gain_maps: Vec::new(),
+            linearization: None,
+            raw: None,
+        }
+    }
+
+    /// How this camera's colours relate to XYZ: a DNG's own matrix, or the built-in one for its model.
+    pub fn color(&self) -> CameraColor {
+        self.color_matrix.map_or_else(|| CameraColor::for_camera(&self.model), CameraColor::new)
     }
 }
 
@@ -613,6 +889,51 @@ fn q(v: f32) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Phone-style DNGs (made by PiDNG, checked against LibRaw), shared with the phone's tests:
+    /// 64x48 BGGR, black 64, white 1023, values 64 + (7x + 13y) mod 900.
+    fn dng(name: &str) -> Vec<u8> {
+        std::fs::read(format!("{}/../../app/src/test/resources/dng/{name}.dng", env!("CARGO_MANIFEST_DIR"))).unwrap()
+    }
+
+    fn expected(x: usize, y: usize) -> u16 {
+        (64 + (x * 7 + y * 13) % 900) as u16
+    }
+
+    #[test]
+    fn reads_phone_dngs() {
+        let file = dng("plain16");
+        let info = read_info(&file).unwrap();
+        assert_eq!((info.make.as_str(), info.model.as_str(), info.orientation), ("Google", "Pixel 8a", 6));
+        assert_eq!((info.black, info.white), ([64; 3], 1023));
+        assert!((info.as_shot[0] - 2.0).abs() < 1e-4 && (info.as_shot[2] - 1.5).abs() < 1e-4, "{:?}", info.as_shot);
+        // The D65 matrix (illuminant 2), not standard A's.
+        let m = info.color_matrix.unwrap();
+        assert!((m[0] - 0.7).abs() < 1e-9 && (m[4] - 1.25).abs() < 1e-9);
+        for name in ["plain16", "packed12", "lossless"] {
+            let file = dng(name);
+            let img = decode(&file, read_info(&file).unwrap()).unwrap();
+            assert_eq!((img.raw_width, img.cfa, img.left, img.top, img.width, img.height), (64, [2, 1, 1, 0], 2, 2, 60, 44), "{name}");
+            for y in 0..48 {
+                for x in 0..64 {
+                    assert_eq!(img.data[y * 64 + x], expected(x, y), "{name} at {x},{y}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn applies_a_dngs_lens_shading() {
+        let file = dng("gain");
+        let info = read_info(&file).unwrap();
+        assert_eq!(info.gain_maps.len(), 4);
+        let img = decode(&file, info).unwrap();
+        for y in 0..48 {
+            for x in 0..64 {
+                assert_eq!(img.data[y * 64 + x], 64 + 2 * (expected(x, y) - 64), "at {x},{y}");
+            }
+        }
+    }
 
     #[test]
     fn decrypt_is_its_own_inverse() {

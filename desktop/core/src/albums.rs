@@ -179,12 +179,7 @@ fn newer<'a>(x: &'a AlbumEntry, y: &'a AlbumEntry) -> &'a AlbumEntry {
 fn parse_key(key: &str) -> Option<(String, i64)> {
     let (name, time) = key.rsplit_once('@')?;
     let time = time.parse().ok()?;
-    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
-    let stem = match stem.rfind(" (") {
-        Some(i) if stem.ends_with(')') && stem[i + 2..stem.len() - 1].chars().all(|c| c.is_ascii_digit()) => &stem[..i],
-        _ => stem,
-    };
-    Some((stem.to_lowercase(), time))
+    Some((crate::library::pair_stem(name), time))
 }
 
 /// Finds this library's own key for a shot named by another device: the same key, or else the
