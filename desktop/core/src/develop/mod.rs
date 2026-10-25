@@ -120,7 +120,8 @@ pub fn open(path: &Path) -> Result<Opened, String> {
             full_width: if swap { raw.height } else { raw.width },
             full_height: if swap { raw.width } else { raw.height },
             lens: raw.info.lens.clone(),
-            baseline: raw.info.baseline_exposure,
+            // Phones' own renders sit about a third of a stop above their DNG's baseline.
+            baseline: raw.info.baseline_exposure + if raw.info.tone_curve.is_some() { 0.35 } else { 0.0 },
             tone_curve: raw.info.tone_curve.clone(),
             // Phones' DNGs (the ones with their own tone curve) carry flare their JPEGs take off.
             black_floor,

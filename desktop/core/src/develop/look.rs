@@ -90,27 +90,55 @@ fn encode_f(v: f32) -> f32 {
     }
 }
 
-/// The darkest level a photo really has: the 0.1st percentile of its darkest channel, capped so a
+/// The darkest level a photo really has: the 0.5th percentile of its brightness, capped so a
 /// low-key shot keeps its shadows.
 pub fn black_floor(img: &LinearImage) -> f32 {
     let step = (img.r.len() / 50_000).max(1);
-    let mut v: Vec<f32> = (0..img.r.len()).step_by(step).map(|i| img.r[i].min(img.g[i]).min(img.b[i])).collect();
+    let mut v: Vec<f32> = (0..img.r.len()).step_by(step).map(|i| (img.r[i] + img.g[i] + img.b[i]) / 3.0).collect();
     if v.is_empty() {
         return 0.0;
     }
-    let k = v.len() / 1000;
+    let k = v.len() / 200;
     let (_, floor, _) = v.select_nth_unstable_by(k, f32::total_cmp);
-    floor.clamp(0.0, 0.02)
+    floor.clamp(0.0, 0.01)
 }
 
-/// Rolls scene values above a knee smoothly into 0..1, so a camera's 0..1 tone curve keeps
-/// highlight detail instead of clipping it.
-fn soft_clip(x: f64) -> f64 {
-    const KNEE: f64 = 0.75;
-    if x <= KNEE {
-        x.max(0.0)
-    } else {
-        KNEE + (1.0 - KNEE) * (1.0 - (-(x - KNEE) / (1.0 - KNEE)).exp())
+/// Fits scene values up to `max` into 0..1 for a camera's 0..1 tone curve: unchanged below a
+/// knee, then an exponential shoulder that leaves the knee at the same slope and reaches 1 at
+/// `max`, so lifted highlights keep their gradation instead of clipping.
+#[derive(Clone, Copy)]
+struct Shoulder {
+    max: f64,
+    a: f64,
+}
+
+impl Shoulder {
+    const KNEE: f64 = 0.6;
+
+    fn new(max: f64) -> Shoulder {
+        if max <= 1.0 {
+            return Shoulder { max, a: 0.0 };
+        }
+        // Slope at the knee: (1 - K) a / (1 - e^-a) / (max - K) = 1. The left side grows with a.
+        let target = (max - Self::KNEE) / (1.0 - Self::KNEE);
+        let (mut lo, mut hi): (f64, f64) = (1e-6, 60.0);
+        for _ in 0..60 {
+            let a = (lo + hi) / 2.0;
+            if a / (1.0 - (-a).exp()) < target {
+                lo = a;
+            } else {
+                hi = a;
+            }
+        }
+        Shoulder { max, a: (lo + hi) / 2.0 }
+    }
+
+    fn apply(&self, x: f64) -> f64 {
+        if self.a == 0.0 || x <= Self::KNEE {
+            return x.clamp(0.0, 1.0);
+        }
+        let u = ((x - Self::KNEE) / (self.max - Self::KNEE)).min(1.0);
+        Self::KNEE + (1.0 - Self::KNEE) * (1.0 - (-self.a * u).exp()) / (1.0 - (-self.a).exp())
     }
 }
 
@@ -235,6 +263,8 @@ pub struct Look {
     tone_curve: Option<Vec<[f32; 2]>>,
     /// [`Source::black_floor`] at this look's exposure.
     floor: f64,
+    /// Where the brightest raw value lands at this look's exposure, for the tone curve's shoulder.
+    headroom: f64,
     full: (f64, f64),
     pub matrix: [f32; 9],
     scene_matrix: [f32; 9],
@@ -280,6 +310,7 @@ impl Look {
             raw: source.is_raw,
             tone_curve: source.tone_curve.clone().filter(|_| source.is_raw && s.profile == Profile::Color),
             floor: source.black_floor as f64 * gain,
+            headroom: gain,
             full: (source.full_width as f64, source.full_height as f64),
             matrix: std::array::from_fn(|i| (m[i] * gain) as f32),
             scene_matrix: std::array::from_fn(|i| c.rgb_from_cam[i] as f32),
@@ -318,12 +349,13 @@ impl Look {
         let contrast = s.get(&p::CONTRAST) as f64 / 100.0 * 0.6;
         let regions = [p::CURVE_SHADOWS, p::CURVE_DARKS, p::CURVE_LIGHTS, p::CURVE_HIGHLIGHTS].map(|r| s.get(&r) as f64 / 100.0);
         let master = (!s.curves[0].is_identity()).then(|| s.curves[0].table(1024));
+        let shoulder = Shoulder::new(self.headroom / white);
         let mut prev: f64 = 0.0;
         for i in 0..=TONE_SIZE {
             let t = i as f64 / TONE_SIZE as f64;
             let x = (t * t * TONE_MAX - self.floor).max(0.0);
             let mut y = if let Some(curve) = &self.tone_curve {
-                profile_curve(curve, soft_clip(x / white))
+                profile_curve(curve, shoulder.apply(x / white))
             } else if self.raw {
                 let xn = x.powf(n);
                 a * xn / (xn + k)
@@ -936,6 +968,23 @@ mod tests {
             tone_curve: None,
             black_floor: 0.0,
         }
+    }
+
+    #[test]
+    fn the_shoulder_fits_lifted_highlights_into_the_curve() {
+        let sh = Shoulder::new(3.2);
+        assert_eq!(sh.apply(0.3), 0.3);
+        assert!((sh.apply(3.2) - 1.0).abs() < 1e-9);
+        // Same slope either side of the knee, and rising all the way.
+        let k = Shoulder::KNEE;
+        assert!(((sh.apply(k + 1e-6) - sh.apply(k)) / 1e-6 - 1.0).abs() < 1e-3);
+        let mut prev = 0.0;
+        for i in 0..=320 {
+            let y = sh.apply(i as f64 / 100.0);
+            assert!(y >= prev);
+            prev = y;
+        }
+        assert_eq!(Shoulder::new(0.8).apply(0.9), 0.9);
     }
 
     #[test]

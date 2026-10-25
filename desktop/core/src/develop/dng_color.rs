@@ -101,6 +101,18 @@ pub fn resolve(
     }
 }
 
+/// Phones keep some of a warm light's colour, as the eye does: below 4500 K the balance
+/// neutralises a light partway between the real one and 4500 K, so tungsten stays a little warm.
+pub fn keep_warmth(m: &Mat3, mul: [f32; 3]) -> [f32; 3] {
+    const WARM: f64 = 4500.0;
+    let c = CameraColor::new(*m);
+    let (kelvin, tint) = c.temperature_of(mul);
+    if kelvin >= WARM {
+        return mul;
+    }
+    c.multipliers(kelvin + (WARM - kelvin) * 0.3, tint).map(|v| v as f32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +147,18 @@ mod tests {
         for c in 0..3 {
             assert!((mul[c] - again[c]).abs() < 0.01, "{mul:?} {again:?}");
         }
+    }
+
+    #[test]
+    fn tungsten_stays_a_little_warm() {
+        let (a, d65) = pixel();
+        let (m, mul) = resolve(&a, &d65, None, None, Some([0.426327, 0.404567]));
+        let m = m.unwrap();
+        let (k0, _) = CameraColor::new(m).temperature_of(mul);
+        let (k1, _) = CameraColor::new(m).temperature_of(keep_warmth(&m, mul));
+        assert!(k1 > k0 + 300.0 && k1 < 4000.0, "{k0} -> {k1}");
+        let day = CameraColor::new(m).multipliers(5500.0, 0.0).map(|v| v as f32);
+        assert_eq!(keep_warmth(&m, day), day);
     }
 
     #[test]
