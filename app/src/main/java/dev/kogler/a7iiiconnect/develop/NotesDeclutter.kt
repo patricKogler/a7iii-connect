@@ -122,7 +122,7 @@ internal fun NotesDeclutter(
                 if (chosen.isNotEmpty()) {
                     Button(
                         onClick = { onTrash(shots.filter { it.key in chosen }) },
-                        colors = ButtonDefaults.buttonColors(containerColor = RejectRed),
+                        colors = ButtonDefaults.buttonColors(containerColor = RejectRed, contentColor = androidx.compose.ui.graphics.Color.White),
                         modifier = Modifier.weight(1f).testTag("declutter-trash"),
                     ) { Text(if (chosen.size == 1) "Trash 1 note" else "Trash ${chosen.size} notes") }
                 }

@@ -618,8 +618,10 @@ internal fun SwipeCard(
 
         if (depth == 0) {
             CardInfo(shot, Modifier.align(Alignment.BottomStart).alpha(if (scale > 1.01f) 0f else 1f), notes)
-            if (progressX > 0f) Stamp("PICK", PickGreen, -14f, Modifier.align(Alignment.TopStart).alpha(progressX))
-            if (progressX < 0f) Stamp(rejectLabel, RejectRed, 14f, Modifier.align(Alignment.TopEnd).alpha(-progressX))
+            // A swipe down for a note shows only its own stamp, not a faint pick or reject.
+            val sideways = progressDown == 0f || abs(drag.x) > abs(drag.y)
+            if (sideways && progressX > 0f) Stamp("PICK", PickGreen, -14f, Modifier.align(Alignment.TopStart).alpha(progressX))
+            if (sideways && progressX < 0f) Stamp(rejectLabel, RejectRed, 14f, Modifier.align(Alignment.TopEnd).alpha(-progressX))
             if (progressUp > 0f) Stamp(skipLabel, SkipBlue, 0f, Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp).alpha(progressUp))
             if (progressDown > 0f && abs(drag.y) > abs(drag.x)) Stamp("NOTE", NoteAmber, 0f, Modifier.align(Alignment.TopCenter).padding(top = 24.dp).alpha(progressDown))
         }
