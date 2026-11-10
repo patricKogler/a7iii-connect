@@ -46,6 +46,7 @@ import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.LibraryAdd
+import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledIconButton
@@ -106,12 +107,13 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-/** What a swipe decided: pick, reject, or "skip for now". */
-internal enum class Verdict { PICK, REJECT, SKIP }
+/** What a swipe decided: pick, reject, "skip for now", or "this is a note, not a photo". */
+internal enum class Verdict { PICK, REJECT, SKIP, NOTE }
 
 internal val PickGreen = Color(0xFF3DDC84)
 internal val RejectRed = Color(0xFFFF5A5F)
 internal val SkipBlue = Color(0xFF8AB4F8)
+internal val NoteAmber = Color(0xFFFFC94D)
 
 private const val CULL_EDGE = 2048
 internal const val MAX_ZOOM = 8f
@@ -120,7 +122,7 @@ internal const val MAX_ZOOM = 8f
 private class Step(val pos: Int, val previous: List<Pair<Shot, Mark?>>, val verdicts: List<Pair<Shot, Verdict>>)
 
 /**
- * Tinder-style culling: right picks, left rejects, up skips. Usually deals the shots still to
+ * Tinder-style culling: right picks, left rejects, up skips, down makes it a note. Usually deals the shots still to
  * review; dealt picks again, it narrows them down. Bursts and near-duplicates come as one
  * stack, settled two at a time ([HeadToHead]).
  * Double-tap or pinch to check focus; while zoomed in a drag pans instead of deciding.
@@ -141,6 +143,10 @@ fun CullScreen(
     onAddToAlbum: ((List<Shot>) -> Unit)? = null,
     /** Culling an album: rejected shots go out of it (true) or back in on undo (false). */
     takeOut: ((Shot, Boolean) -> Unit)? = null,
+    /** Makes shots notes (true) or photos again on undo (false); null leaves out the note swipe. */
+    onNote: ((List<Shot>, Boolean) -> Unit)? = null,
+    /** RAWs of notes that go to the trash with the rejects at the end. */
+    spareRaws: Int = 0,
 ) {
     val context = LocalContext.current
     var progress by remember { mutableFloatStateOf(0f) }
@@ -169,15 +175,17 @@ fun CullScreen(
     fun markFor(v: Verdict): Mark = when (v) {
         Verdict.PICK -> Mark.PICK
         Verdict.REJECT -> Mark.REJECT
-        Verdict.SKIP -> error("skip leaves the mark alone")
+        Verdict.SKIP, Verdict.NOTE -> error("skip and note leave the mark alone")
     }
 
     fun record(verdicts: List<Pair<Shot, Verdict>>) {
         undo += Step(pos, verdicts.map { (shot, _) -> shot to marks[shot.key] }, verdicts)
+        val notes = verdicts.filter { it.second == Verdict.NOTE }.map { it.first }
+        if (notes.isNotEmpty()) onNote?.invoke(notes, true)
         for ((shot, v) in verdicts) {
             decided[shot.key] = v
             when {
-                v == Verdict.SKIP -> {}
+                v == Verdict.SKIP || v == Verdict.NOTE -> {}
                 v == Verdict.REJECT && takeOut != null -> takeOut(shot, true)
                 else -> onMark(shot, markFor(v))
             }
@@ -193,6 +201,8 @@ fun CullScreen(
             decided.remove(shot.key)
         }
         if (takeOut != null) for ((shot, v) in step.verdicts) if (v == Verdict.REJECT) takeOut(shot, false)
+        val notes = step.verdicts.filter { it.second == Verdict.NOTE }.map { it.first }
+        if (notes.isNotEmpty()) onNote?.invoke(notes, false)
         fling = null
         pos = step.pos
     }
@@ -245,7 +255,9 @@ fun CullScreen(
                 picked = decided.values.count { it == Verdict.PICK },
                 rejected = decided.values.count { it == Verdict.REJECT },
                 skipped = decided.values.count { it == Verdict.SKIP },
+                noted = decided.values.count { it == Verdict.NOTE },
                 rejectedCount = if (takeOut != null) 0 else rejectedCount,
+                spareRaws = if (takeOut != null) 0 else spareRaws,
                 onDeleteRejected = onDeleteRejected,
                 onBack = onBack,
                 modifier = Modifier.weight(1f),
@@ -278,6 +290,7 @@ fun CullScreen(
                             fling = if (i == pos) fling else null,
                             rejectLabel = if (takeOut != null) "OUT" else "REJECT",
                             onDecided = { record(listOf(shot to it)) },
+                            canNote = onNote != null,
                             notes = Best.notes(shot, insights),
                         )
                     }
@@ -294,10 +307,12 @@ fun CullScreen(
                 // A stack: two at a time until one is left (or a few, with "Keep both"); ✕ lets them all go.
                 RoundButton(Icons.Rounded.Close, "None of these", RejectRed, 64, "cull-reject") { record(top.map { it to Verdict.REJECT }) }
                 RoundButton(Icons.Rounded.ArrowUpward, "Skip", SkipBlue, 48, "cull-skip") { record(top.map { it to Verdict.SKIP }) }
+                if (onNote != null) RoundButton(Icons.Rounded.Lightbulb, "All notes", NoteAmber, 48, "cull-note") { record(top.map { it to Verdict.NOTE }) }
                 KeepBoth("cull-keep-both") { duel.keepBoth() }
             } else {
                 RoundButton(Icons.Rounded.Close, if (takeOut != null) "Take out of album" else "Reject", RejectRed, 64, "cull-reject") { if (fling == null) fling = Verdict.REJECT }
                 RoundButton(Icons.Rounded.ArrowUpward, "Skip", SkipBlue, 48, "cull-skip") { if (fling == null) fling = Verdict.SKIP }
+                if (onNote != null) RoundButton(Icons.Rounded.Lightbulb, "Note", NoteAmber, 48, "cull-note") { if (fling == null) fling = Verdict.NOTE }
                 RoundButton(Icons.Rounded.Check, "Pick", PickGreen, 64, "cull-pick") { if (fling == null) fling = Verdict.PICK }
             }
         }
@@ -419,7 +434,7 @@ internal fun RoundButton(icon: androidx.compose.ui.graphics.vector.ImageVector, 
 
 @Composable
 private fun Summary(
-    picked: Int, rejected: Int, skipped: Int, rejectedCount: Int,
+    picked: Int, rejected: Int, skipped: Int, noted: Int, rejectedCount: Int, spareRaws: Int,
     onDeleteRejected: () -> Unit, onBack: () -> Unit, modifier: Modifier, album: Boolean = false,
 ) {
     Column(
@@ -433,15 +448,17 @@ private fun Summary(
             listOfNotNull(
                 "$picked picked", if (album) "$rejected taken out" else "$rejected rejected",
                 if (skipped > 0) "$skipped skipped" else null,
+                if (noted > 0) (if (noted == 1) "1 note" else "$noted notes") else null,
             ).joinToString(" · "),
             color = Color.White.copy(alpha = 0.7f),
         )
         Spacer(Modifier.height(32.dp))
-        if (rejectedCount > 0) {
+        if (rejectedCount > 0 || spareRaws > 0) {
             Button(
                 onClick = onDeleteRejected,
                 colors = ButtonDefaults.buttonColors(containerColor = RejectRed, contentColor = Color.White),
-            ) { Text("Delete $rejectedCount rejected") }
+                modifier = Modifier.testTag("cull-delete"),
+            ) { Text(trashLabel(rejectedCount, spareRaws)) }
             Spacer(Modifier.height(12.dp))
         }
         OutlinedButton(onClick = onBack) { Text(if (album) "Back to album" else "Back to library") }
@@ -456,6 +473,8 @@ private fun Summary(
 internal fun SwipeCard(
     shot: Shot, depth: Int, fling: Verdict?, rejectLabel: String, onDecided: (Verdict) -> Unit, skipLabel: String = "SKIP",
     notes: List<String> = emptyList(),
+    /** Whether a swipe down makes the shot a note. */
+    canNote: Boolean = false,
 ) {
     val haptics = LocalHapticFeedback.current
     val density = LocalDensity.current
@@ -471,6 +490,7 @@ internal fun SwipeCard(
 
     fun verdictFor(d: Offset, w: Float, h: Float): Verdict? = when {
         -d.y > h * 0.18f && -d.y > abs(d.x) -> Verdict.SKIP
+        canNote && d.y > h * 0.18f && d.y > abs(d.x) -> Verdict.NOTE
         d.x > w * 0.28f -> Verdict.PICK
         d.x < -w * 0.28f -> Verdict.REJECT
         else -> null
@@ -485,6 +505,7 @@ internal fun SwipeCard(
             Verdict.PICK -> Offset(w * 1.5f, drag.y + velocity.y * 0.1f)
             Verdict.REJECT -> Offset(-w * 1.5f, drag.y + velocity.y * 0.1f)
             Verdict.SKIP -> Offset(drag.x, -h * 1.3f)
+            Verdict.NOTE -> Offset(drag.x, h * 1.3f)
         }
         scope.launch {
             animate(Offset.VectorConverter, drag, target, animationSpec = tween(220)) { value, _ -> drag = value }
@@ -498,6 +519,7 @@ internal fun SwipeCard(
     val h = size.height.toFloat().coerceAtLeast(1f)
     val progressX = (drag.x / (w * 0.28f)).coerceIn(-1f, 1f)
     val progressUp = (-drag.y / (h * 0.18f)).coerceIn(0f, 1f)
+    val progressDown = if (canNote) (drag.y / (h * 0.18f)).coerceIn(0f, 1f) else 0f
     // A card behind grows into place when the one above it leaves.
     val cardScale by animateFloatAsState(if (depth == 0) 1f else 0.94f, label = "cardScale")
 
@@ -578,6 +600,7 @@ internal fun SwipeCard(
                                 val fast = with(density) { 1200.dp.toPx() }
                                 val v = verdictFor(drag, size.width.toFloat(), size.height.toFloat()) ?: when {
                                     -vel.y > fast && -vel.y > abs(vel.x) -> Verdict.SKIP
+                                    canNote && vel.y > fast && vel.y > abs(vel.x) -> Verdict.NOTE
                                     vel.x > fast && drag.x > 0 -> Verdict.PICK
                                     vel.x < -fast && drag.x < 0 -> Verdict.REJECT
                                     else -> null
@@ -598,6 +621,7 @@ internal fun SwipeCard(
             if (progressX > 0f) Stamp("PICK", PickGreen, -14f, Modifier.align(Alignment.TopStart).alpha(progressX))
             if (progressX < 0f) Stamp(rejectLabel, RejectRed, 14f, Modifier.align(Alignment.TopEnd).alpha(-progressX))
             if (progressUp > 0f) Stamp(skipLabel, SkipBlue, 0f, Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp).alpha(progressUp))
+            if (progressDown > 0f && abs(drag.y) > abs(drag.x)) Stamp("NOTE", NoteAmber, 0f, Modifier.align(Alignment.TopCenter).padding(top = 24.dp).alpha(progressDown))
         }
     }
 }
@@ -735,4 +759,11 @@ internal fun ZoomedPhoto(shot: Shot, image: ImageBitmap?, tile: Pair<Rect, Image
             }
         }
     }
+}
+
+/** What the trash button at the end of a review (and on Rejected) says it does. */
+internal fun trashLabel(rejected: Int, spareRaws: Int): String = when {
+    spareRaws == 0 -> "Delete $rejected rejected"
+    rejected == 0 -> if (spareRaws == 1) "Delete 1 note RAW" else "Delete $spareRaws note RAWs"
+    else -> "Delete $rejected rejected and $spareRaws note ${if (spareRaws == 1) "RAW" else "RAWs"}"
 }
