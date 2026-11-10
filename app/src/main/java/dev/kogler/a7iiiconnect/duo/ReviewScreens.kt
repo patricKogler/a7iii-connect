@@ -219,7 +219,7 @@ private fun ColumnScope.Deck(room: Room, toVote: List<String>, onBack: () -> Uni
 private fun Verdict.toCall() = when (this) {
     Verdict.PICK -> Call.PICK
     Verdict.REJECT -> Call.REJECT
-    Verdict.SKIP -> Call.MAYBE
+    Verdict.SKIP, Verdict.NOTE -> Call.MAYBE
 }
 
 // ---- Reveal and talking it over -----------------------------------------------------------------

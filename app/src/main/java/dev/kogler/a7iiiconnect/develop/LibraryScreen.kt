@@ -6,6 +6,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Compare
 import androidx.compose.material.icons.rounded.Flag
+import androidx.compose.material.icons.rounded.Lightbulb
+import androidx.compose.material.icons.rounded.Photo
 import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CircleShape
 import androidx.activity.compose.BackHandler
@@ -164,7 +166,9 @@ private fun TransferStrip(status: SyncStatus, onClick: () -> Unit) {
 enum class AlbumAction { SLIDESHOW, SHARE, TOGETHER, INVITE, STOP_SHARING, RENAME, DELETE }
 
 enum class QuickFilter(val label: String) {
-    ALL("All"), TO_REVIEW("To review"), PICKS("Picks"), EDITED("Edited"), REJECTED("Rejected")
+    ALL("All"), TO_REVIEW("To review"), PICKS("Picks"), EDITED("Edited"), REJECTED("Rejected"),
+    /** Shots marked as notes: only here, never in the others or in Review. */
+    NOTES("Notes"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -212,6 +216,15 @@ fun LibraryScreen(
     me: String = "",
     /** Take phone or shared shots out of Shootback, leaving them on the phone. */
     onHide: (List<Shot>) -> Unit = {},
+    /** The notes' file keys (see [NoteStore]), and making shots notes (true) or photos again. */
+    notes: Map<String, Long> = emptyMap(),
+    onNote: (List<Shot>, Boolean) -> Unit = { _, _ -> },
+    /** RAWs of notes waiting to go to the trash with the rejects. */
+    spareRaws: Int = 0,
+    /** The monthly "clear out old notes" card is due; open the declutter (old ones or all), or put it off. */
+    declutterDue: Boolean = false,
+    onDeclutter: (onlyOld: Boolean) -> Unit = {},
+    onDeclutterLater: () -> Unit = {},
 ) {
     // Days picked by long-pressing their headers; Review then covers just those.
     var selectedDays by remember { mutableStateOf(emptySet<Long>()) }
@@ -242,22 +255,29 @@ fun LibraryScreen(
     // The sheet's metadata filter narrows everything on screen, Review included.
     val matching = if (sheetFilter.isEmpty) shots else facts.filter { sheetFilter.matches(it) }.map { it.shot }
     // An open album shows just its shots; the filters still narrow them down.
-    val filtered = if (album == null) matching else matching.filter { it.key in album }
+    val inAlbum = if (album == null) matching else matching.filter { it.key in album }
+    // Notes stay out of everything but the Notes view.
+    val filtered = if (notes.isEmpty()) inAlbum else inAlbum.filter { Notes.isNote(it, notes) == (filter == QuickFilter.NOTES) }
     val shown = when (filter) {
+        QuickFilter.NOTES -> filtered
         QuickFilter.ALL -> filtered
         QuickFilter.TO_REVIEW -> filtered.filter { it.key !in marks }
         QuickFilter.PICKS -> filtered.filter { marks[it.key]?.picked == true }
         QuickFilter.EDITED -> filtered.filter { it.key in edited }
         QuickFilter.REJECTED -> filtered.filter { marks[it.key]?.rejected == true }
     }
-    val rejected = shots.count { marks[it.key]?.rejected == true }
+    val rejected = shots.count { marks[it.key]?.rejected == true && !Notes.isNote(it, notes) }
     val days = shown.groupBy { dayOf(it.takenMillis) }
     val scope = if (selectedDays.isEmpty()) shown else shown.filter { dayOf(it.takenMillis) in selectedDays }
     // Review deals what's on screen: the shots still to review, or on Picks (or Rejected) those
     // shots again, to narrow them down (or rescue some). In an album it deals all its shots on
     // screen, to narrow the album down.
     val revisit = filter == QuickFilter.PICKS || filter == QuickFilter.REJECTED
-    val due = if (revisit || album != null) scope else scope.filter { it.key !in marks }
+    val due = when {
+        filter == QuickFilter.NOTES -> emptyList()
+        revisit || album != null -> scope
+        else -> scope.filter { it.key !in marks }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -326,6 +346,13 @@ fun LibraryScreen(
                                     text = { Text("Clear flag (back to review)") }, onClick = { mark(null) },
                                     leadingIcon = { Icon(Icons.Rounded.Swipe, null) },
                                     modifier = Modifier.testTag("flag-clear"),
+                                )
+                                val noting = filter != QuickFilter.NOTES
+                                DropdownMenuItem(
+                                    text = { Text(if (noting) "Mark as note" else "Not a note (back to photos)") },
+                                    onClick = { flagMenu = false; onNote(picked, noting); selectedShots = emptySet(); selectedDays = emptySet() },
+                                    leadingIcon = { if (noting) Icon(Icons.Rounded.Lightbulb, null, tint = NoteAmber) else Icon(Icons.Rounded.Photo, null) },
+                                    modifier = Modifier.testTag("flag-note"),
                                 )
                             }
                         }
@@ -446,7 +473,14 @@ fun LibraryScreen(
                     )
                 }
                 for (f in QuickFilter.entries) {
-                    FilterChip(selected = filter == f, onClick = { onQuickFilter(f) }, label = { Text(f.label) })
+                    // Notes shows once there are some.
+                    if (f == QuickFilter.NOTES && notes.isEmpty() && filter != f) continue
+                    FilterChip(
+                        selected = filter == f, onClick = { onQuickFilter(if (f == QuickFilter.NOTES && filter == f) QuickFilter.ALL else f) },
+                        label = { Text(f.label) },
+                        leadingIcon = if (f == QuickFilter.NOTES) ({ Icon(Icons.Rounded.Lightbulb, null, Modifier.size(16.dp)) }) else null,
+                        modifier = Modifier.testTag("quick-${f.name.lowercase()}"),
+                    )
                 }
             }
             // Albums get a row of their own: saved filters fill themselves, albums are put together by hand.
@@ -506,6 +540,27 @@ fun LibraryScreen(
                     onDismiss = { onSheetOpen(false) },
                 )
             }
+            if (declutterDue && album == null && filter != QuickFilter.NOTES && selectedShots.isEmpty() && selectedDays.isEmpty()) {
+                DeclutterCard(
+                    count = remember(shots, notes) { Notes.old(shots, notes, System.currentTimeMillis()).size },
+                    onOpen = { onDeclutter(true) },
+                    onLater = onDeclutterLater,
+                )
+            }
+            if (filter == QuickFilter.NOTES && shown.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (spareRaws > 0) "${if (spareRaws == 1) "1 RAW goes" else "$spareRaws RAWs go"} to the trash at the end of the next review"
+                        else "Kept out of Review",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { onDeclutter(false) }, modifier = Modifier.testTag("notes-declutter")) { Text("Declutter") }
+                }
+            }
             if (filter == QuickFilter.REJECTED && rejected > 0) {
                 Button(
                     onClick = onDeleteRejected,
@@ -514,7 +569,8 @@ fun LibraryScreen(
                 ) {
                     // Phone shots live in the phone's gallery: deleting them here deletes them there too.
                     Text(
-                        if (shots.any { it.source == Source.PHONE && marks[it.key]?.rejected == true }) "Delete $rejected rejected (also from the phone's gallery)"
+                        if (shots.any { it.source == Source.PHONE && marks[it.key]?.rejected == true }) "${trashLabel(rejected, spareRaws)} (also from the phone's gallery)"
+                        else if (spareRaws > 0) trashLabel(rejected, spareRaws)
                         else "Delete $rejected rejected (RAW and JPEG)",
                     )
                 }
@@ -530,6 +586,7 @@ fun LibraryScreen(
                             shots.isEmpty() -> "Photos from the camera will show up here"
                             album != null && album.size == 0 -> "Nothing in this album yet. Long-press shots in Photos to add them."
                             filter == QuickFilter.TO_REVIEW && sheetFilter.isEmpty -> "All reviewed"
+                            filter == QuickFilter.NOTES && sheetFilter.isEmpty -> "No notes. Swipe a shot down in Review to make it one."
                             !sheetFilter.query.isNullOrBlank() && unsearched.isEmpty -> "Nothing found for \u201c${sheetFilter.query.orEmpty().trim()}\u201d"
                             !sheetFilter.isEmpty -> "No photos match these filters"
                             else -> "Nothing here"
