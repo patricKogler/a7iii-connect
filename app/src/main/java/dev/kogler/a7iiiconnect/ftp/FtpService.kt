@@ -192,6 +192,7 @@ class FtpService : Service() {
                 .minByOrNull { if (it.first.startsWith("ap") || it.first.startsWith("swlan")) 0 else 1 }?.second
             return hotspot to (wifi ?: all.firstOrNull { it.first == "wlan0" && hotspot != it.second }?.second)
         }
+    }
 }
 
 /** Stores uploads in Pictures/A7III Connect (photos) or Movies/A7III Connect (clips). */
