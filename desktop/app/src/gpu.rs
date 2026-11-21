@@ -451,7 +451,18 @@ mod tests {
         let (w, h) = (64, 48);
         let srgb: Vec<u8> = (0..w * h).flat_map(|i| [(i % w * 4) as u8, (i / w * 5) as u8, 128]).collect();
         let image = LinearImage::from_srgb8(&srgb, w, h);
-        let source = Source { image, color: CameraColor::srgb(), baked: [1.0; 3], is_raw: false, full_width: w, full_height: h, lens: None };
+        let source = Source {
+            image,
+            color: CameraColor::srgb(),
+            baked: [1.0; 3],
+            is_raw: false,
+            full_width: w,
+            full_height: h,
+            lens: None,
+            baseline: 0.0,
+            tone_curve: None,
+            black_floor: 0.0,
+        };
         let look = Look::new(&source, &Settings::default());
         let params = look.shader_params(1.0);
         let scene = engine.texture(w, h, &scene_data(&source.image, 0, w));

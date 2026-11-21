@@ -54,26 +54,21 @@ object Dng {
         }
         val white = find(TAG_WHITE_LEVEL)?.let { tiff.doubles(it).firstOrNull()?.toInt() } ?: ((1 shl raw.bits) - 1)
 
-        // Colour: the D65 matrix when there is one (the editor's model is one daylight matrix).
+        // Colour: the two calibrated matrices, mixed for the shot's light, and its white balance.
         fun matrix(tag: Int) = find(tag)?.let { tiff.doubles(it) }?.takeIf { it.size == 9 }
-        val il1 = find(TAG_ILLUMINANT1)?.let { tiff.ints(it).firstOrNull() }
-        val il2 = find(TAG_ILLUMINANT2)?.let { tiff.ints(it).firstOrNull() }
-        val cm1 = matrix(TAG_COLOR_MATRIX1)
-        val cm2 = matrix(TAG_COLOR_MATRIX2)
-        val colorMatrix = when {
-            cm2 != null && il2 == D65 -> cm2
-            cm1 != null && il1 == D65 -> cm1
-            else -> cm2 ?: cm1
-        }
+        fun illuminant(tag: Int) = find(tag)?.let { tiff.ints(it).firstOrNull()?.toInt() }
+        val (colorMatrix, asShot) = DngColor.resolve(
+            DngColor.Calibration(matrix(TAG_COLOR_MATRIX1), matrix(TAG_CAMERA_CALIBRATION1), illuminant(TAG_ILLUMINANT1)),
+            DngColor.Calibration(matrix(TAG_COLOR_MATRIX2), matrix(TAG_CAMERA_CALIBRATION2), illuminant(TAG_ILLUMINANT2)),
+            analogBalance = find(TAG_ANALOG_BALANCE)?.let { tiff.doubles(it) }?.takeIf { it.size == 3 },
+            neutral = find(TAG_AS_SHOT_NEUTRAL)?.let { tiff.doubles(it) }?.takeIf { it.size >= 3 && it.all { v -> v > 0 } },
+            whiteXy = find(TAG_AS_SHOT_WHITE_XY)?.let { tiff.doubles(it) }?.takeIf { it.size == 2 && it[1] > 0 },
+        )
+        // Phones underexpose to keep highlights and say by how much the render should lift.
+        val baseline = find(TAG_BASELINE_EXPOSURE)?.let { tiff.doubles(it).firstOrNull() }?.takeIf { it.isFinite() } ?: 0.0
 
-        // As-shot white balance: the neutral in camera space; multipliers are its inverse, G = 1.
-        val neutral = find(TAG_AS_SHOT_NEUTRAL)?.let { tiff.doubles(it) }?.takeIf { it.size >= 3 && it.all { v -> v > 0 } }
-        val asShot = when {
-            neutral != null -> floatArrayOf((neutral[1] / neutral[0]).toFloat(), 1f, (neutral[1] / neutral[2]).toFloat())
-            colorMatrix != null -> CameraColor(colorMatrix).multipliers(6500.0, 0.0).let { m -> FloatArray(3) { m[it].toFloat() } }
-            else -> floatArrayOf(2f, 1f, 1.6f)
-        }
-
+        val toneCurve = find(TAG_PROFILE_TONE_CURVE)?.let { tiff.doubles(it) }
+            ?.takeIf { it.size >= 4 && it.size % 2 == 0 }?.let { v -> FloatArray(v.size) { v[it].toFloat() } }
         val gainMaps = find(TAG_OPCODE_LIST2)?.let { runCatching { opcodes(tiff.bytes(it)) }.getOrNull() }.orEmpty()
         val linearization = find(TAG_LINEARIZATION)?.let { e -> tiff.ints(e).map { it.toInt() }.toIntArray() }?.takeIf { it.size >= 2 }
 
@@ -87,6 +82,8 @@ object Dng {
             preview = preview,
             raw = raw,
             colorMatrix = colorMatrix,
+            baselineExposure = baseline,
+            toneCurve = toneCurve,
             gainMaps = gainMaps,
             linearization = linearization,
         )
@@ -272,7 +269,6 @@ object Dng {
 
     internal const val TAG_DNG_VERSION = 0xc612
     private const val PHOTOMETRIC_CFA = 32803L
-    private const val D65 = 21L
     private const val OPCODE_GAIN_MAP = 9
     private const val TAG_WIDTH = 0x100
     private const val TAG_HEIGHT = 0x101
@@ -302,7 +298,13 @@ object Dng {
     private const val TAG_CROP_SIZE = 0xc620
     private const val TAG_COLOR_MATRIX1 = 0xc621
     private const val TAG_COLOR_MATRIX2 = 0xc622
+    private const val TAG_CAMERA_CALIBRATION1 = 0xc623
+    private const val TAG_CAMERA_CALIBRATION2 = 0xc624
+    private const val TAG_ANALOG_BALANCE = 0xc627
     private const val TAG_AS_SHOT_NEUTRAL = 0xc628
+    private const val TAG_AS_SHOT_WHITE_XY = 0xc629
+    private const val TAG_BASELINE_EXPOSURE = 0xc62a
+    private const val TAG_PROFILE_TONE_CURVE = 0xc6fc
     private const val TAG_ILLUMINANT1 = 0xc65a
     private const val TAG_ILLUMINANT2 = 0xc65b
     private const val TAG_ACTIVE_AREA = 0xc68d

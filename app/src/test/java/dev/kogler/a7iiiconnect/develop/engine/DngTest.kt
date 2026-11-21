@@ -31,8 +31,11 @@ class DngTest {
         assertArrayEquals(intArrayOf(64, 64, 64), info.black)
         assertEquals(1023, info.white)
         assertArrayEquals(floatArrayOf(2f, 1f, 1.5f), info.asShot, 1e-4f)
-        // The D65 matrix (illuminant 2), not standard A's.
-        assertArrayEquals(doubleArrayOf(0.7, -0.2, -0.05, -0.45, 1.25, 0.2, -0.1, 0.18, 0.6), info.colorMatrix!!, 1e-9)
+        // Between standard A's matrix (identity here) and the D65 one, mixed for the as-shot light.
+        val d65 = doubleArrayOf(0.7, -0.2, -0.05, -0.45, 1.25, 0.2, -0.1, 0.18, 0.6)
+        val a = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        for (i in 0..8) assertTrue("element $i", info.colorMatrix!![i] in minOf(a[i], d65[i]) - 1e-9..maxOf(a[i], d65[i]) + 1e-9)
+        assertEquals(0.0, info.baselineExposure, 0.0)
         val img = Arw.decode(load("plain16"), info)
         assertArrayEquals(intArrayOf(2, 1, 1, 0), img.cfa)
         assertEquals(listOf(2, 2, 60, 44), listOf(img.left, img.top, img.width, img.height))
