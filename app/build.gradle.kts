@@ -12,7 +12,7 @@ android {
         applicationId = "dev.kogler.a7iiiconnect"
         minSdk = 33
         targetSdk = 35
-        versionCode = 86
+        versionCode = 87
         versionName = "0.51.0"
         // The Rust engine is built for arm64 only; this keeps other libraries' native code out too.
         ndk { abiFilters += "arm64-v8a" }
