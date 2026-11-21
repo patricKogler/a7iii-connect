@@ -47,6 +47,9 @@ object AlbumSync {
     /** Files going to the other phone: done / total. */
     var sending by mutableStateOf(0 to 0); private set
 
+    /** Albums changed on this phone some other way (the review room): screens look again. Main thread. */
+    fun touch() { changes++ }
+
     val busy get() = asked || getting.first < getting.second || sending.first < sending.second
     val inSync get() = merged && !busy
 

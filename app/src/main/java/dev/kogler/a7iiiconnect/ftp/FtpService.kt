@@ -65,7 +65,7 @@ class FtpService : Service() {
 
     private val nm by lazy { getSystemService(NotificationManager::class.java) }
     private var server: FtpServer? = null
-    private var network: CameraNetwork? = null
+    private var network = false
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
@@ -84,8 +84,8 @@ class FtpService : Service() {
         startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         if (server != null) {
             // The network choice or the Nearby devices permission changed while running.
-            network?.stop()
-            network = null
+            if (network) CameraNetwork.release(NETWORK_USER)
+            network = false
             startNetwork()
             return START_STICKY
         }
@@ -120,14 +120,15 @@ class FtpService : Service() {
         FtpState.update {
             it.copy(network = CameraNetwork.ssid(this), networkPassword = CameraNetwork.passphrase(this), networkError = null)
         }
-        network = CameraNetwork(this) { up, error ->
+        network = true
+        CameraNetwork.acquire(this, NETWORK_USER) { up, error ->
             FtpState.update { it.copy(networkUp = up, networkError = error) }
-        }.also { it.start() }
+        }
     }
 
     override fun onDestroy() {
-        network?.stop()
-        network = null
+        if (network) CameraNetwork.release(NETWORK_USER)
+        network = false
         server?.stop()
         server = null
         releaseLocks()
@@ -173,6 +174,7 @@ class FtpService : Service() {
 
     companion object {
         const val PORT = 2121
+        private const val NETWORK_USER = "ftp"
         private const val CHANNEL = "ftp"
         private const val NOTIFICATION_ID = 5
         private const val ACTION_STOP = "stop"

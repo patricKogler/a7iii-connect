@@ -78,7 +78,7 @@ class Room(val album: Album, val me: String, val myName: String, val shots: Map<
     val battles = TogetherBattle.all(album.id, members, facts)
 
     fun name(phone: String): String = if (phone == me) myName else album.members[phone] ?: "Someone"
-    fun color(phone: String) = if (phone == me) MeColor else PartnerColor
+    fun color(phone: String) = if (phone == me) MeColor else OtherColors[others.indexOf(phone).coerceAtLeast(0) % OtherColors.size]
 
     /** "Anna", or "Anna and Ben". */
     val othersName: String get() = others.map { name(it) }.let { if (it.size <= 1) it.firstOrNull() ?: "nobody yet" else it.dropLast(1).joinToString(", ") + " and " + it.last() }
@@ -94,6 +94,7 @@ internal object Routes {
     const val HOME = "home"
     fun hub(album: String) = "hub:$album"
     fun review(album: String) = "review:$album"
+    fun room(album: String) = "room:$album"
     fun newBattle(album: String, key: String? = null) = "new:$album:${key.orEmpty()}"
     fun battle(album: String, id: String) = "battle:$album:$id"
 }
@@ -135,7 +136,7 @@ fun TogetherScreen(start: String, onExit: () -> Unit, onShareApp: () -> Unit, on
     val parts = route.split(':')
     val back: () -> Unit = {
         when (parts[0]) {
-            "review", "new", "battle" -> route = Routes.hub(parts[1])
+            "review", "new", "battle", "room" -> route = Routes.hub(parts[1])
             "hub" -> if (start.startsWith("hub:")) onExit() else route = Routes.HOME
             else -> onExit()
         }
@@ -153,11 +154,13 @@ fun TogetherScreen(start: String, onExit: () -> Unit, onShareApp: () -> Unit, on
                     room,
                     onBack = back,
                     onReview = { route = Routes.review(room.album.id) },
+                    onRoom = { route = Routes.room(room.album.id) },
                     onNewBattle = { route = Routes.newBattle(room.album.id) },
                     onBattle = { route = Routes.battle(room.album.id, it) },
                     onShareApp = onShareApp,
                 )
                 parts[0] == "review" -> ReviewScreen(room, onBack = back)
+                parts[0] == "room" -> RoomScreen(room, onBack = back)
                 parts[0] == "new" -> NewBattle(room, preset = parts.getOrNull(2)?.ifEmpty { null }, onBack = back, onStarted = { route = Routes.battle(room.album.id, it) })
                 parts[0] == "battle" -> BattleScreen(room, parts.getOrNull(2).orEmpty(), onBack = back)
             }
@@ -351,12 +354,16 @@ private fun AlbumRow(room: Room, onClick: () -> Unit) {
 // ---- Hub: one album -------------------------------------------------------------------------------
 
 @Composable
-internal fun Hub(room: Room, onBack: () -> Unit, onReview: () -> Unit, onNewBattle: () -> Unit, onBattle: (String) -> Unit, onShareApp: () -> Unit) {
+internal fun Hub(room: Room, onBack: () -> Unit, onReview: () -> Unit, onRoom: () -> Unit = {}, onNewBattle: () -> Unit, onBattle: (String) -> Unit, onShareApp: () -> Unit) {
     val inviting = room.others.isEmpty()
     TopBar(room.album.name, if (inviting) "Waiting for someone to join" else "with ${room.othersName}", onBack = onBack)
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         LinkCard(who = room.othersName.takeIf { !inviting }, inviting = inviting, onShareApp = onShareApp.takeIf { inviting })
-        if (inviting) return@Column
+        if (inviting) {
+            Spacer(Modifier.height(12.dp))
+            RoomCard(room, onRoom)
+            return@Column
+        }
         if (room.missing > 0) {
             Text(
                 "${plural(room.missing, "photo")} still to come from ${room.othersName}",
@@ -365,6 +372,8 @@ internal fun Hub(room: Room, onBack: () -> Unit, onReview: () -> Unit, onNewBatt
         }
         Spacer(Modifier.height(16.dp))
         ReviewCard(room, onReview)
+        Spacer(Modifier.height(12.dp))
+        RoomCard(room, onRoom)
         Spacer(Modifier.height(16.dp))
         Row(Modifier.fillMaxWidth().padding(end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             SectionTitle("Edit battles")
