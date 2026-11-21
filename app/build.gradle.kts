@@ -12,8 +12,8 @@ android {
         applicationId = "dev.kogler.a7iiiconnect"
         minSdk = 33
         targetSdk = 35
-        versionCode = 81
-        versionName = "0.48.1"
+        versionCode = 82
+        versionName = "0.49.0"
         // The Rust engine is built for arm64 only; this keeps other libraries' native code out too.
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -76,6 +76,8 @@ dependencies {
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     // Together: phone-to-phone link (Bluetooth to find, Wi-Fi Direct to send).
     implementation("com.google.android.gms:play-services-nearby:19.3.0")
+    // QR codes for the review room's link and network.
+    implementation("com.google.zxing:core:3.5.3")
     // Nearby brings an old Fragment along; activity-result APIs need 1.3+ (release lint enforces it).
     implementation("androidx.fragment:fragment:1.8.5")
     // Subject masks: on-device subject segmentation (the model ships with Google Play services).

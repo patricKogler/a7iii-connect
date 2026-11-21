@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#121212">
+<title>Shootback review</title>
+<style>
+  :root {
+    --bg: #121212;
+    --panel: #1c1c1c;
+    --line: rgba(255,255,255,.09);
+    --text: #ececec;
+    --dim: rgba(236,236,236,.56);
+    --faint: rgba(236,236,236,.32);
+    --accent: #e0543c;
+    --keep: #7fbf8e;
+    --out: #d9776a;
+    --maybe: #c8b27a;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; overflow: hidden;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  header { padding: 14px 18px 10px; border-bottom: 1px solid var(--line); }
+  .title { display: flex; align-items: baseline; gap: 10px; }
+  .title h1 { font-size: 17px; font-weight: 600; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .title .count { color: var(--dim); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .people { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; }
+  .person { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--dim); min-width: 0; }
+  .person b { font-weight: 500; color: var(--text); }
+  .bar { width: 44px; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--text); opacity: .7; transition: width .3s; }
+  main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+  .stage { flex: 1; min-height: 0; position: relative; margin: 12px 14px 0; }
+  .card { position: absolute; inset: 0; border-radius: var(--radius); overflow: hidden; background: var(--panel);
+    touch-action: none; user-select: none; -webkit-user-select: none; will-change: transform; }
+  .card img { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; -webkit-user-drag: none; }
+  .card.behind { transform: scale(.97); opacity: .5; }
+  .card .tag { position: absolute; top: 16px; padding: 4px 10px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    letter-spacing: .04em; text-transform: uppercase; opacity: 0; border: 1.5px solid currentColor; background: rgba(0,0,0,.35); }
+  .tag.keep { right: 16px; color: var(--keep); } .tag.out { left: 16px; color: var(--out); }
+  .tag.maybe { left: 50%; transform: translateX(-50%); color: var(--maybe); }
+  .controls { display: flex; justify-content: center; align-items: center; gap: 18px; padding: 14px 0 18px; }
+  .round { width: 58px; height: 58px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel);
+    display: grid; place-items: center; transition: transform .12s, background .12s; }
+  .round:active { transform: scale(.94); }
+  .round.small { width: 46px; height: 46px; }
+  .round svg { width: 24px; height: 24px; }
+  .round.keep { color: var(--keep); } .round.out { color: var(--out); } .round.maybe { color: var(--maybe); }
+  .round.undo { color: var(--dim); } .round:disabled { opacity: .3; }
+  .center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; gap: 10px; }
+  .center h2 { font-size: 20px; font-weight: 600; margin: 0; }
+  .center p { margin: 0; color: var(--dim); max-width: 340px; }
+  .seal { width: 64px; height: 64px; border-radius: 12px; background: var(--accent); color: #fff; display: grid; place-items: center;
+    font-size: 26px; font-weight: 600; margin-bottom: 6px; font-family: "Hiragino Mincho ProN", "Yu Mincho", serif; }
+  .primary { background: var(--text); color: var(--bg); padding: 12px 22px; border-radius: 12px; font-weight: 600; margin-top: 8px; }
+  .primary:disabled { opacity: .4; }
+  .ghost { border: 1px solid var(--line); padding: 11px 20px; border-radius: 12px; }
+  input { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 14px; width: min(300px, 100%); outline: none; text-align: center; }
+  input:focus { border-color: var(--faint); }
+  .talk { padding: 14px 14px 18px; border-top: 1px solid var(--line); }
+  .calls { display: grid; grid-template-columns: 1fr auto auto; gap: 6px 14px; font-size: 13.5px; margin-bottom: 14px; align-items: center; }
+  .calls .h { color: var(--faint); font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
+  .chip { font-size: 12.5px; padding: 2px 9px; border-radius: 7px; border: 1px solid var(--line); color: var(--dim); text-align: center; min-width: 64px; }
+  .chip.P { color: var(--keep); } .chip.R { color: var(--out); } .chip.M { color: var(--maybe); }
+  .choose { display: flex; gap: 10px; }
+  .choose button { flex: 1; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); font-weight: 500; }
+  .choose button.on.P { border-color: var(--keep); color: var(--keep); }
+  .choose button.on.R { border-color: var(--out); color: var(--out); }
+  .note { font-size: 12.5px; color: var(--dim); text-align: center; margin-top: 10px; }
+  .toast { position: absolute; left: 50%; top: 14px; transform: translate(-50%, -6px); background: rgba(28,28,28,.92);
+    border: 1px solid var(--line); padding: 7px 14px; border-radius: 999px; font-size: 13px; color: var(--text);
+    opacity: 0; transition: opacity .25s, transform .25s; pointer-events: none; z-index: 5; white-space: nowrap; }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .banner { background: #2a2016; color: #e8c9a0; font-size: 13px; text-align: center; padding: 6px 12px; }
+  .hidden { display: none !important; }
+  .stats { display: flex; gap: 22px; margin: 6px 0 4px; }
+  .stats div { display: flex; flex-direction: column; align-items: center; }
+  .stats b { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stats span { font-size: 12px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div id="banner" class="banner hidden">Can't reach the phone. Trying again…</div>
+<header id="header" class="hidden">
+  <div class="title"><h1 id="album"></h1><span class="count" id="count"></span></div>
+  <div class="people" id="people"></div>
+</header>
+<main id="main"><div class="center"><p>Opening the review…</p></div></main>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const T = q.get('t') || '';
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  };
+  let S = store.get('sb-secret');
+  if (!S || S.length < 16) {
+    const a = new Uint8Array(16); crypto.getRandomValues(a);
+    S = Array.from(a, b => b.toString(16).padStart(2, '0')).join('');
+    store.set('sb-secret', S);
+  }
+
+  const $ = id => document.getElementById(id);
+  const el = (tag, attrs = {}, ...kids) => {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v);
+    }
+    for (const c of kids.flat()) if (c != null) e.append(c.nodeType ? c : document.createTextNode(c));
+    return e;
+  };
+  const icon = d => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor');
+    s.setAttribute('stroke-width', '1.8'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round');
+    s.innerHTML = d; return s; };
+  const ICON = {
+    keep: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    out: '<path d="M6 6l12 12M18 6L6 18"/>',
+    maybe: '<path d="M9.2 9a2.9 2.9 0 1 1 4.3 2.5c-.9.5-1.5 1.1-1.5 2.1V14"/><circle cx="12" cy="17.6" r=".6" fill="currentColor"/>',
+    undo: '<path d="M9 7L4.5 11.5 9 16"/><path d="M5 11.5h9a5 5 0 0 1 0 10h-2"/>',
+  };
+  const CALL = { P: 'Keep', R: 'Out', M: 'Not sure' };
+
+  let state = null;
+  const pending = new Set();   // voted here, not in the phone's answer yet
+  const history = [];          // this visit's votes, for undo
+  let talkIndex = 0;
+  let lastMatches = null;
+
+  const edge = () => Math.min(2400, Math.ceil(Math.max(innerWidth, innerHeight) * (devicePixelRatio || 1) / 400) * 400);
+  const photo = k => `/api/photo?t=${encodeURIComponent(T)}&k=${encodeURIComponent(k)}&w=${edge()}`;
+  const preloaded = new Set();
+  const preload = k => { if (k && !preloaded.has(k)) { preloaded.add(k); new Image().src = photo(k); } };
+
+  async function post(path, body) {
+    const r = await fetch(`/api/${path}?t=${encodeURIComponent(T)}`, { method: 'POST', body: JSON.stringify({ s: S, ...body }) });
+    if (r.status === 409) return null;
+    if (!r.ok) throw new Error(await r.text());
+    const s = await r.json(); take(s); return s;
+  }
+
+  function take(s) {
+    if (state && s.v < state.v) return;
+    state = s;
+    if (s.deck) for (const k of [...pending]) if (!s.deck.includes(k)) pending.delete(k);
+    if (s.matches != null) {
+      if (lastMatches != null && s.matches > lastMatches) toast(others().length === 1 ? 'You both kept this one' : 'Everyone kept this one');
+      lastMatches = s.matches;
+    }
+    render();
+  }
+
+  let toastTimer;
+  function toast(text) {
+    const t = $('toast'); t.textContent = text; t.classList.add('show');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1400);
+  }
+
+  const others = () => state.members.filter(m => m.id !== state.me);
+  const nameList = ms => { const n = ms.map(m => m.name); return n.length <= 1 ? (n[0] || 'nobody') : n.slice(0, -1).join(', ') + ' and ' + n[n.length - 1]; };
+
+  // ---- Live: ask again as soon as the phone answers, waiting there for a change ----
+  let failures = 0;
+  async function loop() {
+    for (;;) {
+      try {
+        const v = state ? `&v=${state.v}` : '';
+        const r = await fetch(`/api/state?t=${encodeURIComponent(T)}&s=${S}${v}`, { cache: 'no-store' });
+        if (r.status === 403) { closed(await r.text()); return; }
+        if (!r.ok) throw new Error(r.status);
+        take(await r.json());
+        failures = 0; $('banner').classList.add('hidden');
+      } catch (e) {
+        failures++;
+        if (failures > 1) $('banner').classList.remove('hidden');
+        await new Promise(res => setTimeout(res, Math.min(5000, 800 * failures)));
+      }
+    }
+  }
+
+  function closed(text) {
+    $('header').classList.add('hidden');
+    show(el('div', { class: 'center' }, el('h2', {}, 'The room has closed'), el('p', {}, text || 'Ask for a new link.')));
+  }
+
+  function show(...nodes) { const m = $('main'); m.replaceChildren(...nodes); }
+
+  // ---- Screens ----
+  function render() {
+    if (state.gone) { $('header').classList.add('hidden'); return show(el('div', { class: 'center' }, el('h2', {}, 'This album is gone'), el('p', {}, 'It was deleted or is no longer shared.'))); }
+    if (!state.me) return joinScreen();
+    header();
+    const deck = state.deck.filter(k => !pending.has(k));
+    if (deck.length) return deckScreen(deck);
+    if (pending.size) return;  // the phone hasn't answered the last swipe yet
+    if (state.talk.length) return talkScreen();
+    if (state.seal > 0) return sealScreen();
+    const left = others().map(m => ({ m, left: state.total - m.done })).filter(x => x.left > 0);
+    if (left.length) return message('You\'re through', `Waiting for ${nameList(left.map(x => x.m))}: ${left.map(x => x.left).reduce((a, b) => a + b, 0)} still to go. This page updates by itself.`, true);
+    if (state.waiting > 0) return message('Photos are still coming', `${state.waiting} of the album's photos aren't on ${state.hostName}'s phone yet.`);
+    const lr = state.lastRound;
+    if (lr) return show(el('div', { class: 'center' }, el('div', { class: 'seal' }, '済'), el('h2', {}, 'Round sealed'),
+      el('div', { class: 'stats' }, stat(lr.kept, 'kept'), stat(lr.out, 'out'), stat(lr.score + '%', 'in sync')),
+      el('p', {}, 'Photos added to the album later start a new round.')));
+    message('Nothing to review', 'Photos added to the album start a new round.');
+  }
+
+  const stat = (n, label) => el('div', {}, el('b', {}, String(n)), el('span', {}, label));
+
+  function message(title, text, withUndo) {
+    const kids = [el('h2', {}, title), el('p', {}, text)];
+    if (withUndo && history.length) kids.push(el('button', { class: 'ghost', onclick: undo }, 'Undo my last call'));
+    show(el('div', { class: 'center' }, kids));
+  }
+
+  function header() {
+    $('header').classList.remove('hidden');
+    $('album').textContent = state.album;
+    const mine = state.members.find(m => m.id === state.me);
+    $('count').textContent = state.total ? `${mine ? mine.done : 0} of ${state.total}` : '';
+    $('people').replaceChildren(...state.members.map(m => el('div', { class: 'person' },
+      el('b', {}, m.id === state.me ? 'You' : m.name),
+      el('span', { class: 'bar' }, (() => { const i = el('i'); i.style.width = (state.total ? 100 * m.done / state.total : 0) + '%'; return i; })()))));
+  }
+
+  function joinScreen() {
+    $('header').classList.add('hidden');
+    const input = el('input', { placeholder: 'Your name', maxlength: '30', autocomplete: 'given-name', enterkeyhint: 'go' });
+    input.value = store.get('sb-name') || '';
+    const go = el('button', { class: 'primary' }, 'Join the review');
+    const err = el('p', { class: 'note' });
+    const join = async () => {
+      const name = input.value.trim(); if (!name) { input.focus(); return; }
+      go.disabled = true; store.set('sb-name', name);
+      try { await post('join', { name }); } catch (e) { err.textContent = 'Couldn\'t join: ' + e.message; go.disabled = false; }
+    };
+    go.onclick = join; input.onkeydown = e => { if (e.key === 'Enter') join(); };
+    show(el('div', { class: 'center' },
+      el('div', { class: 'seal' }, '撮'),
+      el('h2', {}, state.album),
+      el('p', {}, `${state.hostName} asked you to help pick the keepers. Swipe right to keep, left for out.`),
+      input, go, err));
+  }
+
+  function deckScreen(deck) {
+    const k = deck[0];
+    deck.slice(1, 3).forEach(preload);
+    const stage = el('div', { class: 'stage' });
+    if (deck[1]) stage.append(el('div', { class: 'card behind' }, el('img', { src: photo(deck[1]), alt: '' })));
+    const card = el('div', { class: 'card' }, el('img', { src: photo(k), alt: '' }),
+      el('span', { class: 'tag keep' }, 'Keep'), el('span', { class: 'tag out' }, 'Out'), el('span', { class: 'tag maybe' }, 'Not sure'));
+    stage.append(card);
+    drag(card, c => vote(k, c, card));
+    const btn = (cls, c, label) => { const b = el('button', { class: `round ${cls}`, 'aria-label': label, onclick: () => vote(k, c, card) }); b.append(icon(ICON[cls])); return b; };
+    const u = el('button', { class: 'round small undo', 'aria-label': 'Undo', onclick: undo }); u.append(icon(ICON.undo)); u.disabled = !history.length;
+    const spacer = el('span', { style: 'width:46px' });
+    show(stage, el('div', { class: 'controls' }, u, btn('out', 'R', 'Out'), btn('maybe', 'M', 'Not sure'), btn('keep', 'P', 'Keep'), spacer));
+  }
+
+  function drag(card, decide) {
+    let x0 = 0, y0 = 0, dx = 0, dy = 0, on = false;
+    const tags = { P: card.querySelector('.keep'), R: card.querySelector('.out'), M: card.querySelector('.maybe') };
+    const which = () => Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'P' : 'R') : (dy < 0 ? 'M' : null);
+    card.addEventListener('pointerdown', e => { on = true; x0 = e.clientX; y0 = e.clientY; dx = dy = 0; card.setPointerCapture(e.pointerId); card.style.transition = 'none'; });
+    card.addEventListener('pointermove', e => {
+      if (!on) return;
+      dx = e.clientX - x0; dy = e.clientY - y0;
+      card.style.transform = `translate(${dx}px, ${Math.min(dy, 40)}px) rotate(${dx / 30}deg)`;
+      const w = which(), f = Math.min(1, Math.max(Math.abs(dx), -dy) / 110);
+      for (const [c, t] of Object.entries(tags)) t.style.opacity = c === w ? f : 0;
+    });
+    const end = () => {
+      if (!on) return; on = false;
+      const w = which();
+      if (w && (Math.abs(dx) > 100 || (w === 'M' && dy < -100))) decide(w);
+      else { card.style.transition = 'transform .2s'; card.style.transform = ''; Object.values(tags).forEach(t => t.style.opacity = 0); }
+    };
+    card.addEventListener('pointerup', end); card.addEventListener('pointercancel', end);
+  }
+
+  async function vote(k, c, card) {
+    if (pending.has(k)) return;
+    if (card) {
+      card.style.transition = 'transform .22s ease-in, opacity .22s';
+      card.style.transform = c === 'P' ? 'translate(120%, 0) rotate(12deg)' : c === 'R' ? 'translate(-120%, 0) rotate(-12deg)' : 'translate(0, -120%)';
+      card.style.opacity = '0';
+    }
+    pending.add(k); history.push(k);
+    setTimeout(render, card ? 200 : 0);
+    try { await post('vote', { k, c }); } catch (e) { pending.delete(k); history.pop(); toast('That didn\'t go through'); render(); }
+  }
+
+  async function undo() {
+    const k = history.pop(); if (!k) return;
+    pending.delete(k);
+    try { await post('vote', { k, c: '' }); } catch (e) { toast('Couldn\'t undo'); }
+  }
+
+  function talkScreen() {
+    const items = state.talk;
+    talkIndex = Math.min(talkIndex, items.length - 1);
+    const t = items[talkIndex];
+    items.slice(talkIndex + 1, talkIndex + 3).forEach(x => preload(x.k));
+    $('count').textContent = `${items.length} to talk over`;
+    const mine = t.says[state.me] || '';
+    const rows = [el('span', { class: 'h' }, ''), el('span', { class: 'h' }, 'First call'), el('span', { class: 'h' }, 'Now says')];
+    for (const m of state.members) {
+      rows.push(el('span', {}, m.id === state.me ? 'You' : m.name),
+        el('span', { class: 'chip ' + (t.votes[m.id] || '') }, CALL[t.votes[m.id]] || '—'),
+        el('span', { class: 'chip ' + (t.says[m.id] || '') }, CALL[t.says[m.id]] || '…'));
+    }
+    const say = c => post('say', { k: t.k, c }).catch(() => toast('That didn\'t go through'));
+    const choose = el('div', { class: 'choose' },
+      el('button', { class: 'R' + (mine === 'R' ? ' on' : ''), onclick: () => say('R') }, 'Out'),
+      el('button', { class: 'P' + (mine === 'P' ? ' on' : ''), onclick: () => say('P') }, 'Keep it'));
+    const panel = el('div', { class: 'talk' }, el('div', { class: 'calls' }, rows), choose);
+    panel.prepend(el('p', { class: 'note', style: 'margin:0 0 10px;text-align:left' }, 'You don\'t all agree on this one. What should happen to it?'));
+    if (t.stuck) panel.append(el('p', { class: 'note' }, 'Still not the same. ',
+      el('button', { style: 'text-decoration:underline;color:var(--text)', onclick: () => post('coin', { k: t.k }).catch(() => {}) }, 'Let a coin decide')));
+    else if (mine) panel.append(el('p', { class: 'note' }, 'Waiting for the others to say.'));
+    if (items.length > 1) panel.append(el('p', { class: 'note' },
+      el('button', { onclick: () => { talkIndex = (talkIndex + 1) % items.length; render(); } }, `${talkIndex + 1} of ${items.length} · Next →`)));
+    show(el('div', { class: 'stage' }, el('div', { class: 'card' }, el('img', { src: photo(t.k), alt: '' }))), panel);
+  }
+
+  function sealScreen() {
+    const go = el('button', { class: 'primary' }, 'Seal the round');
+    go.onclick = async () => { go.disabled = true; try { await post('seal', {}); } catch (e) { go.disabled = false; toast('Couldn\'t seal'); } };
+    show(el('div', { class: 'center' }, el('div', { class: 'seal' }, '印'), el('h2', {}, 'Everything is settled'),
+      el('div', { class: 'stats' }, stat(state.kept, 'kept'), stat(state.out, 'out')),
+      el('p', {}, 'Seal the round to close it. The photos that are out leave the album for everyone.'), go));
+  }
+
+  addEventListener('keydown', e => {
+    if (!state || !state.me || e.target.tagName === 'INPUT') return;
+    const deck = (state.deck || []).filter(k => !pending.has(k));
+    const card = document.querySelector('.card:not(.behind)');
+    if (deck.length && e.key === 'ArrowRight') vote(deck[0], 'P', card);
+    else if (deck.length && e.key === 'ArrowLeft') vote(deck[0], 'R', card);
+    else if (deck.length && e.key === 'ArrowUp') vote(deck[0], 'M', card);
+    else if (e.key === 'Backspace' || e.key === 'z') undo();
+  });
+
+  if (!T) closed('This link is missing its room code.'); else loop();
+})();
+</script>
+</body>
+</html>

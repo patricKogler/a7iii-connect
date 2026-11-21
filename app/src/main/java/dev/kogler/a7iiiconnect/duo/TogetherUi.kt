@@ -81,6 +81,8 @@ internal val Gold = Color(0xFFFFC94D)
 internal val Pink = Color(0xFFFF6B9A)
 internal val MeColor = Color(0xFF8AB4F8)
 internal val PartnerColor = Pink
+/** The others in a review, the first one in [PartnerColor] as with two phones. */
+internal val OtherColors = listOf(PartnerColor, Color(0xFF7FD1AE), Color(0xFFE6B566), Color(0xFFB39DDB), Color(0xFF80CBC4))
 internal val Panel = Color(0xFF1C1C1E)
 internal val Dim = Color.White.copy(alpha = 0.65f)
 
@@ -226,7 +228,10 @@ internal fun Confetti() {
     }
 }
 
-/** "It's a match!" with a heart that pops, every time [tick] goes up. */
+/**
+ * A quiet note that everyone kept a shot, every time [tick] goes up: a small pill at the top,
+ * gone after a moment, with a light tick. It doesn't cover the photo or stop the swiping.
+ */
 @Composable
 internal fun MatchBurst(tick: Int, line: String) {
     val haptics = LocalHapticFeedback.current
@@ -235,16 +240,19 @@ internal fun MatchBurst(tick: Int, line: String) {
     LaunchedEffect(tick) {
         if (tick == first) return@LaunchedEffect
         visible = true
-        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-        delay(1300)
+        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        delay(1200)
         visible = false
     }
-    AnimatedVisibility(visible, enter = scaleIn(spring(Spring.DampingRatioMediumBouncy)) + fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Rounded.Favorite, null, tint = Pink, modifier = Modifier.size(120.dp))
-                Text("It's a match!", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Black)
-                Text(line, color = Color.White.copy(alpha = 0.8f))
+    Box(Modifier.fillMaxSize().padding(top = 56.dp), contentAlignment = Alignment.TopCenter) {
+        AnimatedVisibility(visible, enter = fadeIn(), exit = fadeOut()) {
+            Row(
+                Modifier.clip(RoundedCornerShape(50)).background(Color(0xE61C1C1E)).padding(horizontal = 14.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.Favorite, null, tint = Pink, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(line, color = Color.White, fontSize = 13.sp)
             }
         }
     }
