@@ -93,6 +93,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.kogler.a7iiiconnect.Phase
 import dev.kogler.a7iiiconnect.SyncStatus
+import dev.kogler.a7iiiconnect.ftp.CameraNetwork
 import dev.kogler.a7iiiconnect.ftp.FtpService
 import dev.kogler.a7iiiconnect.ftp.FtpStatus
 import dev.kogler.a7iiiconnect.gps.CameraPairing
@@ -114,6 +115,8 @@ data class UiState(
     val pairing: CameraPairing.State?,
     val showPairIntro: Boolean,
     val ftp: FtpStatus,
+    /** The FTP receiver opens Shootback's own camera network instead of using the hotspot. */
+    val ftpOwnNetwork: Boolean = true,
 )
 
 class UiActions(
@@ -130,6 +133,7 @@ class UiActions(
     val openRemote: () -> Unit,
     val setFtp: (Boolean) -> Unit,
     val copyUsb: () -> Unit,
+    val setFtpOwnNetwork: (Boolean) -> Unit = {},
 )
 
 /**
@@ -162,7 +166,7 @@ fun App(state: UiState, actions: UiActions) {
 
             item { SectionTitle("While you shoot") }
             item { GpsCard(state, actions) }
-            item { FtpCard(state.ftp, actions.setFtp) }
+            item { FtpCard(state.ftp, state.ftpOwnNetwork, actions.setFtp, actions.setFtpOwnNetwork) }
             item { RemoteCard(actions.openRemote) }
 
             item { SectionTitle("This phone") }
@@ -447,15 +451,23 @@ private fun UsbCard(onCopy: () -> Unit) {
 }
 
 @Composable
-private fun FtpCard(ftp: FtpStatus, setFtp: (Boolean) -> Unit) {
+private fun FtpCard(ftp: FtpStatus, ownNetwork: Boolean, setFtp: (Boolean) -> Unit, setOwnNetwork: (Boolean) -> Unit) {
     var showSetup by rememberSaveable { mutableStateOf(false) }
-    // The hotspot is a Wi-Fi interface (ap0, swlan0, wlan1 ...); mobile data ones (rmnet) can't be reached.
-    val address = ftp.addresses.firstOrNull { it.contains("(ap") || it.contains("wlan") }?.substringBefore(' ')
+    // On the own network the phone is always 192.168.49.1. On the hotspot its address changes,
+    // or the camera may share the phone's Wi-Fi instead.
+    val address = if (ownNetwork) CameraNetwork.ADDRESS else ftp.hotspot ?: ftp.wifi
     val subtitle = when {
         ftp.error != null -> ftp.error
-        !ftp.running -> "The camera sends RAW and JPEG as you shoot, over your phone's hotspot"
+        !ftp.running -> "The camera sends RAW and JPEG as you shoot, over Wi-Fi"
+        ownNetwork && ftp.networkError != null -> ftp.networkError
+        ownNetwork && !ftp.networkUp && ftp.received == 0 -> "Opening the camera network ${ftp.network ?: ""}"
+        ownNetwork && ftp.received == 0 ->
+            "Waiting for the camera on ${ftp.network} at ${CameraNetwork.ADDRESS}, port ${FtpService.PORT}"
         address == null -> "Turn on your phone's hotspot so the camera can reach it"
-        ftp.received == 0 -> "Waiting for the camera at $address, port ${FtpService.PORT}"
+        ftp.received == 0 && ftp.hotspot != null ->
+            "Waiting for the camera at ${ftp.hotspot}, port ${FtpService.PORT} (hotspot)"
+        ftp.received == 0 ->
+            "Waiting for the camera at ${ftp.wifi}, port ${FtpService.PORT} (camera must be on the same Wi-Fi)"
         else -> "${ftp.received} files received · last ${ftp.lastFile}"
     }
     Surface(
@@ -472,26 +484,49 @@ private fun FtpCard(ftp: FtpStatus, setFtp: (Boolean) -> Unit) {
                 supportingContent = { Text(subtitle) },
                 trailingContent = { Switch(checked = ftp.running, onCheckedChange = setFtp) },
             )
+            ListItem(
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                modifier = Modifier.padding(start = 40.dp),
+                headlineContent = { Text("Own camera network") },
+                supportingContent = {
+                    Text(
+                        if (ownNetwork) "Always at ${CameraNetwork.ADDRESS}, no hotspot needed"
+                        else "Uses your hotspot; its address changes when it restarts",
+                    )
+                },
+                trailingContent = { Switch(checked = ownNetwork, onCheckedChange = setOwnNetwork) },
+            )
             TextButton(onClick = { showSetup = true }, modifier = Modifier.padding(start = 56.dp, bottom = 4.dp)) {
                 Text("Camera setup")
             }
         }
     }
     if (showSetup) {
+        val join = if (ownNetwork) {
+            "1. Turn on this switch.\n" +
+                "2. Camera: MENU > Network > Wi-Fi Settings > Access Point Set. > Manual Setting:\n" +
+                "   Network: ${ftp.network ?: CameraNetwork.ssid(LocalContext.current)}\n" +
+                "   Security: WPA/WPA2, Password: ${ftp.networkPassword ?: CameraNetwork.passphrase(LocalContext.current)}\n"
+        } else {
+            "1. Turn on your phone's hotspot and this switch.\n" +
+                "2. Camera: MENU > Network > Wi-Fi Settings > Access Point Set., join the hotspot.\n"
+        }
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showSetup = false },
             title = { Text("Set up FTP on the camera") },
             text = {
                 Text(
-                    "1. Turn on your phone's hotspot and this switch.\n" +
-                        "2. Camera: MENU > Network > Wi-Fi Settings > Access Point Set., join the hotspot.\n" +
+                    join +
                         "3. MENU > Network > FTP Transfer Func. > Server Setting > Server 1:\n" +
                         "   Hostname: ${address ?: "(the address shown on the card)"}\n" +
+                        (if (!ownNetwork && ftp.hotspot != null && ftp.wifi != null)
+                            "   (On your home Wi-Fi instead of the hotspot: ${ftp.wifi})\n" else "") +
                         "   Secure Protocol: Off · Port: ${FtpService.PORT}\n" +
                         "   User and password: anything, e.g. a7iii / a7iii\n" +
                         "4. FTP Function: On, Auto FTP Transfer: On, RAW+J Trans. Target: RAW & JPEG.\n\n" +
-                        "The hotspot's address can change when it restarts. If uploads stop, check the card " +
-                        "and update the hostname on the camera.",
+                        (if (ownNetwork) "The network name, password and address stay the same, so this is a one-time setup."
+                        else "The hotspot's address can change when it restarts. If uploads stop, check the card " +
+                            "and update the hostname on the camera."),
                 )
             },
             confirmButton = { TextButton(onClick = { showSetup = false }) { Text("OK") } },

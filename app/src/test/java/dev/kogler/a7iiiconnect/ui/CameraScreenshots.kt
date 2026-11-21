@@ -70,6 +70,14 @@ class CameraScreenshots {
     @Test
     fun firstRun() = shot("camera-3-first-run", state.copy(hasCamera = false, cameraName = "", password = ""))
 
+    @Test
+    fun ftpOwnNetwork() = shot(
+        "camera-5-ftp-network",
+        state.copy(
+            ftp = FtpStatus(running = true, network = "DIRECT-SB-Shootback", networkPassword = "k7mq2xh9pa", networkUp = true),
+        ),
+    )
+
     private fun shot(name: String, s: UiState) {
         compose.setContent { MaterialTheme(colorScheme = darkColorScheme()) { App(s, actions) } }
         compose.waitForIdle()
