@@ -83,6 +83,8 @@ class DevelopActivity : ComponentActivity() {
     private var albumDialog by mutableStateOf<AlbumDialog?>(null)
     /** The album playing as a slideshow, by id. */
     private var slideshow by mutableStateOf<String?>(null)
+    /** Play mode from the overview: its title and the shots on screen when it opened, by key. */
+    private var playingShots by mutableStateOf<Pair<String, List<String>>?>(null)
     /** The album the deck was dealt from: rejecting there takes shots out of it. */
     private var cullAlbum by mutableStateOf<String?>(null)
     /** What each shot taken out in the deck had in the album, for undo. */
@@ -127,6 +129,7 @@ class DevelopActivity : ComponentActivity() {
         albums = albumStore.load()
         openAlbum = savedInstanceState?.getString(KEY_ALBUM)
         slideshow = savedInstanceState?.getString(KEY_SLIDESHOW)
+        playingShots = savedInstanceState?.getStringArrayList(KEY_PLAYING)?.let { (savedInstanceState.getString(KEY_PLAYING_TITLE) ?: "Photos") to it }
         cullAlbum = savedInstanceState?.getString(KEY_CULL_ALBUM)
         saved = SavedFilters.load(this)
         GpsService.resumeIfEnabled(this)
@@ -151,6 +154,7 @@ class DevelopActivity : ComponentActivity() {
                 val deck = culling
                 val compare = comparing
                 val playing = slideshow?.let { id -> albums.find { it.id == id && it.alive } }
+                val playingAll = playingShots
                 val showAlbum = openAlbum?.let { id -> albums.find { it.id == id && it.alive } }
                 val tidying = decluttering
                 when {
@@ -171,9 +175,20 @@ class DevelopActivity : ComponentActivity() {
                             onAddToAlbum = { p -> shots.firstOrNull { it.contains(p.id) }?.let { albumDialog = AlbumDialog.Pick(listOf(it.key)) } },
                         )
                     }
+                    playingAll != null -> {
+                        BackHandler { playingShots = null }
+                        val byKey = shots.associateBy { it.key }
+                        PlayMode(
+                            name = playingAll.first,
+                            shots = playingAll.second.mapNotNull { byKey[it] },
+                            edited = edited,
+                            store = store,
+                            onBack = { playingShots = null },
+                        )
+                    }
                     playing != null -> {
                         BackHandler { slideshow = null }
-                        AlbumSlideshow(
+                        PlayMode(
                             name = playing.name,
                             shots = albumShots(playing),
                             edited = edited,
@@ -259,6 +274,7 @@ class DevelopActivity : ComponentActivity() {
                         sheetOpen = sheetOpen,
                         onSheetOpen = { sheetOpen = it },
                         onCompare = { picked -> comparing = picked.map { it.key } },
+                        onPlay = { title, picked -> playingShots = title to picked.map { it.key } },
                         onMarkShots = { picked, mark -> store.setMarks(picked.map { it.key }, mark); marks = store.marks() },
                         albums = albums.filter { it.alive }.sortedByDescending { it.createdAt },
                         album = showAlbum,
@@ -557,6 +573,10 @@ class DevelopActivity : ComponentActivity() {
         comparing?.let { outState.putStringArrayList(KEY_COMPARING, ArrayList(it)) }
         openAlbum?.let { outState.putString(KEY_ALBUM, it) }
         slideshow?.let { outState.putString(KEY_SLIDESHOW, it) }
+        playingShots?.let { (title, keys) ->
+            outState.putString(KEY_PLAYING_TITLE, title)
+            outState.putStringArrayList(KEY_PLAYING, ArrayList(keys))
+        }
         cullAlbum?.let { outState.putString(KEY_CULL_ALBUM, it) }
     }
 
@@ -619,6 +639,8 @@ class DevelopActivity : ComponentActivity() {
         private const val KEY_COMPARING = "comparing"
         private const val KEY_ALBUM = "album"
         private const val KEY_SLIDESHOW = "slideshow"
+        private const val KEY_PLAYING = "playing"
+        private const val KEY_PLAYING_TITLE = "playing_title"
         private const val KEY_CULL_ALBUM = "cull_album"
 
         fun intent(context: Context, photoId: Long? = null) = Intent(context, DevelopActivity::class.java).apply {

@@ -387,13 +387,17 @@ class EditorScreenshots {
         var open by mutableStateOf<Album?>(null)
         var picking by mutableStateOf<List<String>?>(null)
         var playing by mutableStateOf(false)
+        var playingAll by mutableStateOf<List<Shot>?>(null)
         val store = EditStore(context)
         compose.mainClock.autoAdvance = false
         compose.setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 val a = open?.let { o -> albums.find { it.id == o.id } }
-                if (playing && a != null) {
-                    AlbumSlideshow(a.name, shots.filter { it.key in a }.sortedBy { it.takenMillis }, emptySet(), store, onBack = { playing = false })
+                val all = playingAll
+                if (all != null) {
+                    PlayMode("Photos", all, emptySet(), store, onBack = { playingAll = null })
+                } else if (playing && a != null) {
+                    PlayMode(a.name, shots.filter { it.key in a }.sortedBy { it.takenMillis }, emptySet(), store, onBack = { playing = false })
                 } else {
                     LibraryScreen(
                         shots = shots, edited = emptySet(), marks = emptyMap(), exported = emptySet(),
@@ -402,6 +406,7 @@ class EditorScreenshots {
                         albums = albums, album = a, onOpenAlbum = { open = it },
                         onAddToAlbum = { picked -> picking = picked.map { it.key } },
                         onAlbumAction = { if (it == AlbumAction.SLIDESHOW) playing = true },
+                        onPlay = { _, picked -> playingAll = picked },
                     )
                 }
                 picking?.let { keys ->
@@ -414,6 +419,17 @@ class EditorScreenshots {
         }
         repeat(20) { step() }
         shot("50-library-albums")
+        // Play mode from the overview: full screen, and it stays on the first photo.
+        compose.onNodeWithTag("play").performClick()
+        repeat(30) { step() }
+        shot("49-overview-play")
+        compose.mainClock.advanceTimeBy(10_000)
+        repeat(5) { step() }
+        compose.onNodeWithTag("slideshow").performClick()
+        repeat(10) { step() }
+        compose.onNodeWithText("1 of ${shots.size}").assertExists()
+        compose.onNodeWithTag("slideshow-back").performClick()
+        repeat(10) { step() }
         for (i in 0 until 3) {
             compose.onNodeWithTag("thumb-${shots[i].key}").performTouchInput { longClick() }
             repeat(4) { step() }
