@@ -16,12 +16,16 @@ class RawInfo internal constructor(
     internal val raw: RawIfd?,
     /** The camera's own lens-correction data for the lens used, if it wrote any. */
     val lens: LensData? = null,
-    /** A DNG's own XYZ-to-camera matrix (for D65 when it has one); null means the built-in one for [model]. */
+    /** A DNG's own XYZ-to-camera matrix (mixed for the shot's light); null means the built-in one for [model]. */
     val colorMatrix: DoubleArray? = null,
     /** A DNG's lens shading, to apply to the raw data before anything else. */
     val gainMaps: List<GainMap> = emptyList(),
     /** A DNG's table from stored values to linear ones. */
     val linearization: IntArray? = null,
+    /** How many stops a DNG asks the render to brighten by (phones underexpose to keep highlights). */
+    val baselineExposure: Double = 0.0,
+    /** A DNG's base tone curve (ProfileToneCurve), as x, y pairs from 0 to 1. */
+    val toneCurve: FloatArray? = null,
 ) {
     /** How this camera's colours relate to XYZ. */
     val color: CameraColor get() = colorMatrix?.let { runCatching { CameraColor(it) }.getOrNull() } ?: CameraColor.forCamera(model)
