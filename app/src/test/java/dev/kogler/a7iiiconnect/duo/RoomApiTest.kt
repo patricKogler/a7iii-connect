@@ -27,6 +27,7 @@ class RoomApiTest {
         override fun removeFromAlbum(keys: List<String>, now: Long) { removed += keys; v++ }
         override fun join(guest: String, name: String) { members[guest] = name; v++ }
         override fun photo(key: String, edge: Int) = byteArrayOf(1, 2, 3)
+        override fun download(key: String) = RoomFile("$key.jpg") { byteArrayOf(9, 9).inputStream() }
         override fun version() = v
         override fun page() = "<html>".toByteArray()
         override fun now() = ++clock
@@ -128,6 +129,29 @@ class RoomApiTest {
         } finally {
             server.stop()
         }
+    }
+
+    @Test
+    fun picksAndSaving() {
+        val me = json(post("/api/join", JSONObject().put("name", "Lena"))).getString("me")
+        post("/api/vote", JSONObject().put("k", "k1").put("c", "P"))
+        val s = json(post("/api/vote", JSONObject().put("k", "k2").put("c", "R")))
+        assertEquals(listOf("k1"), (0 until s.getJSONArray("picks").length()).map { s.getJSONArray("picks").getString(it) })
+        assertEquals(3, s.getJSONArray("all").length())
+        assertTrue(me.isNotEmpty())
+
+        val one = get("/api/file?t=tok&k=k1")
+        val out = java.io.ByteArrayOutputStream().also { one.stream!!(it) }
+        assertEquals(2, out.size())
+        assertEquals("k1.jpg", one.filename)
+
+        val zip = get("/api/zip?t=tok&name=Lena&k=k1|k3|nope")
+        assertEquals("Trip - Lena.zip", zip.filename)
+        val bytes = java.io.ByteArrayOutputStream().also { zip.stream!!(it) }.toByteArray()
+        val names = mutableListOf<String>()
+        java.util.zip.ZipInputStream(bytes.inputStream()).use { z -> while (true) { names += (z.nextEntry ?: break).name } }
+        assertEquals(listOf("k1.jpg", "k3.jpg"), names)
+        assertEquals(404, get("/api/zip?t=tok&k=nope").status)
     }
 
     @Test
