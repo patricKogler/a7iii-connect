@@ -17,7 +17,16 @@ class HttpRequest(val method: String, val path: String, val query: Map<String, S
     fun param(name: String) = query[name].orEmpty()
 }
 
-class HttpResponse(val status: Int, val type: String, val body: ByteArray, val cache: Boolean = false) {
+class HttpResponse(
+    val status: Int,
+    val type: String,
+    val body: ByteArray,
+    val cache: Boolean = false,
+    /** Sent as an attachment with this file name (a download), when set. */
+    val filename: String? = null,
+    /** Writes a long body as it goes (a zip of photos) instead of [body]; the end of it is the connection closing. */
+    val stream: ((OutputStream) -> Unit)? = null,
+) {
     companion object {
         fun text(status: Int, text: String) = HttpResponse(status, "text/plain; charset=utf-8", text.toByteArray())
         fun json(text: String) = HttpResponse(200, "application/json; charset=utf-8", text.toByteArray())
@@ -86,12 +95,20 @@ class RoomHttp(private val handler: (HttpRequest) -> HttpResponse) {
         val head = buildString {
             append("HTTP/1.1 ").append(res.status).append(' ').append(reason(res.status)).append("\r\n")
             append("Content-Type: ").append(res.type).append("\r\n")
-            append("Content-Length: ").append(res.body.size).append("\r\n")
+            if (res.stream == null) append("Content-Length: ").append(res.body.size).append("\r\n")
             append("Cache-Control: ").append(if (res.cache) "private, max-age=86400" else "no-store").append("\r\n")
+            res.filename?.let { append("Content-Disposition: attachment; filename=\"").append(it.replace(Regex("[^A-Za-z0-9._, ()-]"), "_")).append("\"\r\n") }
             append("Connection: close\r\n\r\n")
         }
         out.write(head.toByteArray())
-        out.write(res.body)
+        val stream = res.stream
+        if (stream != null) {
+            val buffered = out.buffered(256 * 1024)
+            stream(buffered)
+            buffered.flush()
+        } else {
+            out.write(res.body)
+        }
         out.flush()
     }
 

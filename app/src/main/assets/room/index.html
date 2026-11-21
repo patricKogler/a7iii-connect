@@ -81,6 +81,28 @@
   .toast.show { opacity: 1; transform: translate(-50%, 0); }
   .banner { background: #2a2016; color: #e8c9a0; font-size: 13px; text-align: center; padding: 6px 12px; }
   .hidden { display: none !important; }
+  .tab { font-size: 13px; padding: 4px 11px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); }
+  .tab.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .filters { display: flex; gap: 6px; padding: 12px 14px 8px; overflow-x: auto; }
+  .grid { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+    gap: 3px; padding: 0 3px 3px; align-content: start; -webkit-overflow-scrolling: touch; }
+  .tile { position: relative; aspect-ratio: 1; background: var(--panel); overflow: hidden; }
+  .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .tick { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,.85);
+    background: rgba(0,0,0,.25); display: grid; place-items: center; }
+  .tick svg { width: 14px; height: 14px; opacity: 0; }
+  .tile.sel .tick { background: var(--text); border-color: var(--text); color: var(--bg); }
+  .tile.sel .tick svg { opacity: 1; }
+  .tile.sel img { opacity: .85; }
+  .savebar { padding: 12px 14px 16px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+  .savebar a.primary { text-align: center; text-decoration: none; margin: 0; }
+  .savebar a.primary.off { opacity: .4; pointer-events: none; }
+  .viewer { position: fixed; inset: 0; background: #000; z-index: 10; display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  .viewer .img { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+  .viewer img { max-width: 100%; max-height: 100%; -webkit-touch-callout: default; }
+  .viewer .bar2 { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; gap: 10px; }
+  .viewer .bar2 a, .viewer .bar2 button { color: var(--text); font-size: 14px; text-decoration: none; padding: 6px 4px; }
   .stats { display: flex; gap: 22px; margin: 6px 0 4px; }
   .stats div { display: flex; flex-direction: column; align-items: center; }
   .stats b { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -90,7 +112,7 @@
 <body>
 <div id="banner" class="banner hidden">Can't reach the phone. Trying again…</div>
 <header id="header" class="hidden">
-  <div class="title"><h1 id="album"></h1><span class="count" id="count"></span></div>
+  <div class="title"><h1 id="album"></h1><span class="count" id="count"></span><button class="tab" id="photosBtn">Photos</button></div>
   <div class="people" id="people"></div>
 </header>
 <main id="main"><div class="center"><p>Opening the review…</p></div></main>
@@ -201,6 +223,7 @@
     if (state.gone) { $('header').classList.add('hidden'); return show(el('div', { class: 'center' }, el('h2', {}, 'This album is gone'), el('p', {}, 'It was deleted or is no longer shared.'))); }
     if (!state.me) return joinScreen();
     header();
+    if (view === 'photos') return photosScreen();
     const deck = state.deck.filter(k => !pending.has(k));
     if (deck.length) return deckScreen(deck);
     if (pending.size) return;  // the phone hasn't answered the last swipe yet
@@ -212,7 +235,8 @@
     const lr = state.lastRound;
     if (lr) return show(el('div', { class: 'center' }, el('div', { class: 'seal' }, '済'), el('h2', {}, 'Round sealed'),
       el('div', { class: 'stats' }, stat(lr.kept, 'kept'), stat(lr.out, 'out'), stat(lr.score + '%', 'in sync')),
-      el('p', {}, 'Photos added to the album later start a new round.')));
+      el('p', {}, 'Photos added to the album later start a new round.'),
+      state.picks && state.picks.length ? el('button', { class: 'primary', onclick: () => openPhotos('picks') }, 'Get my photos') : null));
     message('Nothing to review', 'Photos added to the album start a new round.');
   }
 
@@ -220,12 +244,17 @@
 
   function message(title, text, withUndo) {
     const kids = [el('h2', {}, title), el('p', {}, text)];
+    if (state.picks && state.picks.length) kids.push(el('button', { class: 'primary', onclick: () => openPhotos('picks') }, `Get my ${state.picks.length} photo${state.picks.length === 1 ? '' : 's'}`));
     if (withUndo && history.length) kids.push(el('button', { class: 'ghost', onclick: undo }, 'Undo my last call'));
     show(el('div', { class: 'center' }, kids));
   }
 
   function header() {
     $('header').classList.remove('hidden');
+    const b = $('photosBtn');
+    b.classList.toggle('on', view === 'photos');
+    b.textContent = view === 'photos' ? 'Review' : 'Photos';
+    b.onclick = () => view === 'photos' ? closePhotos() : openPhotos('picks');
     $('album').textContent = state.album;
     const mine = state.members.find(m => m.id === state.me);
     $('count').textContent = state.total ? `${mine ? mine.done : 0} of ${state.total}` : '';
@@ -342,8 +371,81 @@
       el('p', {}, 'Seal the round to close it. The photos that are out leave the album for everyone.'), go));
   }
 
+
+  // ---- Photos: pick what to keep on this phone, and save it ----
+  let view = 'review';
+  let filter = 'picks';
+  let selected = new Set();
+  let shownLists = '';
+  const FILTERS = [['picks', 'My picks'], ['keepers', 'Everyone kept'], ['all', 'All']];
+
+  function openPhotos(f) {
+    view = 'photos'; filter = f; selected = new Set(state[f] || []); shownLists = ''; render();
+  }
+  function closePhotos() { view = 'review'; render(); }
+
+  const thumb = k => `/api/photo?t=${encodeURIComponent(T)}&k=${encodeURIComponent(k)}&w=480`;
+  const fileUrl = (k, inline) => `/api/file?t=${encodeURIComponent(T)}&k=${encodeURIComponent(k)}${inline ? '&inline=1' : ''}`;
+  const zipUrl = keys => `/api/zip?t=${encodeURIComponent(T)}&name=${encodeURIComponent((state.members.find(m => m.id === state.me) || {}).name || '')}&k=${keys.map(encodeURIComponent).join('|')}`;
+  const isIos = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  function photosScreen() {
+    const list = state[filter] || [];
+    $('count').textContent = '';
+    // Live updates don't redraw the grid unless its photos changed: the scroll stays put.
+    const lists = JSON.stringify([filter, list]);
+    if (lists === shownLists && document.querySelector('.grid')) return updateSave();
+    shownLists = lists;
+    for (const k of [...selected]) if (!state.all.includes(k)) selected.delete(k);
+    const filters = el('div', { class: 'filters' }, FILTERS.map(([f, label]) =>
+      el('button', { class: 'tab' + (f === filter ? ' on' : ''), onclick: () => openPhotos(f) }, `${label} · ${(state[f] || []).length}`)));
+    const grid = el('div', { class: 'grid' });
+    if (!list.length) grid.append(el('p', { class: 'note', style: 'grid-column:1/-1;padding:30px 10px' },
+      filter === 'picks' ? 'Photos you swipe right on show up here.' : 'Nothing here yet.'));
+    list.forEach((k, i) => {
+      const tick = el('button', { class: 'tick', 'aria-label': 'Pick' }); tick.append(icon(ICON.keep));
+      const tile = el('div', { class: 'tile' + (selected.has(k) ? ' sel' : '') }, el('img', { src: thumb(k), alt: '', loading: 'lazy' }), tick);
+      tick.onclick = e => { e.stopPropagation(); selected.has(k) ? selected.delete(k) : selected.add(k); tile.classList.toggle('sel', selected.has(k)); updateSave(); };
+      tile.onclick = () => viewer(list, i);
+      grid.append(tile);
+    });
+    const save = el('a', { class: 'primary', id: 'saveAll' });
+    const hint = el('p', { class: 'note', style: 'margin:0' }, isIos
+      ? 'The zip goes to Files. Open it there, select the photos and tap Share, Save Images. For a few photos: open one, touch and hold it, Save to Photos.'
+      : 'The photos come as one zip in your downloads.');
+    show(filters, grid, el('div', { class: 'savebar' }, save, hint));
+    updateSave();
+  }
+
+  function updateSave() {
+    const a = $('saveAll'); if (!a) return;
+    const keys = (state.all || []).filter(k => selected.has(k));
+    a.textContent = keys.length ? `Save ${keys.length} photo${keys.length === 1 ? '' : 's'}` : 'Pick photos to save';
+    a.classList.toggle('off', !keys.length);
+    a.href = keys.length ? zipUrl(keys) : '#';
+  }
+
+  function viewer(list, i) {
+    const k = list[i];
+    const img = el('img', { src: fileUrl(k, true), alt: '' });
+    const close = () => v.remove();
+    const go = d => { close(); viewer(list, (i + d + list.length) % list.length); };
+    const pick = el('button', {}, selected.has(k) ? 'Picked ✓' : 'Pick');
+    pick.onclick = () => { selected.has(k) ? selected.delete(k) : selected.add(k); pick.textContent = selected.has(k) ? 'Picked ✓' : 'Pick'; shownLists = ''; };
+    const v = el('div', { class: 'viewer' },
+      el('div', { class: 'bar2' }, el('button', { onclick: () => { close(); render(); } }, 'Done'), el('span', { class: 'note', style: 'margin:0' }, `${i + 1} of ${list.length}`), pick),
+      el('div', { class: 'img' }, img),
+      el('div', { class: 'bar2' }, el('button', { onclick: () => go(-1) }, '← Back'),
+        el('span', { class: 'note', style: 'margin:0' }, isIos ? 'Touch and hold to save' : ''),
+        el('a', { href: fileUrl(k, false) }, 'Download'), el('button', { onclick: () => go(1) }, 'Next →')));
+    let x0 = null;
+    img.addEventListener('touchstart', e => { x0 = e.touches[0].clientX; }, { passive: true });
+    img.addEventListener('touchend', e => { if (x0 == null) return; const dx = e.changedTouches[0].clientX - x0; x0 = null; if (Math.abs(dx) > 60) go(dx < 0 ? 1 : -1); });
+    document.body.append(v);
+  }
+
   addEventListener('keydown', e => {
-    if (!state || !state.me || e.target.tagName === 'INPUT') return;
+    if (!state || !state.me || view !== 'review' || e.target.tagName === 'INPUT') return;
     const deck = (state.deck || []).filter(k => !pending.has(k));
     const card = document.querySelector('.card:not(.behind)');
     if (deck.length && e.key === 'ArrowRight') vote(deck[0], 'P', card);

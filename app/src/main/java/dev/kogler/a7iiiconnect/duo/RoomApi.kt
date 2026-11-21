@@ -19,6 +19,9 @@ data class RoomAlbum(
     val present: Set<String>,
 )
 
+/** A photo to save on a guest's phone: [name] and its bytes. */
+class RoomFile(val name: String, val open: () -> java.io.InputStream)
+
 /** What the review room needs from the phone; [ReviewRoom] is the real one, tests have their own. */
 interface RoomHost {
     /** The album as it is now; null once it's gone. */
@@ -32,6 +35,8 @@ interface RoomHost {
     fun join(guest: String, name: String)
     /** The shot as a JPEG, longer edge about [edge]; null when it can't be read. */
     fun photo(key: String, edge: Int): ByteArray?
+    /** The shot to keep, as the host made it: the edited JPEG when it's edited, full size where it can be. */
+    fun download(key: String): RoomFile?
     /** Goes up whenever the album or its facts change. */
     fun version(): Int
     /** The web page the guests open. */
@@ -51,6 +56,8 @@ interface RoomHost {
  * - `GET /`: the page. `GET /api/state?t&s&v`: the review as this guest sees it; with `v`, waits
  *   (up to [WAIT_MS]) until it changes from that version, so the page is live without polling hard.
  * - `GET /api/photo?t&k&w`: a shot as JPEG, `w` the longer edge.
+ * - `GET /api/file?t&k`: a shot to keep (edited, big); `inline=1` to show it rather than download it.
+ *   `GET /api/zip?t&k=a|b|c&name=`: those shots in one zip, written as they're made.
  * - `POST /api/join {s,name}`, `/api/vote {s,k,c}` (c P, R, M or "" to take it back),
  *   `/api/say {s,k,c}`, `/api/coin {s,k}`, `/api/seal {s}`.
  */
@@ -71,6 +78,8 @@ class RoomApi(private val token: String, private val host: RoomHost, private val
                 state(guestId(secret))
             }
             "GET /api/photo" -> photo(req.param("k"), req.param("w").toIntOrNull() ?: 1600)
+            "GET /api/file" -> file(req.param("k"), inline = req.param("inline") == "1")
+            "GET /api/zip" -> zip(req.param("k").split('|').filter { it.isNotEmpty() }, req.param("name"))
             "POST /api/join" -> join(secret, body!!.optString("name"))
             "POST /api/vote" -> act(secret) { g, a, r ->
                 val key = body!!.optString("k")
@@ -142,6 +151,36 @@ class RoomApi(private val token: String, private val host: RoomHost, private val
         return HttpResponse(200, "image/jpeg", bytes, cache = true)
     }
 
+    private fun file(key: String, inline: Boolean): HttpResponse {
+        val a = host.album() ?: return HttpResponse.text(404, "The album is gone")
+        if (key !in a.keys || key !in a.present) return HttpResponse.text(404, "No such photo")
+        val f = host.download(key) ?: return HttpResponse.text(404, "Can't read that photo")
+        return HttpResponse(200, "image/jpeg", ByteArray(0), filename = f.name.takeIf { !inline }, stream = { out -> f.open().use { it.copyTo(out) } })
+    }
+
+    private fun zip(keys: List<String>, name: String): HttpResponse {
+        val a = host.album() ?: return HttpResponse.text(404, "The album is gone")
+        val wanted = keys.distinct().filter { it in a.keys && it in a.present }
+        if (wanted.isEmpty()) return HttpResponse.text(404, "No photos picked")
+        val zipName = listOf(a.name, name.trim()).filter { it.isNotEmpty() }.joinToString(" - ").take(60) + ".zip"
+        return HttpResponse(200, "application/zip", ByteArray(0), filename = zipName, stream = { out ->
+            val zip = java.util.zip.ZipOutputStream(out)
+            // Photos don't get smaller in a zip; storing them is quicker.
+            zip.setLevel(java.util.zip.Deflater.NO_COMPRESSION)
+            val used = HashSet<String>()
+            for (k in wanted) {
+                val f = host.download(k) ?: continue
+                var entry = f.name
+                var n = 2
+                while (!used.add(entry)) entry = f.name.substringBeforeLast('.') + "-${n++}." + f.name.substringAfterLast('.', "jpg")
+                zip.putNextEntry(java.util.zip.ZipEntry(entry))
+                f.open().use { it.copyTo(zip) }
+                zip.closeEntry()
+            }
+            zip.finish()
+        })
+    }
+
     /** The review as guest [g] sees it (not joined yet: null), as JSON. */
     fun state(g: String?): HttpResponse {
         val version = host.version()
@@ -175,6 +214,11 @@ class RoomApi(private val token: String, private val host: RoomHost, private val
             o.put("kept", open.count { r.outcome(it) == Call.PICK })
             o.put("out", open.count { r.outcome(it) == Call.REJECT })
             o.put("matches", open.count { r.isMatch(it) })
+            // For saving to their phone: what they kept, what everyone kept, and the whole album.
+            val shown = a.keys.filter { it in a.present }
+            o.put("picks", JSONArray(shown.filter { r.vote(me, it) == Call.PICK || r.say(me, it) == Call.PICK }))
+            o.put("keepers", JSONArray(shown.filter { r.outcome(it) == Call.PICK }))
+            o.put("all", JSONArray(shown))
             r.rounds.lastOrNull { it.first == me }?.let { (_, at, t) ->
                 o.put("lastRound", JSONObject().put("at", at).put("kept", t.kept).put("out", t.out).put("score", t.score))
             }
