@@ -150,6 +150,10 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
         <service
+            android:name=".duo.RoomService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+        <service
             android:name=".ftp.FtpService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />

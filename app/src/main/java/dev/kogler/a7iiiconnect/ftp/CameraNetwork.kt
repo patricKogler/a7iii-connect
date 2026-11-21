@@ -123,6 +123,42 @@ class CameraNetwork(
         /** The group owner's address on every Android phone. */
         const val ADDRESS = "192.168.49.1"
 
+        // One network for everyone who needs it (the camera's FTP, the review room): two
+        // CameraNetworks would each tear down the other's group to make their own.
+        private var shared: CameraNetwork? = null
+        private val users = LinkedHashMap<String, (Boolean, String?) -> Unit>()
+        private var lastUp = false
+        private var lastError: String? = null
+
+        /** [who] needs the network: it opens unless it's already open; [onChange] hears how it goes. Main thread. */
+        fun acquire(context: Context, who: String, onChange: (up: Boolean, error: String?) -> Unit) {
+            users[who] = onChange
+            val net = shared
+            // One that failed (no permission yet, Wi-Fi off) gets another go.
+            if (net == null || !lastUp && lastError != null) {
+                net?.stop()
+                lastUp = false
+                lastError = null
+                shared = CameraNetwork(context.applicationContext) { up, error ->
+                    lastUp = up
+                    lastError = error
+                    users.values.toList().forEach { it(up, error) }
+                }.also { it.start() }
+            } else {
+                onChange(lastUp, lastError)
+            }
+        }
+
+        /** [who] is done with the network; it closes once nobody needs it. Main thread. */
+        fun release(who: String) {
+            if (users.remove(who) == null) return
+            if (users.isEmpty()) {
+                shared?.stop()
+                shared = null
+                lastUp = false
+            }
+        }
+
         private const val PREFS = "ftp"
 
         fun hasPermission(context: Context) =
