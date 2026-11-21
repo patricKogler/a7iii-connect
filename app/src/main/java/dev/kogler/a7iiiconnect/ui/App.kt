@@ -449,13 +449,16 @@ private fun UsbCard(onCopy: () -> Unit) {
 @Composable
 private fun FtpCard(ftp: FtpStatus, setFtp: (Boolean) -> Unit) {
     var showSetup by rememberSaveable { mutableStateOf(false) }
-    // The hotspot is a Wi-Fi interface (ap0, swlan0, wlan1 ...); mobile data ones (rmnet) can't be reached.
-    val address = ftp.addresses.firstOrNull { it.contains("(ap") || it.contains("wlan") }?.substringBefore(' ')
+    // The hotspot's address, or the joined Wi-Fi's when the camera shares that network instead.
+    val address = ftp.hotspot ?: ftp.wifi
     val subtitle = when {
         ftp.error != null -> ftp.error
         !ftp.running -> "The camera sends RAW and JPEG as you shoot, over your phone's hotspot"
         address == null -> "Turn on your phone's hotspot so the camera can reach it"
-        ftp.received == 0 -> "Waiting for the camera at $address, port ${FtpService.PORT}"
+        ftp.received == 0 && ftp.hotspot != null ->
+            "Waiting for the camera at ${ftp.hotspot}, port ${FtpService.PORT} (hotspot)"
+        ftp.received == 0 ->
+            "Waiting for the camera at ${ftp.wifi}, port ${FtpService.PORT} (camera must be on the same Wi-Fi)"
         else -> "${ftp.received} files received · last ${ftp.lastFile}"
     }
     Surface(
@@ -487,6 +490,8 @@ private fun FtpCard(ftp: FtpStatus, setFtp: (Boolean) -> Unit) {
                         "2. Camera: MENU > Network > Wi-Fi Settings > Access Point Set., join the hotspot.\n" +
                         "3. MENU > Network > FTP Transfer Func. > Server Setting > Server 1:\n" +
                         "   Hostname: ${address ?: "(the address shown on the card)"}\n" +
+                        (if (ftp.hotspot != null && ftp.wifi != null)
+                            "   (On your home Wi-Fi instead of the hotspot: ${ftp.wifi})\n" else "") +
                         "   Secure Protocol: Off · Port: ${FtpService.PORT}\n" +
                         "   User and password: anything, e.g. a7iii / a7iii\n" +
                         "4. FTP Function: On, Auto FTP Transfer: On, RAW+J Trans. Target: RAW & JPEG.\n\n" +

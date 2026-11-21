@@ -185,7 +185,10 @@ class MainActivity : ComponentActivity() {
         GpsState.observe(gpsListener)
         FtpState.observe(ftpListener)
         // The hotspot may have been switched on (or got a new address) since the server started.
-        if (FtpState.status.running) FtpState.update { it.copy(addresses = FtpService.addresses()) }
+        if (FtpState.status.running) {
+            val (hotspot, wifi) = FtpService.addresses(this)
+            FtpState.update { it.copy(hotspot = hotspot, wifi = wifi) }
+        }
     }
 
     override fun onStop() {

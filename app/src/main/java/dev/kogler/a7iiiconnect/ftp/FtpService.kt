@@ -9,6 +9,8 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Environment
@@ -26,8 +28,10 @@ import java.net.NetworkInterface
 
 data class FtpStatus(
     val running: Boolean = false,
-    /** The phone's IPv4 addresses with their interface, e.g. "10.12.5.1 (ap0)". */
-    val addresses: List<String> = emptyList(),
+    /** The phone's address on its own hotspot, where the camera usually connects. */
+    val hotspot: String? = null,
+    /** The phone's address on the Wi-Fi it has joined, for a camera on that same network. */
+    val wifi: String? = null,
     val received: Int = 0,
     val lastFile: String? = null,
     val error: String? = null,
@@ -82,7 +86,9 @@ class FtpService : Service() {
         try {
             ftp.start()
             server = ftp
-            FtpState.update { it.copy(running = true, addresses = addresses(), error = null) }
+            val (hotspot, wifi) = addresses(this)
+            SyncState.log("FTP: hotspot address ${hotspot ?: "none"}, Wi-Fi address ${wifi ?: "none"}")
+            FtpState.update { it.copy(running = true, hotspot = hotspot, wifi = wifi, error = null) }
             FtpTile.refresh(this)
         } catch (e: Exception) {
             SyncState.log("FTP: can't start: $e")
@@ -151,15 +157,41 @@ class FtpService : Service() {
             context.stopService(Intent(context, FtpService::class.java))
         }
 
-        /** Every IPv4 address the camera could reach; with the hotspot on it's usually on ap0 or swlan0. */
-        fun addresses(): List<String> = runCatching {
-            NetworkInterface.getNetworkInterfaces().toList()
-                .filter { it.isUp && !it.isLoopback }
-                .flatMap { nif ->
-                    nif.inetAddresses.toList().filterIsInstance<Inet4Address>().map { "${it.hostAddress} (${nif.name})" }
-                }
-        }.getOrDefault(emptyList())
-    }
+        /**
+         * The phone's (hotspot, Wi-Fi) IPv4 addresses. Hotspot interfaces are named differently per
+         * phone (ap0, swlan0, or wlan1 on a Pixel 8a, next to wlan0 for the Wi-Fi it has joined), so
+         * the hotspot is the Wi-Fi-like interface that isn't the joined network.
+         */
+        fun addresses(context: Context): Pair<String?, String?> {
+            val all = runCatching {
+                NetworkInterface.getNetworkInterfaces().toList()
+                    .filter { it.isUp && !it.isLoopback }
+                    .flatMap { nif ->
+                        nif.inetAddresses.toList().filterIsInstance<Inet4Address>().map { nif.name to it.hostAddress!! }
+                    }
+            }.getOrDefault(emptyList())
+            return pickAddresses(all, stationInterfaces(context))
+        }
+
+        /** Interfaces of the Wi-Fi networks the phone has joined as a client. */
+        private fun stationInterfaces(context: Context): Set<String> = runCatching {
+            val cm = context.getSystemService(ConnectivityManager::class.java)
+            @Suppress("DEPRECATION")
+            cm.allNetworks.filter { cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
+                .mapNotNull { cm.getLinkProperties(it)?.interfaceName }
+                .toSet()
+        }.getOrDefault(emptySet())
+
+        /** [all] is (interface, IPv4) pairs; [station] the joined Wi-Fi's interfaces. */
+        fun pickAddresses(all: List<Pair<String, String>>, station: Set<String>): Pair<String?, String?> {
+            fun wifiLike(name: String) = name.startsWith("wlan") || name.startsWith("swlan") || name.startsWith("ap")
+            val wifi = all.firstOrNull { it.first in station }?.second
+            val hotspot = all.filter { wifiLike(it.first) && it.first !in station }
+                // Without a reading of the joined network, wlan0 is the client side on every phone we know.
+                .filter { station.isNotEmpty() || it.first != "wlan0" }
+                .minByOrNull { if (it.first.startsWith("ap") || it.first.startsWith("swlan")) 0 else 1 }?.second
+            return hotspot to (wifi ?: all.firstOrNull { it.first == "wlan0" && hotspot != it.second }?.second)
+        }
 }
 
 /** Stores uploads in Pictures/A7III Connect (photos) or Movies/A7III Connect (clips). */
