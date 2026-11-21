@@ -67,6 +67,14 @@ class DevelopActivity : ComponentActivity() {
     /** The keys of the shots picked in the library to compare head to head, while that's open. */
     private var comparing by mutableStateOf<List<String>?>(null)
     private var deleting = emptyList<Shot>()
+    /** What to do once Android has trashed [deleting]. */
+    private var afterDelete: (() -> Unit)? = null
+    private lateinit var noteStore: NoteStore
+    /** Shots marked as notes, by file key (see [NoteStore]). */
+    private var notes by mutableStateOf(emptyMap<String, Long>())
+    private var lastDeclutter by mutableStateOf(0L)
+    /** The notes being cleared out, and the ones chosen for the trash at the start, while that's open. */
+    private var decluttering by mutableStateOf<Pair<List<String>, Set<String>>?>(null)
     private lateinit var albumStore: AlbumStore
     /** Every album, deleted ones included (kept for comparing with another phone). */
     private var albums by mutableStateOf(emptyList<Album>())
@@ -99,16 +107,22 @@ class DevelopActivity : ComponentActivity() {
     private val deleteRequest = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
             store.forget(deleting)
-            culling = null
+            // Notes whose every file went are forgotten; a note that lost only its RAW stays one.
+            notes = noteStore.forget(deleting.flatMap { shot -> shot.files.map { it.key } } - shotsKeptAfter(deleting))
+            afterDelete?.invoke()
             lifecycleScope.launch { reload() }
         }
         deleting = emptyList()
+        afterDelete = null
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         super.onCreate(savedInstanceState)
         store = EditStore(this)
+        noteStore = NoteStore(this)
+        notes = noteStore.load()
+        lastDeclutter = noteStore.lastDeclutter
         albumStore = AlbumStore(this)
         albums = albumStore.load()
         openAlbum = savedInstanceState?.getString(KEY_ALBUM)
@@ -138,6 +152,7 @@ class DevelopActivity : ComponentActivity() {
                 val compare = comparing
                 val playing = slideshow?.let { id -> albums.find { it.id == id && it.alive } }
                 val showAlbum = openAlbum?.let { id -> albums.find { it.id == id && it.alive } }
+                val tidying = decluttering
                 when {
                     current != null && index >= 0 -> {
                         BackHandler { closeEditor() }
@@ -166,6 +181,16 @@ class DevelopActivity : ComponentActivity() {
                             onBack = { slideshow = null },
                         )
                     }
+                    tidying != null -> {
+                        BackHandler { finishDeclutter() }
+                        val byKey = shots.associateBy { it.key }
+                        NotesDeclutter(
+                            shots = tidying.first.mapNotNull { byKey[it] },
+                            preselected = tidying.second,
+                            onTrash = { picked -> trash(picked) { finishDeclutter() } },
+                            onDone = { finishDeclutter() },
+                        )
+                    }
                     deck != null -> {
                         BackHandler { culling = null }
                         val byKey = shots.associateBy { it.key }
@@ -174,9 +199,11 @@ class DevelopActivity : ComponentActivity() {
                             title = deck.first,
                             marks = marks,
                             onMark = { shot, mark -> store.setMark(shot.key, mark); marks = store.marks() },
-                            rejectedCount = shots.count { marks[it.key]?.rejected == true },
+                            rejectedCount = shots.count { marks[it.key]?.rejected == true && !Notes.isNote(it, notes) },
                             onDeleteRejected = { deleteRejected() },
                             onBack = { culling = null },
+                            onNote = if (cullAlbum != null) null else { picked, on -> setNotes(picked, on) },
+                            spareRaws = Notes.spareRaws(shots, notes).size,
                             onAddToAlbum = { picked -> albumDialog = AlbumDialog.Pick(picked.map { it.key }) },
                             takeOut = cullAlbum?.takeIf { id -> albums.any { it.id == id && it.alive } }?.let { id ->
                                 { shot, out -> takeOut(id, shot.key, out) }
@@ -242,6 +269,12 @@ class DevelopActivity : ComponentActivity() {
                             showAlbum?.let { a -> changeAlbum(a.id) { Albums.remove(it, picked.map { s -> s.key }, System.currentTimeMillis()) } }
                         },
                         me = albumStore.phoneId,
+                        notes = notes,
+                        onNote = { picked, on -> setNotes(picked, on) },
+                        spareRaws = Notes.spareRaws(shots, notes).size,
+                        declutterDue = Notes.declutterDue(shots, notes, lastDeclutter, System.currentTimeMillis()),
+                        onDeclutter = { onlyOld -> openDeclutter(onlyOld) },
+                        onDeclutterLater = { putOffDeclutter() },
                         onHide = { picked ->
                             PhoneCamera.hide(this, picked.flatMap { shot -> shot.files.map { it.key } })
                             android.widget.Toast.makeText(this, if (picked.size == 1) "Hidden from Shootback" else "${picked.size} hidden from Shootback", android.widget.Toast.LENGTH_SHORT).show()
@@ -456,16 +489,62 @@ class DevelopActivity : ComponentActivity() {
     }
 
     /**
-     * Moves every rejected shot (RAW and JPEG) to the system trash, after Android's one
-     * confirmation for the whole batch. Trashed files can be restored for 30 days.
+     * Moves every rejected shot (RAW and JPEG) to the system trash, and the RAWs of notes (which
+     * keep their JPEG), after Android's one confirmation for the whole batch. Trashed files can
+     * be restored for 30 days.
      */
     private fun deleteRejected() {
-        val rejected = shots.filter { marks[it.key]?.rejected == true }
-        if (rejected.isEmpty()) return
-        deleting = rejected
-        val uris = rejected.flatMap { shot -> shot.files.map { it.uri } }
+        val rejected = shots.filter { marks[it.key]?.rejected == true && !Notes.isNote(it, notes) }
+        // Just the RAW half of each note: what's trashed is what [deleting] lists.
+        val spare = Notes.spareRaws(shots, notes).map { Shot(it, null) }
+        trash(rejected + spare) { culling = null }
+    }
+
+    /** Asks Android to trash [picked] (every file of each), then runs [then]. */
+    private fun trash(picked: List<Shot>, then: () -> Unit) {
+        if (picked.isEmpty()) return
+        deleting = picked
+        afterDelete = then
+        val uris = picked.flatMap { shot -> shot.files.map { it.uri } }
         val pending = MediaStore.createTrashRequest(contentResolver, uris, true)
         deleteRequest.launch(IntentSenderRequest.Builder(pending.intentSender).build())
+    }
+
+    /** The keys of files still in the library once [gone] is trashed (a note's JPEG after its RAW). */
+    private fun shotsKeptAfter(gone: List<Shot>): Set<String> {
+        val goneIds = gone.flatMap { shot -> shot.files.map { it.id } }.toSet()
+        return shots.flatMap { it.files }.filter { it.id !in goneIds }.map { it.key }.toSet()
+    }
+
+    /** Makes [picked] notes (out of Review, flags cleared) or photos again. */
+    private fun setNotes(picked: List<Shot>, on: Boolean) {
+        if (on) {
+            store.setMarks(picked.map { it.key }, null)
+            marks = store.marks()
+            // The first note starts the monthly clock.
+            if (notes.isEmpty() && lastDeclutter == 0L) { lastDeclutter = System.currentTimeMillis(); noteStore.lastDeclutter = lastDeclutter }
+        }
+        notes = noteStore.set(picked, on)
+    }
+
+    /** Clearing out notes: the old ones ([onlyOld], from the monthly card) or all, old ones chosen. */
+    private fun openDeclutter(onlyOld: Boolean) {
+        val now = System.currentTimeMillis()
+        val old = Notes.old(shots, notes, now)
+        val list = if (onlyOld) old else shots.filter { Notes.isNote(it, notes) }.sortedBy { it.takenMillis }
+        if (list.isEmpty()) return
+        decluttering = list.map { it.key } to old.map { it.key }.toSet()
+    }
+
+    /** Done (or put off) for this month. */
+    private fun putOffDeclutter() {
+        lastDeclutter = System.currentTimeMillis()
+        noteStore.lastDeclutter = lastDeclutter
+    }
+
+    private fun finishDeclutter() {
+        putOffDeclutter()
+        decluttering = null
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
