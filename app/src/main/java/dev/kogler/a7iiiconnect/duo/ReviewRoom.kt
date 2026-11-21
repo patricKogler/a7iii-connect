@@ -9,12 +9,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.kogler.a7iiiconnect.SyncState
+import android.net.Uri
 import dev.kogler.a7iiiconnect.develop.AlbumStore
+import dev.kogler.a7iiiconnect.develop.EditStore
+import dev.kogler.a7iiiconnect.develop.ExportOptions
 import dev.kogler.a7iiiconnect.develop.Albums
 import dev.kogler.a7iiiconnect.develop.Library
 import dev.kogler.a7iiiconnect.develop.Photos
 import dev.kogler.a7iiiconnect.develop.Shot
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.security.SecureRandom
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -31,6 +35,8 @@ import kotlin.random.asKotlinRandom
  */
 object ReviewRoom {
     const val PORT = 47850
+    /** Longer edge of the photos guests save: big enough for any phone, quick enough to render. */
+    private const val DOWNLOAD_EDGE = 3000
 
     /** The album whose room is open, or null. */
     var album by mutableStateOf<String?>(null); private set
@@ -178,6 +184,37 @@ object ReviewRoom {
             bmp.recycle()
             photos.put(id, bytes)
             return bytes
+        }
+
+        /**
+         * The shot as the host made it, for a guest to keep: the camera's JPEG as it is when
+         * nothing was edited, otherwise rendered with the edit (a RAW without a JPEG too, so it
+         * gets the Shootback look rather than the camera's small preview). Rendered ones are kept
+         * in the cache, under the edit, so asking again (one by one, then the zip) is quick.
+         */
+        override fun download(key: String): RoomFile? {
+            val shot = shots()[key] ?: return null
+            val photo = shot.primary
+            val settings = EditStore(app).load(photo)
+            val jpeg = shot.jpeg
+            if (settings.isDefault && jpeg != null) {
+                return RoomFile(jpeg.name) { app.contentResolver.openInputStream(jpeg.uri) ?: throw java.io.IOException("Can't read ${jpeg.name}") }
+            }
+            val dir = File(app.cacheDir, "room-files").apply { mkdirs() }
+            val name = photo.stem + (if (settings.isDefault) "" else "-edit") + ".jpg"
+            val cached = File(dir, java.security.MessageDigest.getInstance("SHA-1").digest("$key\u0000${settings.encode()}".toByteArray()).joinToString("") { "%02x".format(it) } + ".jpg")
+            if (!cached.exists()) synchronized(this) {
+                if (cached.exists()) return@synchronized
+                val bmp = Photos.render(app, Photos.open(app, photo), settings, ExportOptions(maxEdge = DOWNLOAD_EDGE, quality = 90))
+                val tmp = File(dir, cached.name + ".tmp")
+                tmp.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+                bmp.recycle()
+                runCatching { Photos.copyExif(app, photo.uri, Uri.fromFile(tmp)) }
+                tmp.renameTo(cached)
+                // Only the last few dozen stay: the cache is for a day's picks, not the library.
+                dir.listFiles { f -> f.name.endsWith(".jpg") }?.sortedByDescending { it.lastModified() }?.drop(80)?.forEach { it.delete() }
+            }
+            return RoomFile(name) { cached.inputStream() }
         }
 
         override fun page(): ByteArray = app.assets.open("room/index.html").use { it.readBytes() }
