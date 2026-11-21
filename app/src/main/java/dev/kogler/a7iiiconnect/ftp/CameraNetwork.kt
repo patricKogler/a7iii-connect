@@ -8,7 +8,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.wifi.p2p.WifiP2pConfig
-import android.net.wifi.p2p.WifiP2pGroup
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.Handler
 import android.os.Looper
@@ -22,7 +21,8 @@ import java.security.SecureRandom
  * same, so the camera is set up once. The phone keeps its own Wi-Fi and mobile data.
  *
  * Android drops a group a few seconds after its last client leaves, so while running this
- * puts it back whenever it goes away.
+ * puts it back whenever it is really gone (checked with requestGroupInfo, not taken from a
+ * broadcast, which would tear down a group that is up).
  */
 class CameraNetwork(
     private val context: Context,
@@ -35,21 +35,17 @@ class CameraNetwork(
     private var creating = false
     private var failures = 0
 
+    private var up = false
+    private var lastClients: String? = null
+    private val check = Runnable { verify() }
+
+    // Connection broadcasts come in bursts, and right after createGroup one still says "no group"
+    // (an echo of the old state). So a broadcast only schedules a look at the real group.
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
             if (!running) return
-            @Suppress("DEPRECATION")
-            val group = intent.getParcelableExtra<WifiP2pGroup>(WifiP2pManager.EXTRA_WIFI_P2P_GROUP)
-            if (group?.isGroupOwner == true) {
-                failures = 0
-                val clients = group.clientList.joinToString { it.deviceAddress }
-                SyncState.log("FTP network: up on ${group.`interface`}, clients: ${clients.ifEmpty { "none" }}")
-                onChange(true, null)
-            } else if (!creating) {
-                SyncState.log("FTP network: gone, starting it again")
-                onChange(false, null)
-                main.postDelayed({ create() }, 2_000)
-            }
+            main.removeCallbacks(check)
+            main.postDelayed(check, 1_500)
         }
     }
 
@@ -60,7 +56,8 @@ class CameraNetwork(
         running = true
         channel = manager.initialize(context, Looper.getMainLooper()) { channel = null }
         context.registerReceiver(receiver, IntentFilter(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION))
-        create()
+        // Reuse our group if it is still up from before; verify() creates it otherwise.
+        verify()
     }
 
     fun stop() {
@@ -71,11 +68,38 @@ class CameraNetwork(
         channel?.let { ch -> manager?.removeGroup(ch, null) }
         channel?.close()
         channel = null
+        up = false
         onChange(false, null)
     }
 
+    /** Looks at the group that is really there, and creates ours only if it is missing. */
     @SuppressLint("MissingPermission")
-    private fun create() {
+    private fun verify() {
+        val ch = channel ?: return
+        if (!running || creating) return
+        manager!!.requestGroupInfo(ch) { group ->
+            if (!running || creating) return@requestGroupInfo
+            if (group != null && group.isGroupOwner && group.networkName == ssid(context)) {
+                failures = 0
+                val clients = group.clientList.joinToString { it.deviceAddress }.ifEmpty { "none" }
+                if (!up || clients != lastClients) {
+                    SyncState.log("FTP network: up on ${group.`interface`}, clients: $clients")
+                }
+                up = true
+                lastClients = clients
+                onChange(true, null)
+            } else {
+                if (up) SyncState.log("FTP network: gone, starting it again")
+                up = false
+                lastClients = null
+                onChange(false, null)
+                create(removeFirst = group != null)
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun create(removeFirst: Boolean) {
         val ch = channel ?: return
         if (!running || creating) return
         creating = true
@@ -85,7 +109,8 @@ class CameraNetwork(
             // The A7 III only does 2.4 GHz.
             .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_2GHZ)
             .build()
-        // A group left over from before (ours or another app's) would make createGroup fail as busy.
+        if (!removeFirst) return createNow(ch, config)
+        // Some other group (another app's, or ours with old settings) holds Wi-Fi Direct.
         manager!!.removeGroup(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() = createNow(ch, config)
             override fun onFailure(reason: Int) = createNow(ch, config)
@@ -96,8 +121,9 @@ class CameraNetwork(
     private fun createNow(ch: WifiP2pManager.Channel, config: WifiP2pConfig) {
         manager!!.createGroup(ch, config, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
-                creating = false
                 SyncState.log("FTP network: created ${config.networkName}")
+                // Let the group settle before the next look at it.
+                main.postDelayed({ creating = false; main.removeCallbacks(check); main.postDelayed(check, 1_000) }, 2_000)
             }
 
             override fun onFailure(reason: Int) {
@@ -111,7 +137,7 @@ class CameraNetwork(
                 SyncState.log("FTP network: can't create ($why), attempt $failures")
                 if (!running) return
                 if (failures < 5) {
-                    main.postDelayed({ create() }, 3_000L * failures)
+                    main.postDelayed({ create(removeFirst = reason == WifiP2pManager.BUSY) }, 3_000L * failures)
                 } else {
                     onChange(false, "Couldn't open the camera network: $why. Is Wi-Fi on?")
                 }
