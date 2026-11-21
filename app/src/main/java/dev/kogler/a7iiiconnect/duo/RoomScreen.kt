@@ -104,10 +104,6 @@ internal fun RoomScreen(room: Room, onBack: () -> Unit) {
         }
     }
     val (hotspot, wifi) = addresses
-    LaunchedEffect(wifi, hotspot) {
-        // Nowhere to reach this phone but its own network: use that.
-        if (wifi == null && hotspot == null && !ReviewRoom.ownNetwork && ReviewRoom.album != null) ReviewRoom.useOwnNetwork(context, true)
-    }
     val own = ReviewRoom.ownNetwork
     val address = if (own) CameraNetwork.ADDRESS else wifi ?: hotspot
     val link = address?.let { ReviewRoom.link(it) }
@@ -117,7 +113,7 @@ internal fun RoomScreen(room: Room, onBack: () -> Unit) {
         ReviewRoom.error?.let { Text(it, color = Pink, modifier = Modifier.padding(vertical = 8.dp)) }
         Spacer(Modifier.height(8.dp))
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Panel).padding(4.dp)) {
-            Segment("This Wi-Fi", !own, Modifier.weight(1f)) { ReviewRoom.useOwnNetwork(context, false) }
+            Segment("Wi-Fi or hotspot", !own, Modifier.weight(1f)) { ReviewRoom.useOwnNetwork(context, false) }
             Segment("Shootback network", own, Modifier.weight(1f)) { ReviewRoom.useOwnNetwork(context, true) }
         }
         Spacer(Modifier.height(20.dp))
@@ -135,10 +131,20 @@ internal fun RoomScreen(room: Room, onBack: () -> Unit) {
                 color = if (ReviewRoom.networkError != null) Pink else Dim, fontSize = 13.sp,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp), textAlign = TextAlign.Center,
             )
+            Spacer(Modifier.height(16.dp))
+            Hint(
+                "Android phones: mobile data off",
+                "This network has no internet, so Android sends the page over mobile data and it never loads. " +
+                    "Guests with Android turn mobile data off while they review; iPhones are fine. " +
+                    "Or turn on this phone's hotspot and use Wi-Fi or hotspot: then nobody has to change anything.",
+                action = "Hotspot settings",
+            ) { openHotspotSettings(context) }
             Spacer(Modifier.height(24.dp))
             Step(2, "Open the review", "Then scan this one and open the link.")
-        } else {
-            Step(null, "Scan to join", "Everyone needs to be on the same Wi-Fi as this phone${if (wifi == null && hotspot != null) " (its hotspot)" else ""}.")
+        } else if (wifi == null && hotspot != null) {
+            Step(null, "Scan to join", "Guests join this phone's hotspot first (its settings show a QR code for that), then scan this.")
+        } else if (wifi != null) {
+            Step(null, "Scan to join", "Everyone needs to be on the same Wi-Fi as this phone.")
         }
         if (link != null) {
             Qr(link)
@@ -150,7 +156,12 @@ internal fun RoomScreen(room: Room, onBack: () -> Unit) {
                 }) { Text("Send the link") }
             }
         } else {
-            Text("This phone isn't on Wi-Fi. Use Shootback's network instead.", color = Dim, modifier = Modifier.padding(vertical = 24.dp))
+            Hint(
+                "This phone isn't on Wi-Fi",
+                "Turn on its hotspot and have the others join it: they keep their internet and the page loads for everyone. " +
+                    "Or use Shootback's network, where Android guests have to turn off mobile data.",
+                action = "Hotspot settings",
+            ) { openHotspotSettings(context) }
         }
 
         Spacer(Modifier.height(16.dp))
@@ -173,6 +184,24 @@ internal fun RoomScreen(room: Room, onBack: () -> Unit) {
             "Guests stay in the album: their votes count in this review and the next ones, and go to the other phones like yours do.",
             color = Dim, fontSize = 12.sp, modifier = Modifier.padding(vertical = 12.dp),
         )
+    }
+}
+
+@Composable
+private fun Hint(title: String, text: String, action: String, onAction: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Panel).padding(14.dp)) {
+        Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(text, color = Dim, fontSize = 13.sp)
+        TextButton(onClick = onAction, modifier = Modifier.padding(top = 2.dp)) { Text(action) }
+    }
+}
+
+/** The hotspot settings, where they are on most phones; the network settings otherwise. */
+private fun openHotspotSettings(context: android.content.Context) {
+    val tether = Intent().setClassName("com.android.settings", "com.android.settings.TetherSettings").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { context.startActivity(tether) }.onFailure {
+        runCatching { context.startActivity(Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
     }
 }
 
