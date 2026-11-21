@@ -1,5 +1,8 @@
 package dev.kogler.a7iiiconnect.develop
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -24,10 +27,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PhotoAlbum
 import androidx.compose.material.icons.rounded.PhotoLibrary
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -55,10 +56,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -175,12 +180,13 @@ fun AlbumShareProgress(done: Int, total: Int) {
 }
 
 /**
- * The album full screen, one shot after another: edited shots as developed, the rest as the
- * camera's JPEG. Swipe to move on yourself; tap pauses and resumes.
+ * Play mode: the shots full screen, one after another, edited shots as developed and the rest as
+ * the camera's JPEG. It never moves on by itself: swipe to go to the next one. A tap shows or
+ * hides the bar with the title and back.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun AlbumSlideshow(
+fun PlayMode(
     name: String,
     shots: List<Shot>,
     edited: Set<String>,
@@ -188,53 +194,48 @@ fun AlbumSlideshow(
     onBack: () -> Unit,
 ) {
     val pager = rememberPagerState { shots.size }
-    var playing by remember { mutableStateOf(true) }
     var chrome by remember { mutableStateOf(true) }
     val view = LocalView.current
-    DisposableEffect(Unit) {
+    val orientation = LocalConfiguration.current.orientation
+    // Just the photos: the screen stays on and the system bars step aside (a swipe from the edge
+    // brings them back for a moment).
+    DisposableEffect(orientation) {
         view.keepScreenOn = true
-        onDispose { view.keepScreenOn = false }
+        val bars = view.context.findActivity()?.window?.let { WindowCompat.getInsetsController(it, view) }
+        bars?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        bars?.hide(WindowInsetsCompat.Type.systemBars())
+        onDispose {
+            view.keepScreenOn = false
+            bars?.show(WindowInsetsCompat.Type.systemBars())
+        }
     }
-    LaunchedEffect(playing, pager.currentPage, shots.size) {
-        if (!playing || shots.size < 2) return@LaunchedEffect
-        delay(SLIDE_MS)
-        pager.animateScrollToPage((pager.currentPage + 1) % shots.size)
-    }
-    LaunchedEffect(chrome, playing) {
-        // The controls fade away while it plays.
-        if (chrome && playing) { delay(2500); chrome = false }
+    LaunchedEffect(chrome) {
+        // The bar steps aside on its own after a moment; the photos never do.
+        if (chrome) { delay(2500); chrome = false }
     }
     Box(Modifier.fillMaxSize().background(Color.Black).testTag("slideshow")) {
         HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1, key = { shots[it].key }) { page ->
             val shot = shots[page]
-            Box(Modifier.fillMaxSize().clickable { playing = !playing; chrome = true }, contentAlignment = Alignment.Center) {
+            Box(
+                Modifier.fillMaxSize().clickable(interactionSource = null, indication = null) { chrome = !chrome },
+                contentAlignment = Alignment.Center,
+            ) {
                 val image = rememberSlide(shot, shot.key in edited, store)
                 if (image != null) Image(image, shot.primary.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
                 else CircularProgressIndicator(color = Color.White.copy(alpha = 0.6f))
             }
         }
-        if (chrome || !playing) {
+        AnimatedVisibility(chrome, enter = fadeIn(), exit = fadeOut()) {
             Row(
                 Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.4f)).statusBarsPadding().padding(horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = Color.White) }
+                IconButton(onClick = onBack, modifier = Modifier.testTag("slideshow-back")) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = Color.White)
+                }
                 Column(Modifier.weight(1f)) {
-                    Text(name, color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    Text(name, color = Color.White, style = MaterialTheme.typography.titleMedium, maxLines = 1)
                     Text("${pager.currentPage + 1} of ${shots.size}", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodySmall)
-                }
-                IconButton(onClick = { playing = !playing; chrome = true }, modifier = Modifier.testTag("slideshow-play")) {
-                    Icon(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "Pause" else "Play", tint = Color.White)
-                }
-            }
-            if (!playing) {
-                Row(
-                    Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 24.dp)
-                        .background(Color.Black.copy(alpha = 0.5f), MaterialTheme.shapes.small).padding(horizontal = 12.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Paused · tap to play", color = Color.White, style = MaterialTheme.typography.labelLarge)
                 }
             }
         }
@@ -262,5 +263,4 @@ private fun rememberSlide(shot: Shot, edited: Boolean, store: EditStore): ImageB
     return image
 }
 
-private const val SLIDE_MS = 4000L
 private const val SLIDE_EDGE = 2048

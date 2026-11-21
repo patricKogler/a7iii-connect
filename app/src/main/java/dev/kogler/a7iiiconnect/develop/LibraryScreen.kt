@@ -201,6 +201,8 @@ fun LibraryScreen(
     sheetOpen: Boolean = false,
     onSheetOpen: (Boolean) -> Unit = {},
     onCompare: (List<Shot>) -> Unit = {},
+    /** Play mode: the shots on screen full screen, to swipe through. */
+    onPlay: (title: String, shots: List<Shot>) -> Unit = { _, _ -> },
     /** Flag the selected shots: pick, reject, or null to put them back to review. */
     onMarkShots: (List<Shot>, Mark?) -> Unit = { _, _ -> },
     /** Albums to show as chips (not the deleted ones), and the one open, if any. */
@@ -382,7 +384,7 @@ fun LibraryScreen(
                             Icon(Icons.Rounded.People, if (album.shared && album.members.size > 1) "Together with ${album.members.filterKeys { it != me }.values.joinToString(", ")}" else "Share with someone")
                         }
                         IconButton(onClick = { onAlbumAction(AlbumAction.SLIDESHOW) }, enabled = shown.isNotEmpty(), modifier = Modifier.testTag("album-slideshow")) {
-                            Icon(Icons.Rounded.PlayArrow, "Slideshow")
+                            Icon(Icons.Rounded.PlayArrow, "Play mode")
                         }
                         IconButton(onClick = { onAlbumAction(AlbumAction.SHARE) }, enabled = shown.isNotEmpty(), modifier = Modifier.testTag("album-share")) {
                             Icon(Icons.Rounded.IosShare, "Send to an app")
@@ -411,6 +413,13 @@ fun LibraryScreen(
                                 Spacer(Modifier.width(6.dp))
                                 Text("Review ${due.size}")
                             }
+                        }
+                        IconButton(
+                            onClick = { onPlay(if (filter == QuickFilter.ALL) "Photos" else filter.label, scope) },
+                            enabled = scope.isNotEmpty(),
+                            modifier = Modifier.testTag("play"),
+                        ) {
+                            Icon(Icons.Rounded.PlayArrow, "Play mode")
                         }
                         IconButton(onClick = { searching = true }, modifier = Modifier.testTag("search")) {
                             Icon(Icons.Rounded.Search, "Search")
