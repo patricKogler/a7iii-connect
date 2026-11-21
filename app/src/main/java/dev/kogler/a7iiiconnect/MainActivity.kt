@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.activity.result.contract.ActivityResultContracts
 import dev.kogler.a7iiiconnect.develop.DevelopActivity
+import dev.kogler.a7iiiconnect.ftp.CameraNetwork
 import dev.kogler.a7iiiconnect.ftp.FtpService
 import dev.kogler.a7iiiconnect.ftp.FtpState
 import dev.kogler.a7iiiconnect.ftp.FtpStatus
@@ -46,6 +47,7 @@ class MainActivity : ComponentActivity() {
     private var pairer: CameraPairing? = null
     private val gpsListener: (GpsStatus) -> Unit = { gps = it }
     private var ftp by mutableStateOf(FtpStatus())
+    private var ftpOwnNetwork by mutableStateOf(true)
     private val ftpListener: (FtpStatus) -> Unit = { ftp = it }
     private var afterPermissions: (() -> Unit)? = null
 
@@ -54,6 +56,19 @@ class MainActivity : ComponentActivity() {
         afterPermissions = null
         if (result.values.all { it }) next?.invoke()
         else pairing = CameraPairing.State.Failed("Location and nearby-devices permissions are needed for this")
+    }
+
+    // The camera network works without it too (it falls back to the hotspot's address), so start either way.
+    private val nearbyPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        FtpService.start(this)
+    }
+
+    private fun startFtp() {
+        if (CameraNetwork.enabled(this) && !CameraNetwork.hasPermission(this)) {
+            nearbyPermission.launch(Manifest.permission.NEARBY_WIFI_DEVICES)
+        } else {
+            FtpService.start(this)
+        }
     }
 
     /** Runs [block] once Bluetooth and location permissions are granted. */
@@ -113,6 +128,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         super.onCreate(savedInstanceState)
         store = Store(this)
+        ftpOwnNetwork = CameraNetwork.enabled(this)
         refreshStore()
         val nfcAvailable = NfcAdapter.getDefaultAdapter(this) != null
         val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "?"
@@ -138,7 +154,12 @@ class MainActivity : ComponentActivity() {
             startPairing = { startPairing() },
             repairGps = { showPairIntro = true },
             openRemote = { startActivity(Intent(this, dev.kogler.a7iiiconnect.remote.RemoteActivity::class.java)) },
-            setFtp = { on -> if (on) FtpService.start(this) else FtpService.stop(this) },
+            setFtp = { on -> if (on) startFtp() else FtpService.stop(this) },
+            setFtpOwnNetwork = { on ->
+                CameraNetwork.setEnabled(this, on)
+                ftpOwnNetwork = on
+                if (FtpState.status.running) startFtp()
+            },
             dismissPairing = { pairer?.cancel(); pairer = null; pairing = null; showPairIntro = false },
         )
 
@@ -159,6 +180,7 @@ class MainActivity : ComponentActivity() {
                         pairing = pairing,
                         showPairIntro = showPairIntro,
                         ftp = ftp,
+                        ftpOwnNetwork = ftpOwnNetwork,
                     ),
                     actions,
                 )

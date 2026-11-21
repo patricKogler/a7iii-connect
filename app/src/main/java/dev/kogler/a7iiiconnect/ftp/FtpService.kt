@@ -32,6 +32,11 @@ data class FtpStatus(
     val hotspot: String? = null,
     /** The phone's address on the Wi-Fi it has joined, for a camera on that same network. */
     val wifi: String? = null,
+    /** Shootback's own camera network ([CameraNetwork]): its name and password while it is on. */
+    val network: String? = null,
+    val networkPassword: String? = null,
+    val networkUp: Boolean = false,
+    val networkError: String? = null,
     val received: Int = 0,
     val lastFile: String? = null,
     val error: String? = null,
@@ -60,6 +65,7 @@ class FtpService : Service() {
 
     private val nm by lazy { getSystemService(NotificationManager::class.java) }
     private var server: FtpServer? = null
+    private var network: CameraNetwork? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
@@ -76,7 +82,13 @@ class FtpService : Service() {
             return START_NOT_STICKY
         }
         startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        if (server != null) return START_STICKY
+        if (server != null) {
+            // The network choice or the Nearby devices permission changed while running.
+            network?.stop()
+            network = null
+            startNetwork()
+            return START_STICKY
+        }
         acquireLocks()
         val ftp = FtpServer(PORT, MediaStoreSink(this), SyncState::log) { name, _ ->
             FtpState.update { it.copy(received = it.received + 1, lastFile = name) }
@@ -90,6 +102,7 @@ class FtpService : Service() {
             SyncState.log("FTP: hotspot address ${hotspot ?: "none"}, Wi-Fi address ${wifi ?: "none"}")
             FtpState.update { it.copy(running = true, hotspot = hotspot, wifi = wifi, error = null) }
             FtpTile.refresh(this)
+            startNetwork()
         } catch (e: Exception) {
             SyncState.log("FTP: can't start: $e")
             FtpState.update { it.copy(running = false, error = "Couldn't open port $PORT: ${e.message}") }
@@ -99,11 +112,26 @@ class FtpService : Service() {
         return START_STICKY
     }
 
+    private fun startNetwork() {
+        if (!CameraNetwork.enabled(this)) {
+            FtpState.update { it.copy(network = null, networkPassword = null, networkUp = false, networkError = null) }
+            return
+        }
+        FtpState.update {
+            it.copy(network = CameraNetwork.ssid(this), networkPassword = CameraNetwork.passphrase(this), networkError = null)
+        }
+        network = CameraNetwork(this) { up, error ->
+            FtpState.update { it.copy(networkUp = up, networkError = error) }
+        }.also { it.start() }
+    }
+
     override fun onDestroy() {
+        network?.stop()
+        network = null
         server?.stop()
         server = null
         releaseLocks()
-        FtpState.update { it.copy(running = false) }
+        FtpState.update { it.copy(running = false, networkUp = false) }
         FtpTile.refresh(this)
         SyncState.log("FTP: stopped")
         super.onDestroy()
