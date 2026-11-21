@@ -1,0 +1,15 @@
+case	tiles mean/p99/max	golden mean/p99/max
+raw-default	-	0.00/0/0
+raw-light	-	0.00/0/0
+raw-local	0.000/0/0	0.00/0/0
+raw-color	-	0.00/0/0
+raw-mono	-	0.00/0/0
+raw-curves	-	0.00/0/0
+raw-effects	0.000/0/0	0.00/0/0
+raw-grain	0.000/0/1	0.00/0/0
+raw-noise	0.000/0/1	0.00/0/0
+jpeg-mixed	-	0.00/0/0
+mask-linear	-	0.00/0/0
+mask-radial	0.000/0/1	0.00/0/0
+mask-subject	-	0.00/0/0
+mask-sky	-	0.00/0/0
