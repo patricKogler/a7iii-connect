@@ -71,9 +71,8 @@ fn body(ui: &mut Ui, ed: &mut Editor, s: &mut Settings) {
     ui.add_space(6.0);
     let mut remove = None;
     let mut duplicate = None;
-    for i in 0..s.masks.len() {
+    for (i, m) in s.masks.iter().enumerate() {
         let selected = ed.tool.selected == Some(i);
-        let m = &s.masks[i];
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
         if selected {
             ui.painter().rect_filled(rect, pal.radius, pal.accent.gamma_multiply(0.14));
