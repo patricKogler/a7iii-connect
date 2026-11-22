@@ -24,6 +24,7 @@ mod phone_view;
 mod remove;
 mod remove_view;
 mod render;
+mod scrubber;
 mod search;
 mod selection;
 mod state;
