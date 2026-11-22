@@ -332,7 +332,7 @@ fn search_status(app: &mut App, ui: &mut Ui) {
 
 enum Row {
     /// A day's heading, and the day's shots.
-    Day(String, Vec<usize>),
+    Day(String, chrono::NaiveDate, Vec<usize>),
     Tiles(Vec<usize>),
 }
 
@@ -403,7 +403,7 @@ fn grid(app: &mut App, ui: &mut Ui) {
         while j < visible.len() && day_of(app.library.shots[visible[j]].taken_millis()) == day {
             j += 1;
         }
-        rows.push(Row::Day(format!("{} · {} shots", day.format("%A, %b %-d %Y"), j - i), visible[i..j].to_vec()));
+        rows.push(Row::Day(format!("{} · {} shots", day.format("%A, %b %-d %Y"), j - i), day, visible[i..j].to_vec()));
         for chunk in visible[i..j].chunks(cols) {
             rows.push(Row::Tiles(chunk.to_vec()));
         }
@@ -417,7 +417,17 @@ fn grid(app: &mut App, ui: &mut Ui) {
         let key = visible[si];
         rows.iter().position(|r| matches!(r, Row::Tiles(t) if t.contains(&key)))
     });
-    let mut scroll = egui::ScrollArea::vertical().auto_shrink(false);
+    // Each day heading's top in the scrolled content, for the date scrubber.
+    let mut day_tops = Vec::new();
+    let mut y = 8.0;
+    for (row, h) in rows.iter().zip(&heights) {
+        if let Row::Day(_, day, _) = row {
+            day_tops.push((y, *day));
+        }
+        y += h;
+    }
+    // The date scrubber stands in for the scroll bar.
+    let mut scroll = egui::ScrollArea::vertical().auto_shrink(false).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
     if ui.input(|i| {
         i.key_pressed(egui::Key::ArrowDown) || i.key_pressed(egui::Key::ArrowUp) || i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowRight)
     }) {
@@ -441,7 +451,7 @@ fn grid(app: &mut App, ui: &mut Ui) {
             if y + h >= viewport.min.y && y <= viewport.max.y {
                 let top = origin.y + y;
                 match row {
-                    Row::Day(text, day) => day_heading(app, ui, Pos2::new(origin.x, top), width, text, day),
+                    Row::Day(text, _, day) => day_heading(app, ui, Pos2::new(origin.x, top), width, text, day),
                     Row::Tiles(items) => {
                         for (c, &idx) in items.iter().enumerate() {
                             let rect = Rect::from_min_size(Pos2::new(origin.x + c as f32 * (tile_w + gap), top), Vec2::new(tile_w, tile_h));
@@ -456,7 +466,16 @@ fn grid(app: &mut App, ui: &mut Ui) {
             app.selection.clear();
         }
     });
-    ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::new("grid-offset"), out.state.offset.y));
+    let mut offset = out.state.offset.y;
+    if let Some(to) = crate::scrubber::show(ui, out.id.with("scrubber"), out.inner_rect, offset, out.content_size.y, &day_tops) {
+        let mut state = out.state;
+        state.offset.y = to;
+        state.store(ui.ctx(), out.id);
+        offset = to;
+        // Draw this frame again at the new spot, so the grid keeps up with the handle.
+        ui.ctx().request_discard("date scrubber");
+    }
+    ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::new("grid-offset"), offset));
     crate::batch::done_line(app, ui);
 }
 
